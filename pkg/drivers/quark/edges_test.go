@@ -2,6 +2,7 @@ package quark
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"testing"
@@ -131,12 +132,29 @@ func TestEdgeDialPenalizesTimeout(t *testing.T) {
 	}
 }
 
-// TestDriverPenalizesEdgeOnSlowBody: the slow-read watchdog reports the remote
-// edge, which must be remembered for later dials.
-func TestDriverPenalizesEdgeOnSlowBody(t *testing.T) {
+// TestDriverPenalizesEdgeOnFailedBody: a real transfer failure reports the
+// remote edge, which must be remembered for later dials.
+func TestDriverPenalizesEdgeOnFailedBody(t *testing.T) {
 	driver := New("k=v", Options{})
-	driver.noteDownloadBodyError("1.2.3.4:443", errDownloadTooSlow, 1<<10, 30*time.Second)
+	driver.noteDownloadBodyError(context.Background(), "1.2.3.4:443", errors.New("connection reset by peer"))
 	if !driver.cl.edges.isBad(mustAddr(t, "1.2.3.4"), time.Now()) {
-		t.Fatal("slow body did not penalize its edge")
+		t.Fatal("failed body did not penalize its edge")
+	}
+}
+
+// TestDriverKeepsEdgeOnCanceledBody: a seek or close cancels bodies constantly.
+// Those cancellations say nothing about the edge, so the address must stay in
+// the dial candidates and the pool must stay clean.
+func TestDriverKeepsEdgeOnCanceledBody(t *testing.T) {
+	driver := New("k=v", Options{})
+	driver.noteDownloadBodyError(context.Background(), "1.2.3.4:443", context.Canceled)
+	if driver.cl.edges.isBad(mustAddr(t, "1.2.3.4"), time.Now()) {
+		t.Fatal("a canceled body penalized its edge")
+	}
+	driver.cl.downloadMu.RLock()
+	dirty := driver.cl.downloadDirty
+	driver.cl.downloadMu.RUnlock()
+	if dirty {
+		t.Fatal("a canceled body marked the connection pool stale")
 	}
 }

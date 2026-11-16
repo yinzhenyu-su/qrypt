@@ -24,18 +24,6 @@ var errDownloadURLExpired = errors.New("quark: download url expired")
 
 const downloadWarmupMinSize = 512 * 1024
 
-const (
-	// downloadRateGrace lets a request connect and start before the slow-read
-	// watchdog judges its throughput.
-	downloadRateGrace = 5 * time.Second
-	// downloadRateCheckInterval is how often the watchdog samples a body.
-	downloadRateCheckInterval = 3 * time.Second
-)
-
-// errDownloadTooSlow marks a read that was aborted because its body sustained
-// less than the driver's throughput floor.
-var errDownloadTooSlow = errors.New("quark: download too slow")
-
 const downloadChromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
@@ -80,58 +68,40 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 			logging.L.DebugfEvery("quark.read_http.error", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d err=%v", entry.ID, offset, size, err)
 			return nil, err
 		}
-		body = d.limiter.LimitDownload(ctx, body)
 		trace := &traceReadCloser{
 			ReadCloser: body,
 			fid:        entry.ID,
 			offset:     offset,
 			size:       size,
 			start:      time.Now(),
-			onError: func(err error, read int64, elapsed time.Duration) {
-				d.noteDownloadBodyError(edge, err, read, elapsed)
+			onError: func(err error, read int64, providerTime time.Duration) {
+				d.noteDownloadBodyError(ctx, edge, err)
 			},
-			onComplete: d.cl.observeDownloadRate,
-			grace:      downloadRateGrace,
-			checkEvery: downloadRateCheckInterval,
 		}
-		if d.cl.allowSlowAbort() {
-			trace.minRate = d.cl.downloadRateFloor()
-		}
-		return trace, nil
+		// The limiter wraps the traced provider body: the user's download cap
+		// paces the consumer, not the provider, so it can never look like a
+		// stalled connection.
+		return d.limiter.LimitDownload(ctx, trace), nil
 	}
 	return nil, fmt.Errorf("quark: read: download url refresh failed")
 }
 
-const (
-	// downloadCanceledHealthyRate is the body rate above which a canceled read
-	// is treated as lifecycle-driven (seek, close, released prefetch) instead
-	// of a bad connection. Rotating those would pay a TLS handshake and pick a
-	// cold CDN edge on every seek.
-	downloadCanceledHealthyRate = 512 << 10
-	// downloadCanceledMinElapsed keeps a cancellation that happens right after
-	// the request starts from looking like a stall.
-	downloadCanceledMinElapsed = 2 * time.Second
-)
-
-// noteDownloadBodyError swaps the download connection after a failed body
-// read. The read layer aborts stalled reads by canceling the request context,
-// which reaches the body as a cancellation, so cancellation alone does not
-// identify a bad connection: it is only treated as one when the canceled read
-// had also been running long and slow.
-func (d *Driver) noteDownloadBodyError(edge string, err error, read int64, elapsed time.Duration) {
+// noteDownloadBodyError swaps the download connection after a *failed* body
+// read. A caller-driven cancellation is not a failure: the read layer cancels
+// bodies for seeks, closed handles, and released prefetch, and none of those
+// say anything about the CDN edge. Penalizing them would rotate the connection
+// pool on every seek and send the next Range to a cold edge.
+//
+// A fetch the read layer abandoned because the provider stalled or exceeded its
+// budget is different: the connection is not delivering, and the retry must
+// not replay on it. The read layer marks that case with drive.ReadIdleStall
+// as the request's cancel cause, so it stays distinguishable from a seek.
+func (d *Driver) noteDownloadBodyError(ctx context.Context, edge string, err error) {
 	if err == nil || errors.Is(err, io.EOF) {
 		return
 	}
-	if isDownloadLifecycleError(err) {
-		if elapsed < downloadCanceledMinElapsed {
-			return
-		}
-		if rate := float64(read) / elapsed.Seconds(); rate >= downloadCanceledHealthyRate {
-			return
-		}
-	}
-	if errors.Is(err, errDownloadTooSlow) {
-		d.cl.noteSlowAbort()
+	if isDownloadLifecycleError(err) && !errors.Is(context.Cause(ctx), drive.ReadIdleStall) && !errors.Is(context.Cause(ctx), drive.ReadTruncated) {
+		return
 	}
 	if edge != "" {
 		d.cl.edges.penalizeAddr(edge, "body read failed")
@@ -157,7 +127,7 @@ func isDownloadLifecycleError(err error) bool {
 }
 
 // downloadBody opens one bounded Range request. Parallel sub-ranges are the
-// read domain's job (drive.ReadParallel / the VFS window split): keeping this
+// read domain's job (drive.ReadSource): keeping this
 // driver single-stream lets the shared layer apply its fetch idle/total bounds
 // and its truncated-body retry to every sub-range instead of hiding them
 // behind an in-memory assembly inside the driver.

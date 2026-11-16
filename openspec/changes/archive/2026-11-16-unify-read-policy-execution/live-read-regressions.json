@@ -1,0 +1,398 @@
+{
+  "kind": "live_correctness_smoke_not_performance_acceptance",
+  "date": "2026-11-15",
+  "baseline_commit": "4574fb7",
+  "file_bytes": 324213537,
+  "read_only": true,
+  "rounds_complete": 0,
+  "notes": [
+    "Early failed runs identify two independently reproduced regressions; their latency percentiles are failed samples, not performance estimates.",
+    "Full raw logs remain private outside the repository; no signed URLs, credentials or user filenames are included."
+  ],
+  "runs": [
+    {
+      "case": "before_body_lifecycle_fix",
+      "pass": false,
+      "duration_ms": 1313,
+      "seek_summary": {
+        "cold": {
+          "samples": 1,
+          "median_seek_us": 2,
+          "p95_seek_us": 2,
+          "median_seek_load_us": 1285836,
+          "p95_seek_load_us": 1285836,
+          "p99_seek_load_us": 1285836,
+          "max_seek_load_us": 1285836,
+          "median_seek_total_us": 1286256,
+          "p95_seek_total_us": 1286256,
+          "median_load_bps": 0,
+          "max_load_bps": 0
+        }
+      },
+      "seek_measurements": [
+        {
+          "mode": "cold",
+          "scenario": "isolated",
+          "sample": 1,
+          "index": 1,
+          "offset": 16158248,
+          "bytes": 0,
+          "chunks_touched": 3,
+          "open_us": 148,
+          "seek_us": 2,
+          "seek_load_us": 1285836,
+          "seek_total_us": 1286256,
+          "load_bps": 0,
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "cache_hit_rate": 0,
+          "vfs_read_calls": 0,
+          "vfs_offset_match": false,
+          "traversed_vfs": true,
+          "os_cache_control": "f_nocache",
+          "overlap": false
+        }
+      ],
+      "metrics_truncated": false,
+      "fetches": []
+    },
+    {
+      "case": "before_prefetch_shape_fix",
+      "pass": false,
+      "duration_ms": 102937,
+      "seek_summary": {
+        "cold": {
+          "samples": 1,
+          "median_seek_us": 3,
+          "p95_seek_us": 3,
+          "median_seek_load_us": 102914027,
+          "p95_seek_load_us": 102914027,
+          "p99_seek_load_us": 102914027,
+          "max_seek_load_us": 102914027,
+          "median_seek_total_us": 102914044,
+          "p95_seek_total_us": 102914044,
+          "median_load_bps": 0,
+          "max_load_bps": 0
+        }
+      },
+      "seek_measurements": [
+        {
+          "mode": "cold",
+          "scenario": "isolated",
+          "sample": 1,
+          "index": 1,
+          "offset": 16158248,
+          "bytes": 0,
+          "chunks_touched": 3,
+          "open_us": 113,
+          "seek_us": 3,
+          "seek_load_us": 102914027,
+          "seek_total_us": 102914044,
+          "load_bps": 0,
+          "cache_hits": 38,
+          "cache_misses": 2,
+          "cache_hit_rate": 0.95,
+          "vfs_read_calls": 37,
+          "vfs_offset_match": false,
+          "traversed_vfs": true,
+          "os_cache_control": "f_nocache",
+          "overlap": false
+        }
+      ],
+      "metrics_truncated": false,
+      "fetches": [
+        {
+          "phase": "prefetch_window",
+          "offset": 16777216,
+          "duration": "1m29.993767574s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 89593937,
+            "failure_reason": "total_deadline",
+            "granted_streams": 1,
+            "open_us": 410530,
+            "part_bytes": 8388608,
+            "queue_us": 2,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 41943040,
+          "duration": "1m29.994005615s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 84791992,
+            "failure_reason": "total_deadline",
+            "granted_streams": 1,
+            "open_us": 5212942,
+            "part_bytes": 8388608,
+            "queue_us": 1,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 25165824,
+          "duration": "1m29.994136866s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 89594395,
+            "failure_reason": "total_deadline",
+            "granted_streams": 1,
+            "open_us": 410008,
+            "part_bytes": 8388608,
+            "queue_us": 0,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 33554432,
+          "duration": "1m29.994977407s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 89595245,
+            "failure_reason": "total_deadline",
+            "granted_streams": 1,
+            "open_us": 410007,
+            "part_bytes": 8388608,
+            "queue_us": 33,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "fetch_window",
+          "offset": 16777216,
+          "duration": "1m30.000715334s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "failure_reason": "total_deadline",
+            "granted_streams": 1,
+            "open_us": 1286,
+            "part_bytes": 8388608,
+            "queue_us": 89999304,
+            "range_tasks": 1,
+            "window_bytes": 524288
+          }
+        }
+      ]
+    },
+    {
+      "case": "after_body_and_prefetch_shape_fixes",
+      "pass": false,
+      "measurement_complete": false,
+      "client_timeout_seconds": 600,
+      "report_bytes": 0,
+      "notes": [
+        "Client timed out before the synchronous 20-point report completed. No complete latency distribution is available.",
+        "Recent trace samples are diagnostic observations only; neither three-round performance acceptance nor restoration to v0.6.1 has been established."
+      ],
+      "recent_fetches": [
+        {
+          "phase": "prefetch_window",
+          "offset": 260046848,
+          "duration": "-3.991406ms",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 3190,
+            "part_bytes": 8388608,
+            "queue_us": 0,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 268435456,
+          "duration": "-4.039322ms",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 3432,
+            "part_bytes": 8388608,
+            "queue_us": 0,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 285212672,
+          "duration": "-4.046822ms",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 3435,
+            "part_bytes": 8388608,
+            "queue_us": 0,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 276824064,
+          "duration": "-4.023197ms",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 1577,
+            "part_bytes": 8388608,
+            "queue_us": 0,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "fetch_window",
+          "offset": 274202624,
+          "duration": "18.475489625s",
+          "failed": false,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 12748583,
+            "granted_streams": 1,
+            "open_us": 5726268,
+            "part_bytes": 1048576,
+            "queue_us": 1,
+            "range_tasks": 1,
+            "window_bytes": 1048576
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 275251200,
+          "duration": "3.003579261s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 2568055,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 441484,
+            "part_bytes": 8388608,
+            "queue_us": 1,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 283639808,
+          "duration": "30.067945469s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 29632531,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 441440,
+            "part_bytes": 8388608,
+            "queue_us": 0,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 300417024,
+          "duration": "30.06762197s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 29632636,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 435436,
+            "part_bytes": 8388608,
+            "queue_us": 0,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 292028416,
+          "duration": "30.066374969s",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 29632295,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 436967,
+            "part_bytes": 8388608,
+            "queue_us": 0,
+            "range_tasks": 1,
+            "window_bytes": 8388608
+          }
+        },
+        {
+          "phase": "wait_window_bypass",
+          "offset": 275251200,
+          "duration": "3.001149375s",
+          "failed": false,
+          "execution": {
+            "part_bytes": 8388608
+          }
+        },
+        {
+          "phase": "fetch_window",
+          "offset": 275251200,
+          "duration": "27.055849542s",
+          "failed": false,
+          "execution": {
+            "actual_in_flight": 1,
+            "body_us": 21264820,
+            "granted_streams": 1,
+            "open_us": 5790258,
+            "part_bytes": 8388608,
+            "queue_us": 3,
+            "range_tasks": 1,
+            "window_bytes": 524288
+          }
+        },
+        {
+          "phase": "prefetch_window",
+          "offset": 275775488,
+          "duration": "-816.197µs",
+          "failed": true,
+          "execution": {
+            "actual_in_flight": 1,
+            "failure_reason": "superseded",
+            "granted_streams": 1,
+            "open_us": 6886,
+            "part_bytes": 8388608,
+            "queue_us": 1,
+            "range_tasks": 1,
+            "window_bytes": 7864320
+          }
+        }
+      ]
+    }
+  ],
+  "cleanup": {
+    "owned_test_mount_unmounted": true,
+    "existing_user_processes_stopped": false,
+    "remote_user_data_modified": false
+  }
+}

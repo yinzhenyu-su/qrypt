@@ -1,144 +1,88 @@
 package config
 
 import (
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/yinzhenyu/qrypt/pkg/drive"
-	_ "github.com/yinzhenyu/qrypt/pkg/drivers/koofr"
-	_ "github.com/yinzhenyu/qrypt/pkg/drivers/quark"
-	_ "github.com/yinzhenyu/qrypt/pkg/drivers/webdav"
 )
 
-func koofrMount(streams, windowChunks int) MountConfig {
-	return MountConfig{
-		Name: "koofr",
-		Type: "koofr",
-		Params: ParamMap{
-			"email":        "user@example.com",
-			"app_password": "app-password",
-		},
-		ReadProfile: &ReadProfileConfig{Streams: streams, WindowChunks: windowChunks},
-	}
-}
-
-func TestValidateReadProfileOverride(t *testing.T) {
-	tests := []struct {
+func readPtr[T any](v T) *T { return &v }
+func TestReadConfigOmissionAutoZeroAndValidation(t *testing.T) {
+	d := drive.NewFakeDriver(drive.FakeWithCapabilities(drive.CapabilityParallelRange))
+	for _, tc := range []struct {
 		name    string
-		mount   MountConfig
-		wantErr string
+		c       *ReadConfig
+		wantErr bool
 	}{
-		{name: "valid parallel", mount: koofrMount(4, 16)},
-		{name: "inherit", mount: koofrMount(0, 0)},
-		{name: "single stream with window", mount: koofrMount(1, 16)},
-		{
-			name:    "streams too large",
-			mount:   koofrMount(33, 0),
-			wantErr: "between 1 and 32",
-		},
-		{
-			name:    "window too large",
-			mount:   koofrMount(4, 65),
-			wantErr: "between 1 and 64",
-		},
-		{
-			name: "driver without parallel range",
-			mount: MountConfig{
-				Name: "webdav",
-				Type: "webdav",
-				Params: ParamMap{
-					"url":      "https://example.invalid/",
-					"username": "user",
-					"password": "password",
-				},
-				ReadProfile: &ReadProfileConfig{Streams: 4},
-			},
-			wantErr: "requires the parallel_range capability",
-		},
-		{
-			// Quark serves Range requests, so a mount may add streams on top of
-			// the driver profile instead of being pinned to one.
-			name: "quark parallel range",
-			mount: MountConfig{
-				Name:        "quark",
-				Type:        "quark",
-				Params:      ParamMap{"cookie": "k=v"},
-				ReadProfile: &ReadProfileConfig{Streams: 4},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateMount(&Config{}, 0, tt.mount)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("ValidateMount: %v", err)
-				}
-				return
+		{"omitted", nil, false}, {"empty", &ReadConfig{}, false},
+		{"valid", &ReadConfig{MaxInFlight: readPtr(1), Bulk: &BulkReadConfig{Streams: readPtr(1), Window: readPtr("8MiB"), PartSize: readPtr("auto"), MinParallelSize: readPtr("0")}}, false},
+		{"zero budget", &ReadConfig{MaxInFlight: readPtr(0)}, true},
+		{"zero streams", &ReadConfig{Bulk: &BulkReadConfig{Streams: readPtr(0)}}, true},
+		{"zero window", &ReadConfig{Bulk: &BulkReadConfig{Window: readPtr("0")}}, true},
+		{"zero part", &ReadConfig{Bulk: &BulkReadConfig{PartSize: readPtr("0")}}, true},
+		{"too large", &ReadConfig{Bulk: &BulkReadConfig{Window: readPtr("33MiB")}}, true},
+		{"empty size", &ReadConfig{Bulk: &BulkReadConfig{Window: readPtr("")}}, true},
+		{"fraction truncates", &ReadConfig{Bulk: &BulkReadConfig{PartSize: readPtr("0.1")}}, true},
+		{"fixed part", &ReadConfig{Bulk: &BulkReadConfig{PartSize: readPtr("512K")}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, err := tc.c.Override()
+			if err == nil {
+				_, err = drive.ResolveReadPolicy(d, o)
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("ValidateMount error = %v, want containing %q", err, tt.wantErr)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("override=%+v error=%v", o, err)
 			}
 		})
 	}
-}
-
-// TestValidateReadProfileRejectsInternalParallelStreams keeps the guard for
-// drivers that still parallelize a single Read internally: the read domain
-// must not multiply their concurrency.
-func TestValidateReadProfileRejectsInternalParallelStreams(t *testing.T) {
-	driver := drive.NewFakeDriver(drive.FakeWithCapabilities(drive.CapabilityInternalParallelRead))
-	err := validateReadProfile("faked", driver, ReadProfileConfig{Streams: 4})
-	if err == nil || !strings.Contains(err.Error(), "internal_parallel_read") {
-		t.Fatalf("validateReadProfile error = %v, want containing internal_parallel_read", err)
+	auto, err := (&ReadConfig{Bulk: &BulkReadConfig{PartSize: readPtr("auto"), MinParallelSize: readPtr("0")}}).Override()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auto.PartBytes == nil || *auto.PartBytes != 0 || auto.MinParallelBytes == nil || *auto.MinParallelBytes != 0 {
+		t.Fatal("explicit zero semantics lost")
+	}
+	inherited, _ := (&ReadConfig{}).Override()
+	if inherited.PartBytes != nil || inherited.BulkStreams != nil {
+		t.Fatal("omission materialized")
 	}
 }
-
-func TestReadProfileFor(t *testing.T) {
-	cfg := &Config{
-		Mounts: []MountConfig{
-			{Name: "a", Type: "koofr", ReadProfile: &ReadProfileConfig{Streams: 4, WindowChunks: 16}},
-			{Name: "b", Type: "koofr"},
-		},
-	}
-	got := cfg.ReadProfileFor("a")
-	if got == nil || got.Streams != 4 || got.WindowChunks != 16 {
-		t.Fatalf("ReadProfileFor(a) = %+v", got)
-	}
-	if cfg.ReadProfileFor("b") != nil {
-		t.Fatal("ReadProfileFor(b) returned an override")
-	}
-	if cfg.ReadProfileFor("missing") != nil {
-		t.Fatal("ReadProfileFor(missing) returned an override")
-	}
-	got.Streams = 9
-	if cfg.Mounts[0].ReadProfile.Streams != 4 {
-		t.Fatal("ReadProfileFor returned an alias to the config")
+func TestReadConfigRejectsLegacyTables(t *testing.T) {
+	for _, tail := range []string{"[mounts.read_profile]", "[mounts.read_profile]\nstreams=0", "[mounts.read]\nmax_in_flight=1\n[mounts.read_profile]\nstreams=2"} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		text := "[[mounts]]\nname=\"test\"\ntype=\"fake\"\n" + tail
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "mounts.read_profile has been removed") {
+			t.Fatalf("legacy table accepted: %v", err)
+		}
 	}
 }
-
-func TestLoadReadProfileTable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "qrypt.toml")
-	body := `
-[[mounts]]
-name = "local"
-type = "localfs"
-
-[mounts.read_profile]
-streams = 4
-window_chunks = 16
-`
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+func TestReadConfigLoadAndSavePreservesPresence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	text := "[[mounts]]\nname=\"test\"\ntype=\"fake\"\n[mounts.read]\nmax_in_flight=1\n[mounts.read.bulk]\nstreams=2\nwindow=\"8MiB\"\npart_size=\"auto\"\nmin_parallel_size=\"0\"\n"
+	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := cfg.ReadProfileFor("local")
-	if profile == nil || profile.Streams != 4 || profile.WindowChunks != 16 {
-		t.Fatalf("read profile = %+v, want 4/16", profile)
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := cfg.Mounts[0].Read.Override()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *o.MaxInFlight != 1 || *o.BulkStreams != 2 || *o.BulkWindowBytes != 8<<20 || *o.PartBytes != 0 {
+		t.Fatalf("override=%+v", o)
 	}
 }

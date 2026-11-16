@@ -63,7 +63,7 @@ type SnapshotRuntime interface {
 	UploadSnapshots(pending []vfstypes.PendingUpload) []upload.UploadSnapshot
 	UploadHistory() []upload.UploadSnapshot
 	StartedAt() time.Time
-	ReadProfile() DebugReadProfile
+	ReadPolicy() drive.ResolvedReadPolicy
 }
 
 // AssembleMountSnapshot assembles one mount's full snapshot: identity,
@@ -76,8 +76,8 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 		Overlay: MountSnapshotOverlay{
 			Pending: runtime.PendingUploads(),
 		},
-		Cache:       runtime.Cache(),
-		ReadProfile: runtime.ReadProfile(),
+		Cache:      runtime.Cache(),
+		ReadPolicy: runtime.ReadPolicy(),
 		Events: MountSnapshotEvents{
 			Reads: runtime.ReadHistory(),
 		},

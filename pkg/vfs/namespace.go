@@ -426,7 +426,7 @@ func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 }
 
 // SetReadPlanOverride applies a measurement-only override to one mount.
-func (n *Namespace) SetReadPlanOverride(mount string, maxStreams, windowChunks int, idle, total time.Duration) error {
+func (n *Namespace) SetReadPlanOverride(mount string, maxStreams int, windowBytes int64, idle, total time.Duration) error {
 	name := vfstypes.CleanMountName(mount)
 	n.mu.RLock()
 	fs := n.mounts[name]
@@ -434,7 +434,7 @@ func (n *Namespace) SetReadPlanOverride(mount string, maxStreams, windowChunks i
 	if fs == nil {
 		return fmt.Errorf("vfs: unknown mount %q", name)
 	}
-	return fs.SetReadPlanOverride("", maxStreams, windowChunks, idle, total)
+	return fs.SetReadPlanOverride("", maxStreams, windowBytes, idle, total)
 }
 
 // ClearReadPlanOverride removes the measurement override from every mount.
@@ -446,17 +446,14 @@ func (n *Namespace) ClearReadPlanOverride() {
 	}
 }
 
-// ReadProfileForPath returns the optional override of the mount owning path.
-func (n *Namespace) ReadProfileForPath(path string) *drive.ReadProfile {
-	mount, rest, root, err := n.resolve(path)
-	if err != nil || root {
+func (n *Namespace) ReadSourceForPath(path string) *drive.ReadSource {
+	mount, rest, isRoot, err := n.resolve(path)
+	if err != nil || isRoot {
 		return nil
 	}
-	return mount.ReadProfileForPath(rest)
+	return mount.ReadSourceForPath(rest)
 }
-
-// ReadProfileForMount returns the optional override for a named mount.
-func (n *Namespace) ReadProfileForMount(name string) *drive.ReadProfile {
+func (n *Namespace) ReadSourceForMount(name string) *drive.ReadSource {
 	name = vfstypes.CleanMountName(name)
 	n.mu.RLock()
 	mount := n.mounts[name]
@@ -464,7 +461,7 @@ func (n *Namespace) ReadProfileForMount(name string) *drive.ReadProfile {
 	if mount == nil {
 		return nil
 	}
-	return mount.ReadProfileForMount(name)
+	return mount.ReadSourceForMount(name)
 }
 
 func (n *Namespace) rootEntries() []drive.Entry {

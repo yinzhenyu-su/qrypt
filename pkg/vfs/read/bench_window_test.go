@@ -24,7 +24,7 @@ func BenchmarkFindWindow(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				index := int64((i%count)*8 + 3)
-				if state.findWindow("fid", index, 1) == nil {
+				if state.findWindow("fid", index, 1, 0) == nil {
 					b.Fatal("window not found")
 				}
 			}

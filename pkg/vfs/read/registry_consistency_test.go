@@ -85,7 +85,7 @@ func TestPrefetchScopesDrainOnLifecycle(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			host := newRegistryBlockingHost()
 			state := NewState(nil)
-			reader := NewReader(ReaderDeps{Host: host, State: state})
+			reader := newTestReader(testReaderDeps{Host: host, State: state})
 			ctx := WithAccessHint(context.Background(), AccessHint{SessionID: 7, RequestID: 1})
 
 			reader.prefetchWindow(ctx, host.entry, 1, 1)

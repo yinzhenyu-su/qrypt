@@ -1,6 +1,7 @@
 package drive
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -216,5 +217,30 @@ func TestBandwidthLimiterDoesNotDeliverCanceledBytes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A local bandwidth limit must not be reported as a provider stall: the body
+// already produced the bytes, and the only reason the read has not returned is
+// the local token bucket. A 64 KiB read at 512 KiB/s takes about 125 ms, far
+// past a 40 ms idle bound.
+func TestBandwidthLimitWaitDoesNotTriggerIdleTimeout(t *testing.T) {
+	const chunk = 64 << 10
+	data := bytes.Repeat([]byte("b"), chunk)
+	limiter := NewBandwidthLimiter(BandwidthLimits{DownloadBytesPerSecond: 512 << 10})
+	ctx, cancel := context.WithCancelCause(WithLocalWaitTracking(context.Background()))
+	defer cancel(nil)
+	body := limiter.LimitDownload(ctx, io.NopCloser(bytes.NewReader(data)))
+
+	started := time.Now()
+	got, err := ReadBodyLimited(ctx, cancel, body, chunk, 40*time.Millisecond)
+	if err != nil {
+		t.Fatalf("idle bound fired on a local rate-limit wait: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("bandwidth-limited body returned different bytes")
+	}
+	if elapsed := time.Since(started); elapsed < 100*time.Millisecond {
+		t.Fatalf("read returned after %s, want it to have waited for the local limit", elapsed)
 	}
 }

@@ -266,6 +266,6 @@ type vfsUploadWriteHashTracker struct {
 
 type vfsUploadWriteRemote struct {
 	resolver    pathResolver
-	driver      drive.Driver
+	source      *drive.ReadSource
 	invalidator readCacheInvalidator
 }

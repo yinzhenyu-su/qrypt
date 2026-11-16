@@ -497,3 +497,23 @@ func TestMountedReadTestRunDoesNotDuplicateStepsOrMetrics(t *testing.T) {
 		t.Fatalf("seek measurements missing: %s", body)
 	}
 }
+
+func TestMountedSeekTraversalSurvivesEvictedFirstFUSERead(t *testing.T) {
+	events := []drive.MetricEvent{{Kind: "vfs_read", Phase: "read", Offset: 20267008, Bytes: 16384}}
+	const offset int64 = 20262005
+	if mountedVFSReadAtOffset(events, offset) {
+		t.Fatal("first request should be absent")
+	}
+	if !mountedVFSReadInRange(events, offset, 1<<20) {
+		t.Fatal("retained request overlaps seek range")
+	}
+	for _, start := range []int64{20267008 - (1 << 20), 20267008 + 16384} {
+		if mountedVFSReadInRange(events, start, 1<<20) {
+			t.Fatalf("disjoint range at %d matched", start)
+		}
+	}
+	events[0].Phase = "prefetch_window"
+	if mountedVFSReadInRange(events, offset, 1<<20) {
+		t.Fatal("prefetch cannot prove foreground traversal")
+	}
+}

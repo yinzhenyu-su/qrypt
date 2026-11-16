@@ -47,7 +47,7 @@ func (h *recordingHealth) lastErr() error {
 // TestNilHealthRecorderWorks: a nil HealthRecorder must not change read
 // behavior - the reader falls back to a no-op sink.
 func TestNilHealthRecorderWorks(t *testing.T) {
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:  stubHostWithData{stubHost: stubHost{}, data: "hello world"},
 		State: NewState(nil),
 	})
@@ -69,7 +69,7 @@ func TestNilHealthRecorderWorks(t *testing.T) {
 // with a nil error.
 func TestHealthRecordsSuccess(t *testing.T) {
 	health := &recordingHealth{}
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:   stubHostWithData{stubHost: stubHost{}, data: "0123456789"},
 		State:  NewState(nil),
 		Health: health,
@@ -95,7 +95,7 @@ func TestHealthRecordsSuccess(t *testing.T) {
 func TestHealthRecordsResolveError(t *testing.T) {
 	health := &recordingHealth{}
 	host := stubHost{resolveErr: errors.New("not found")}
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:   host,
 		State:  NewState(nil),
 		Health: health,
@@ -116,7 +116,7 @@ func TestHealthRecordsResolveError(t *testing.T) {
 func TestHealthRecordsStagingOpenError(t *testing.T) {
 	health := &recordingHealth{}
 	host := &missingStagingHost{}
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:   host,
 		State:  NewState(nil),
 		Health: health,
@@ -138,7 +138,7 @@ func TestHealthRecordsStagingOpenError(t *testing.T) {
 func TestHealthReadStreamRecordsOpen(t *testing.T) {
 	health := &recordingHealth{}
 	host := stubHostWithData{stubHost: stubHost{}, data: strings.Repeat("x", 3*ChunkSize+10)}
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:   host,
 		State:  NewState(nil),
 		Health: health,

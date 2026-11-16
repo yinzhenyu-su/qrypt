@@ -25,7 +25,7 @@ func fetchTimeoutsFromContext(ctx context.Context) drive.FetchTimeouts {
 		timeouts.Idle > 0 && timeouts.Total > 0 {
 		return timeouts
 	}
-	return drive.DefaultReadProfile().FetchTimeouts()
+	return drive.DefaultReadPolicy().Fetch
 }
 
 // withFetchTimeouts ensures ctx carries this reader's driver-derived bounds.
@@ -33,7 +33,7 @@ func (r *Reader) withFetchTimeouts(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(fetchTimeoutsContextKey{}).(drive.FetchTimeouts); ok {
 		return ctx
 	}
-	timeouts := r.profile.FetchTimeouts()
+	timeouts := r.profile.Fetch
 	if override, ok := r.state.planOverride(); ok {
 		if override.FetchIdleTimeout > 0 {
 			timeouts.Idle = override.FetchIdleTimeout
@@ -58,9 +58,10 @@ type TimeoutWindow struct {
 // fetchTiming accumulates the wait and fetch time of one read call so its
 // summary event can report both.
 type fetchTiming struct {
-	mu    sync.Mutex
-	wait  time.Duration
-	fetch time.Duration
+	mu      sync.Mutex
+	wait    time.Duration
+	fetch   time.Duration
+	deliver time.Duration
 }
 
 type fetchTimingContextKey struct{}
@@ -108,10 +109,20 @@ func (t *fetchTiming) attach(extra map[string]any) {
 		return
 	}
 	t.mu.Lock()
-	wait, fetch := t.wait, t.fetch
+	wait, fetch, deliver := t.wait, t.fetch, t.deliver
 	t.mu.Unlock()
 	extra["wait_us"] = wait.Microseconds()
 	extra["fetch_us"] = fetch.Microseconds()
+	extra["deliver_us"] = deliver.Microseconds()
+}
+
+func (t *fetchTiming) recordDeliver(d time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.deliver += d
+	t.mu.Unlock()
 }
 
 // timeoutStats counts fetch timeouts and remembers the most recent window.

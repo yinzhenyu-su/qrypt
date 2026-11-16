@@ -63,15 +63,15 @@ type Defaults struct {
 }
 
 type MountConfig struct {
-	Name        string             `toml:"name"`
-	Type        string             `toml:"type"`
-	Credential  string             `toml:"credential"`
-	TestEnabled bool               `toml:"test_enabled"`
-	Params      ParamMap           `toml:"params"`
-	Encryption  *crypt.Config      `toml:"encryption"`
-	ReadCache   *ReadCacheConfig   `toml:"read_cache"`
-	ReadProfile *ReadProfileConfig `toml:"read_profile"`
-	Upload      *UploadConfig      `toml:"upload"`
+	Name        string           `toml:"name"`
+	Type        string           `toml:"type"`
+	Credential  string           `toml:"credential"`
+	TestEnabled bool             `toml:"test_enabled"`
+	Params      ParamMap         `toml:"params"`
+	Encryption  *crypt.Config    `toml:"encryption"`
+	ReadCache   *ReadCacheConfig `toml:"read_cache"`
+	Read        *ReadConfig      `toml:"read"`
+	Upload      *UploadConfig    `toml:"upload"`
 }
 
 // CredentialConfig is a named credential shared by any number of mounts of the
@@ -125,11 +125,53 @@ type ReadCacheConfig struct {
 	MaxSize string `toml:"max_size"`
 }
 
-// ReadProfileConfig optionally overrides a driver's read scheduling defaults
-// for one mount. Zero fields inherit the driver's ReadProfile.
-type ReadProfileConfig struct {
-	Streams      int `toml:"streams"`
-	WindowChunks int `toml:"window_chunks"`
+// ReadConfig is the optional mount override. Nil fields inherit recommendations.
+type ReadConfig struct {
+	MaxInFlight *int            `toml:"max_in_flight"`
+	Bulk        *BulkReadConfig `toml:"bulk"`
+}
+type BulkReadConfig struct {
+	Streams         *int    `toml:"streams"`
+	Window          *string `toml:"window"`
+	PartSize        *string `toml:"part_size"`
+	MinParallelSize *string `toml:"min_parallel_size"`
+}
+
+func (c *ReadConfig) Override() (*drive.ReadOverride, error) {
+	if c == nil {
+		return nil, nil
+	}
+	o := &drive.ReadOverride{MaxInFlight: c.MaxInFlight}
+	if c.Bulk == nil {
+		return o, nil
+	}
+	o.BulkStreams = c.Bulk.Streams
+	for _, field := range []struct {
+		name       string
+		value      *string
+		target     **int64
+		zero, auto bool
+	}{
+		{"window", c.Bulk.Window, &o.BulkWindowBytes, false, false},
+		{"part_size", c.Bulk.PartSize, &o.PartBytes, false, true},
+		{"min_parallel_size", c.Bulk.MinParallelSize, &o.MinParallelBytes, true, false},
+	} {
+		if field.value == nil {
+			continue
+		}
+		v := strings.TrimSpace(*field.value)
+		n := int64(0)
+		if !field.auto || v != "auto" {
+			var err error
+			// Read sizes accept IEC suffixes, as well as the existing K/M shorthand.
+			n, err = ParseSize(v)
+			if err != nil || v == "" || n < 0 || (!field.zero && n == 0) || n > drive.MaxReadWindowBytes {
+				return nil, fmt.Errorf("read.bulk.%s: require a size up to 32 MiB%s", field.name, map[bool]string{true: " (auto selects even division)", false: ""}[field.auto])
+			}
+		}
+		*field.target = &n
+	}
+	return o, nil
 }
 
 type UploadConfig struct {
@@ -206,6 +248,11 @@ func Load(path string) (*Config, error) {
 	metadata, err := toml.Decode(string(data), &cfg)
 	if err != nil {
 		return nil, err
+	}
+	for _, key := range metadata.Keys() {
+		if len(key) >= 2 && key[0] == "mounts" && key[1] == "read_profile" {
+			return nil, fmt.Errorf("mounts.read_profile has been removed; use [mounts.read] max_in_flight and [mounts.read.bulk] streams/window/part_size/min_parallel_size; omit inherited values, replace chunk counts with bytes and part_chunks=0 with part_size=\"auto\"")
+		}
 	}
 	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
 		keys := make([]string, 0, len(undecoded))
@@ -332,20 +379,6 @@ func (c *Config) ReadCacheFor(mountName string) ReadCacheConfig {
 		}
 	}
 	return cache
-}
-
-// ReadProfileFor returns the optional per-mount read scheduling override.
-func (c *Config) ReadProfileFor(mountName string) *ReadProfileConfig {
-	if c == nil {
-		return nil
-	}
-	for _, mount := range c.Mounts {
-		if mount.Name == mountName && mount.ReadProfile != nil {
-			profile := *mount.ReadProfile
-			return &profile
-		}
-	}
-	return nil
 }
 
 func (c *Config) UploadFor(mountName string) UploadConfig {
@@ -589,6 +622,7 @@ func ParseSize(value string) (int64, error) {
 	}
 	upper := strings.ToUpper(value)
 	upper = strings.TrimSuffix(upper, "B")
+	upper = strings.TrimSuffix(upper, "I")
 
 	multiplier := int64(1)
 	switch {

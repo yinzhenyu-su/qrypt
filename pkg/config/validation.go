@@ -157,10 +157,12 @@ func ValidateMount(cfg *Config, index int, mountCfg MountConfig) error {
 	if err != nil {
 		return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
 	}
-	if mountCfg.ReadProfile != nil {
-		if err := validateReadProfile(mountCfg.Name, driver, *mountCfg.ReadProfile); err != nil {
-			return err
-		}
+	override, err := mountCfg.Read.Override()
+	if err != nil {
+		return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
+	}
+	if _, err := drive.ResolveReadPolicy(driver, override); err != nil {
+		return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
 	}
 	enc := cfg.EncryptionFor(mountCfg.Name)
 	if enc.Password != "" {
@@ -186,25 +188,6 @@ func ValidateMount(cfg *Config, index int, mountCfg MountConfig) error {
 	}
 	if mountCfg.Upload != nil && (strings.TrimSpace(mountCfg.Upload.DefaultMount) != "" || strings.TrimSpace(mountCfg.Upload.DefaultPath) != "") {
 		return fmt.Errorf("config: mount %q upload.default_mount and upload.default_path are only supported in top-level [upload]", mountCfg.Name)
-	}
-	return nil
-}
-
-func validateReadProfile(mountName string, driver drive.Driver, profile ReadProfileConfig) error {
-	if profile.Streams < 0 || profile.Streams > 32 {
-		return fmt.Errorf("config: mount %q invalid read_profile.streams: must be 0 (inherit) or between 1 and 32", mountName)
-	}
-	if profile.WindowChunks < 0 || profile.WindowChunks > 64 {
-		return fmt.Errorf("config: mount %q invalid read_profile.window_chunks: must be 0 (inherit) or between 1 and 64", mountName)
-	}
-	if profile.Streams <= 1 {
-		return nil
-	}
-	if drive.HasCapability(driver, drive.CapabilityInternalParallelRead) {
-		return fmt.Errorf("config: mount %q read_profile.streams=%d is not allowed for a driver with internal_parallel_read", mountName, profile.Streams)
-	}
-	if !drive.HasCapability(driver, drive.CapabilityParallelRange) {
-		return fmt.Errorf("config: mount %q read_profile.streams=%d requires the parallel_range capability", mountName, profile.Streams)
 	}
 	return nil
 }

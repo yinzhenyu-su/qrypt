@@ -20,13 +20,13 @@ func assertGlobalCapacity(t *testing.T, state *State) {
 
 func TestSchedulerCapacityInvariants(t *testing.T) {
 	state := NewState(nil)
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
+	_ = newTestReader(testReaderDeps{Host: stubHost{}, State: state})
 	ctx := context.Background()
 	initial := state.scheduler.Stats()
 
 	var releases []func()
 	for i := 0; i < initial.NormalCapacity; i++ {
-		release, err := reader.acquireReadSlot(ctx)
+		release, err := acquireTestSlot(state.scheduler, ctx, priority(ctx))
 		if err != nil {
 			t.Fatalf("normal acquire %d: %v", i, err)
 		}
@@ -34,7 +34,7 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 		assertGlobalCapacity(t, state)
 	}
 	for i := 0; i < initial.HighCapacity; i++ {
-		release, err := reader.acquireReadSlot(WithPriority(ctx, PriorityHigh))
+		release, err := acquireTestSlot(state.scheduler, WithPriority(ctx, PriorityHigh), priority(WithPriority(ctx, PriorityHigh)))
 		if err != nil {
 			t.Fatalf("high acquire %d: %v", i, err)
 		}
@@ -53,7 +53,7 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 
 	var parallelReleases []func()
 	for i := 0; i < 4; i++ {
-		release, err := state.acquireParallel(ctx, "file", 4)
+		release, err := state.scheduler.AcquireRange(ctx, "file", 4, PriorityNormal)
 		if err != nil {
 			t.Fatalf("parallel acquire %d: %v", i, err)
 		}
@@ -65,7 +65,7 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 	blockedCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
-		_, err := state.acquireParallel(blockedCtx, "file", 4)
+		_, err := state.scheduler.AcquireRange(blockedCtx, "file", 4, PriorityNormal)
 		done <- err
 	}()
 	cancel()
@@ -103,7 +103,7 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				release, err := reader.acquireReadSlot(ctx)
+				release, err := acquireTestSlot(state.scheduler, ctx, priority(ctx))
 				if err != nil {
 					t.Errorf("concurrent acquire: %v", err)
 					return

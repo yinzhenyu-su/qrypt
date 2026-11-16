@@ -875,9 +875,9 @@
           },
           "description": "Per-mount upload overrides."
         },
-        "read_profile": {
-          "$ref": "#/definitions/readProfileConfig",
-          "description": "Optional per-mount read scheduling overrides.",
+        "read": {
+          "$ref": "#/definitions/readConfig",
+          "description": "Optional per-mount read policy override.",
           "x-i18n": {
             "zh-CN": {
               "description": "该 mount 的读取策略覆盖（可选）"
@@ -3392,43 +3392,97 @@
         }
       }
     },
-    "readProfileConfig": {
+    "readConfig": {
       "type": "object",
-      "description": "Optional per-mount read scheduling override. Unset fields inherit the driver's ReadProfile.",
+      "title": "Read policy",
+      "description": "Mount read overrides. Omitted fields inherit driver recommendations; explicit zero request counts are invalid.",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "读取策略",
+          "description": "按挂载覆盖读取策略；省略字段继承驱动建议，在途预算同时约束前台、预取、复制和分享下载。请求数显式填 0 无效。"
+        }
+      },
       "properties": {
-        "streams": {
-          "description": "Concurrent sub-ranges for bulk reads. 0 or unset inherits the driver profile; 1-32 enables an explicit value.",
+        "max_in_flight": {
           "type": "integer",
-          "default": 0,
-          "minimum": 0,
-          "maximum": 32,
+          "description": "Maximum in-flight ranges for one object.",
+          "x-doc-default": "继承驱动",
           "x-i18n": {
             "zh-CN": {
-              "description": "bulk 读的并发子 Range 数；0 或未设置时继承驱动默认值，1-32 为显式值"
+              "description": "同一文件的最大在途 Range 数（1–32），受驱动硬限制约束。"
             }
-          }
+          },
+          "minimum": 1,
+          "maximum": 32
         },
-        "window_chunks": {
-          "description": "Bulk read window in 512 KiB chunks. 0 or unset inherits the driver profile; 1-64 is explicit.",
-          "type": "integer",
-          "default": 0,
-          "minimum": 0,
-          "maximum": 64,
+        "bulk": {
+          "$ref": "#/definitions/bulkReadConfig",
+          "type": "object",
+          "description": "Bulk window and splitting overrides.",
           "x-i18n": {
             "zh-CN": {
-              "description": "bulk 读窗口大小（512 KiB 块）；0 或未设置时继承驱动默认值，1-64 为显式值"
+              "description": "批量读取窗口与分片设置（见下表）"
             }
           }
         }
       },
-      "additionalProperties": false,
-      "title": "Read profile",
+      "additionalProperties": false
+    },
+    "bulkReadConfig": {
+      "type": "object",
+      "title": "Bulk read policy",
+      "description": "Bulk reads use bounded windows and a worker limit.",
       "x-i18n": {
         "zh-CN": {
-          "title": "读取策略",
-          "description": "可选地覆盖单个 mount 的 bulk 读并行流数和窗口大小；默认值仍由驱动决定。"
+          "title": "批量读取策略",
+          "description": "配置批量下载和复制的窗口与并发。尺寸使用字节或 KiB/MiB，最大 32 MiB。交互读取和探测保持单流。"
         }
-      }
+      },
+      "properties": {
+        "streams": {
+          "type": "integer",
+          "description": "Concurrent workers, independent of task count.",
+          "x-doc-default": "继承驱动",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "批量读取的并发 worker 数（1–32），受文件在途预算约束。"
+            }
+          },
+          "minimum": 1,
+          "maximum": 32
+        },
+        "window": {
+          "type": "string",
+          "description": "Bounded logical window size, up to 32 MiB.",
+          "x-doc-default": "继承驱动",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "每次取数的窗口大小，例如 8MiB；必须大于 0，最大 32 MiB。"
+            }
+          }
+        },
+        "part_size": {
+          "type": "string",
+          "description": "Strict part ceiling or auto for even division within a window.",
+          "x-doc-default": "继承驱动",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "每个分片的大小上限，例如 4MiB；auto 表示按流数均分窗口。分片数可大于并发数，0 无效。"
+            }
+          }
+        },
+        "min_parallel_size": {
+          "type": "string",
+          "description": "Smallest bounded window eligible for parallel splitting.",
+          "x-doc-default": "继承驱动",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "允许并行拆分的最小窗口；0 表示不设门槛。按本次窗口判断，与文件总大小无关。"
+            }
+          }
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

@@ -1,6 +1,7 @@
 package crypt
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -86,15 +87,56 @@ func TestCryptForwardsFetchTimeoutsFromRawProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := &profiledRawDriver{
-		profile: drive.ReadProfile{
-			BulkStreams:       2,
-			FetchIdleTimeout:  90 * time.Second,
-			FetchTotalTimeout: 9 * time.Minute,
-		},
+		profile: func() drive.ReadPolicy {
+			p := drive.DefaultReadPolicy()
+			p.Bulk.Streams = 2
+			p.Fetch.Idle = 90 * time.Second
+			p.Fetch.Total = 9 * time.Minute
+			return p
+		}(),
 	}
 	drv := NewDriver(raw, cp, DriverOptions{})
-	profile := drive.ReadProfileOf(drv)
-	if profile.FetchIdleTimeout != 90*time.Second || profile.FetchTotalTimeout != 9*time.Minute {
+	profile := drv.ReadPolicy()
+	if profile.Fetch.Idle != 90*time.Second || profile.Fetch.Total != 9*time.Minute {
 		t.Fatalf("profile = %+v, want the raw driver's fetch timeouts", profile)
+	}
+}
+
+// A completed plaintext chunk can be published while the next encrypted block
+// fails authentication. Unauthenticated bytes must never reach the callback.
+func TestProgressivePrefetchKeepsAuthenticationBoundary(t *testing.T) {
+	cp, err := NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := bytes.Repeat([]byte("verified"), drive.ReadChunkSize*3/8)
+	var nonce [FileNonceSize]byte
+	encrypted, err := io.ReadAll(NewEncryptingReader(bytes.NewReader(plain), cp, nonce, int64(len(plain))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the first encrypted block after one complete VFS plaintext chunk.
+	encrypted[FileHeaderSize+(drive.ReadChunkSize/BlockDataSize)*BlockSize+8] ^= 1
+	raw := &recordingRawDriver{data: encrypted}
+	drv := NewDriver(raw, cp, DriverOptions{})
+	drv.nonceCache.Store("file", nonce)
+	budget := 1
+	source, err := drive.NewReadSource(drv, &drive.ReadOverride{MaxInFlight: &budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	job := source.TryFetch(drive.Entry{ID: "file", Size: int64(len(plain))}, drive.RangePlan{Size: int64(len(plain))})
+	if job == nil {
+		t.Fatal("admission failed")
+	}
+	defer job.Close()
+	var got []byte
+	err = job.RunChunks(context.Background(), func(_ int64, b []byte) { got = append(got, b...) })
+	if err == nil {
+		t.Fatal("authentication failure accepted")
+	}
+	if !bytes.Equal(got, plain[:drive.ReadChunkSize]) {
+		t.Fatalf("published invalid or missing bytes: %d", len(got))
 	}
 }

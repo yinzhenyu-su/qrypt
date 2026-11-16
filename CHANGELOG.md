@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Features
+- feat(drivers): let a read profile keep a fixed parallel part size and a minimum window that may be split (`part_chunks`, `min_split_chunks`), and reproduce Quark's v0.6.1 read shape as its default
 - feat(vfs): bound read fetches with an idle and total timeout, retry a timed-out Range GET once, and cancel timed-out prefetches silently
 - feat(vfs): add read intents, driver read profiles, and bounded parallel range reads
 - feat(vfs): cancel speculative prefetch on invalidation, session release, and caller cancel
@@ -20,6 +21,21 @@
 - feat(vfs): prefetch the next read-stream window
 
 ### Bug fixes
+- fix(drive): end an abandoned direct read with the stall cancel cause, so a driver rotates away from a connection that stopped delivering instead of keeping it
+- fix(drive): share one per-file in-flight budget across concurrent direct readers, counting the probe, the whole-file stream, and every part, so a concurrent copy cannot double a file's concurrency
+- fix(vfs): unregister a lookahead the foreground gives up on before cancelling it, and take over a speculative load that ends in cancellation, so the read no longer returns `context.Canceled` while its own context is valid
+- fix(vfs): keep a stage's explicit prefetch depth through the FUSE sequential bulk upgrade instead of falling back to the adaptive lookahead count
+- fix(drive): stop counting a local bandwidth-limit wait as provider idle time, so a rate-limited mount no longer times out and replays fetches the provider already served
+- fix(vfs): take a speculative window's global slot before its per-file permit, skip when either is busy, and run it on the permits taken at admission, so a queued prefetch can no longer deadlock a foreground read
+- fix(vfs): honour a stage prefetch depth that is declared without a prefetch window instead of falling back to the adaptive window count
+- fix(drive): apply a mount read-profile override that names only a stage suggestion or the per-file in-flight budget
+- fix(drive): clamp a per-file in-flight budget to the driver's hard parallel limit instead of only clamping the stream count
+- fix(drive): put a mount's read profile to work in direct reads too, so `fs get` and share fetch use the configured part size, split threshold, and in-flight budget
+- fix(config): keep an explicit zero `part_chunks`/`min_split_chunks` distinct from an omitted one, so a mount can clear a driver's fixed part size or threshold
+- fix(vfs): stop a stalled speculative window from gating a foreground read for tens of seconds; the read fetches its own window after a 3 s wait and cancels the lookahead
+- fix(drivers): rotate a Quark connection only when the fetch was abandoned for a stall or the body was truncated, so a throttled connection is not reused forever while seeks still keep their pool
+- fix(vfs): cancel only the seeking session's lookahead, and let a driver declare per-stage seek/sequential windows plus an opt-in per-file Range budget
+- fix(drivers): stop aborting, penalizing, and rotating Quark downloads on slow-but-moving bodies or lifecycle cancellations; the throughput floor is gone and only real transfer failures rotate the connection
 - fix(drive): keep the total-timeout kind when the provider body reports the deadline itself instead of degrading to a bare context error
 - fix(vfs): confirm a suspect child with a fresh listing before reporting ENOTEMPTY, so `rmdir` right after `rm` no longer fails when the child's delayed delete finished mid-check
 - fix(vfs): fail a stalled provider read with a timeout instead of blocking the mount, and bound the read probe's own waits

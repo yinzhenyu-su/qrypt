@@ -46,7 +46,7 @@ func startBlockingPrefetch(t *testing.T, ctx context.Context) (*State, *blocking
 		canceled: make(chan struct{}),
 	}
 	state := NewState(nil)
-	reader := NewReader(ReaderDeps{Host: host, State: state})
+	reader := newTestReader(testReaderDeps{Host: host, State: state})
 	reader.prefetchWindow(ctx, host.entry, 1, 1)
 
 	select {

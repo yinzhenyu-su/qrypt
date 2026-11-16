@@ -67,7 +67,7 @@ func TestFetchChunkWindowParallelSplitsAndAssembles(t *testing.T) {
 	backend := &rangeBackend{data: data, failOff: -1}
 	entry := drive.Entry{ID: "id", Size: int64(len(data))}
 
-	chunks, extra, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, 2, nil, nil, "key")
+	chunks, extra, err := fetchTestWindow(context.Background(), entry, 0, 3, backend, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,16 +87,16 @@ func TestFetchChunkWindowParallelSplitsAndAssembles(t *testing.T) {
 	}
 }
 
-func TestFetchChunkWindowParallelSingleChunkStaysSingle(t *testing.T) {
+func TestFetchChunkWindowParallelExplicitByteSplitBelowCacheChunk(t *testing.T) {
 	data := bytes.Repeat([]byte("b"), ChunkSize)
 	backend := &rangeBackend{data: data, failOff: -1}
 	entry := drive.Entry{ID: "id", Size: int64(len(data))}
 
-	if _, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 0, backend, 4, 4, nil, nil, "key"); err != nil {
+	if _, _, err := fetchTestWindow(context.Background(), entry, 0, 0, backend, 4, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := backend.callCount(); got != 1 {
-		t.Fatalf("driver calls = %d, want 1", got)
+	if got := backend.callCount(); got != 4 {
+		t.Fatalf("driver calls = %d, want 4", got)
 	}
 }
 
@@ -106,7 +106,7 @@ func TestFetchChunkWindowParallelUnsupportedFallsBack(t *testing.T) {
 	state := NewState(nil)
 	entry := drive.Entry{ID: "id", Size: int64(len(data))}
 
-	chunks, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, 2, nil, state, "key")
+	chunks, _, err := fetchTestWindow(context.Background(), entry, 0, 3, backend, 2, state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestFetchChunkWindowParallelUnsupportedFallsBack(t *testing.T) {
 	if full != 1 {
 		t.Fatalf("full-file fallback calls = %d, want 1", full)
 	}
-	if !state.isNonParallel("key") {
+	if !state.scheduler.IsNonParallel(entry.ID) {
 		t.Fatal("file was not marked non-parallel after ErrUnsupported")
 	}
 }
@@ -135,7 +135,7 @@ func TestFetchChunkWindowParallelPartialFailureReturnsError(t *testing.T) {
 	backend := &rangeBackend{data: data, failOff: ChunkSize * 2}
 	entry := drive.Entry{ID: "id", Size: int64(len(data))}
 
-	chunks, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, 2, nil, nil, "key")
+	chunks, _, err := fetchTestWindow(context.Background(), entry, 0, 3, backend, 2, nil)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -157,39 +157,13 @@ func TestFetchChunkWindowParallelBoundsStalledSubRange(t *testing.T) {
 	})
 
 	started := time.Now()
-	_, _, err := fetchChunkWindowWithPlan(ctx, entry, 0, 3, backend, 2, 2, nil, nil, "key")
+	_, _, err := fetchTestWindow(ctx, entry, 0, 3, backend, 2, nil)
 	var timeout *drive.FetchTimeoutError
 	if !errors.As(err, &timeout) || timeout.Kind != drive.FetchTimeoutIdle {
 		t.Fatalf("error = %v, want an idle fetch timeout", err)
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("window failed after %s, want it bounded near the idle limit", elapsed)
-	}
-}
-
-func TestPerFileParallelLimitBlocksAndCancels(t *testing.T) {
-	state := NewState(nil)
-	ctx := context.Background()
-	release1, err := state.acquireParallel(ctx, "key", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release1()
-	release2, err := state.acquireParallel(ctx, "key", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release2()
-
-	blockedCtx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := state.acquireParallel(blockedCtx, "key", 2)
-		done <- err
-	}()
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("blocked acquire error = %v, want context.Canceled", err)
 	}
 }
 
@@ -210,13 +184,13 @@ func TestFindWindowFiltersByShape(t *testing.T) {
 	state.windows.loads[WindowShapeKey(base, 1)] = single
 	state.windows.loads[WindowShapeKey(base, 4)] = parallel
 
-	if got := state.findWindow("fid", 1, 1); got != single {
+	if got := state.findWindow("fid", 1, 1, 0); got != single {
 		t.Fatalf("single-shape lookup = %p, want %p", got, single)
 	}
-	if got := state.findWindow("fid", 1, 4); got != parallel {
+	if got := state.findWindow("fid", 1, 4, 0); got != parallel {
 		t.Fatalf("parallel-shape lookup = %p, want %p", got, parallel)
 	}
-	if got := state.findWindow("fid", 1, 0); got == nil {
+	if got := state.findWindow("fid", 1, 0, 0); got == nil {
 		t.Fatal("any-shape lookup returned nil")
 	}
 }
@@ -249,7 +223,7 @@ func TestFetchChunkWindowParallelCancelsSibling(t *testing.T) {
 	state := NewState(nil)
 	entry := drive.Entry{ID: "id", Size: ChunkSize * 4}
 
-	_, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, 2, nil, state, "key")
+	_, _, err := fetchTestWindow(context.Background(), entry, 0, 3, backend, 2, state)
 	if err == nil {
 		t.Fatal("expected the sibling failure")
 	}
@@ -262,4 +236,40 @@ func TestFetchChunkWindowParallelCancelsSibling(t *testing.T) {
 	if files != 0 {
 		t.Fatalf("per-file limiter entries = %d, want 0", files)
 	}
+}
+
+type backendDriver struct {
+	drive.Driver
+	backend testReadBackend
+}
+
+func (b backendDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilityParallelRange}
+}
+func (b backendDriver) Read(ctx context.Context, e drive.Entry, o, n int64) (io.ReadCloser, error) {
+	return b.backend.Read(ctx, e, o, n)
+}
+func testFetch(ctx context.Context, e drive.Entry, start, end int64, b testReadBackend, streams int, state *State) ([]byte, map[string]any, error) {
+	zero := int64(0)
+	source, err := drive.NewReadSource(backendDriver{backend: b}, &drive.ReadOverride{MinParallelBytes: &zero})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer source.Close()
+	if state != nil {
+		state.scheduler = source.Scheduler()
+	}
+	trace := &drive.ReadTrace{}
+	ctx = drive.WithReadTrace(ctx, trace)
+	data, err := source.Fetch(ctx, e, drive.RangePlan{Offset: start * ChunkSize, Size: (end - start + 1) * ChunkSize, Streams: streams, Timeouts: fetchTimeoutsFromContext(ctx)})
+	extra := trace.Snapshot()
+	extra["parallel_streams"] = streams
+	return data, extra, err
+}
+func fetchTestWindow(ctx context.Context, e drive.Entry, start, end int64, b testReadBackend, streams int, state *State) (map[int64][]byte, map[string]any, error) {
+	data, extra, err := testFetch(ctx, e, start, end, b, streams, state)
+	if err != nil {
+		return nil, extra, err
+	}
+	return storeWindowChunks(ctx, b, e, start, end, data), extra, nil
 }

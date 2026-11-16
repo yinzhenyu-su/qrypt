@@ -1,0 +1,3661 @@
+{
+  "date": "2026-11-15",
+  "baseline_commit": "4574fb7",
+  "toolchain": "go1.27.4 darwin/arm64",
+  "file": "/quark-encrypt/影视飓风样片.mp4",
+  "plaintext_file_bytes": 406288683,
+  "seek_bytes": 1048576,
+  "measurement_environment": {
+    "os": "macOS arm64",
+    "filesystem": "macFUSE",
+    "config_read_overrides": null,
+    "remote_writes": false,
+    "independent_runtime": true,
+    "released_source": "v0.6.1 rebuilt with same Go toolchain"
+  },
+  "offset_formula": "i * (file_bytes - seek_bytes) / 20, integer division; i=1..20",
+  "range_hashes": [
+    {
+      "offset": 20262005,
+      "sha256": "0e4f9b2b454c03c9a3b6dfaf2ab62767df183098a8b30882851972328e6ab20c"
+    },
+    {
+      "offset": 40524010,
+      "sha256": "02c4f828ffed76d1c2ebf5655c7ef5c6e74daba79f8c2f8447429b571c574346"
+    },
+    {
+      "offset": 60786016,
+      "sha256": "9ff846d1edfb3ca84f33bfb940d2bc623b4680135c3bbf762678fd58ee677352"
+    },
+    {
+      "offset": 81048021,
+      "sha256": "1e84244eee9fcc4f0a9003a04521bb9a54766ea67914fdacf2457981457b5840"
+    },
+    {
+      "offset": 101310026,
+      "sha256": "6bc2baa36b4674d34f35c45e9988cef675fb4e23b4aac4e483c3f04b5282b56e"
+    },
+    {
+      "offset": 121572032,
+      "sha256": "ae139d99e5572732c4fad8cd4ef82d4454c4e4db9317758b7a5ff87976bdaf83"
+    },
+    {
+      "offset": 141834037,
+      "sha256": "4625432f24dd211acc6af0757132ccd3ff2ad7dc3e15d671d2b87e133d551905"
+    },
+    {
+      "offset": 162096042,
+      "sha256": "7a920952251d0accdd4bdd99f60386e02eb88ac7472adb9840c6d83d7ff11ca5"
+    },
+    {
+      "offset": 182358048,
+      "sha256": "e7a56c2fcb69d91612174273dcce096816f2850f951cc28ce70d1bc5c41f585e"
+    },
+    {
+      "offset": 202620053,
+      "sha256": "34ddeee147fcc49a4ed516b2d75a7aa06d4a32fd28a2c54d3920976e6e4c48a8"
+    },
+    {
+      "offset": 222882058,
+      "sha256": "17586e079481c0321f2f810a9a82b76525425e372c0983e6b1126f3c9adfa352"
+    },
+    {
+      "offset": 243144064,
+      "sha256": "872ed9350b89fe4500b2b8c9eee9b06f1c56a6bf420392d25b63825f352f3dc9"
+    },
+    {
+      "offset": 263406069,
+      "sha256": "38b7c47826c07261b01a18d9b8fcc8b721a29b07fe4359c7ce9b3855be91fb7d"
+    },
+    {
+      "offset": 283668074,
+      "sha256": "dfd1ea7cfd59c805e8b2c322529193e37c267b5398f635a103f20f41516022d4"
+    },
+    {
+      "offset": 303930080,
+      "sha256": "6e8ae9e8037217d020770ca95bffbee54a2759d1ad8d0f2920a85e8bf2bc8d08"
+    },
+    {
+      "offset": 324192085,
+      "sha256": "ce14b6003f3190551fa2218cb35a9f9ddfbfd3feeccf207ea06752c04e81d414"
+    },
+    {
+      "offset": 344454090,
+      "sha256": "967c0b973c3f0b0ad8790b7f7ff8c9cc55039b10f4ae09102bfabad4b4b83a84"
+    },
+    {
+      "offset": 364716096,
+      "sha256": "45a2e5b9cd36c931648ac73a52de0a4163c1ede4afcec0ba189bc137c5dcf7cf"
+    },
+    {
+      "offset": 384978101,
+      "sha256": "f6a84f3c133ec2b25496d61d854134ae41d9056dc290eab80eb94deb6b34cbe2"
+    },
+    {
+      "offset": 405240107,
+      "sha256": "3eadf8bcbb025c7b9e74fe87f2a3223f5ffebf29f79624a0ae533a490079109f"
+    }
+  ],
+  "hash_mismatches": 0,
+  "defaults": {
+    "before": {
+      "bulk_window_bytes": 8388608,
+      "max_in_flight": 4,
+      "sequential_prefetch": "fixed 8MiB x4"
+    },
+    "candidate": {
+      "bulk_window_bytes": 4194304,
+      "max_in_flight": 7,
+      "sequential_prefetch": "adaptive"
+    },
+    "unchanged": {
+      "bulk_streams": 3,
+      "part_bytes": 8388608,
+      "min_parallel_bytes": 4194304,
+      "idle_ms": 30000,
+      "total_ms": 90000
+    }
+  },
+  "uncached": {
+    "v061": {
+      "layer": "wrapped decrypted Driver.Read with exact-length validation",
+      "rounds": [
+        {
+          "round": 1,
+          "summary": {
+            "count": 20,
+            "p50_ms": 197.524,
+            "p95_ms": 514.4,
+            "max_ms": 825.851
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 825851,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 306355,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 333351,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 203842,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 298035,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 161813,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 314043,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 193186,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 179431,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 162335,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 205033,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 306203,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 167557,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 166589,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 190305,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 514400,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 173987,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 159016,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 201863,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 168957,
+              "failed": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "summary": {
+            "count": 20,
+            "p50_ms": 269.962,
+            "p95_ms": 802.843,
+            "max_ms": 848.363
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 802843,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 235895,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 284523,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 189370,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 498317,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 848363,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 246391,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 184653,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 351975,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 359574,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 237226,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 255400,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 209863,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 357114,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 232236,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 233117,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 307385,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 731970,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 359693,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 216307,
+              "failed": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "summary": {
+            "count": 20,
+            "p50_ms": 205.23,
+            "p95_ms": 304.567,
+            "max_ms": 673.785
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 673785,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 288374,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 205987,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 173108,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 199941,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 171378,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 304567,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 176367,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 166650,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 204472,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 181940,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 252246,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 208116,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 180858,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 198586,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 198283,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 297838,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 207329,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 273525,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 216358,
+              "failed": false
+            }
+          ]
+        }
+      ],
+      "pooled": {
+        "count": 60,
+        "p50_ms": 216.333,
+        "p95_ms": 731.97,
+        "max_ms": 848.363
+      }
+    },
+    "baseline": {
+      "layer": "wrapped decrypted Driver.Read with exact-length validation",
+      "rounds": [
+        {
+          "round": 1,
+          "summary": {
+            "count": 20,
+            "p50_ms": 205.812,
+            "p95_ms": 312.481,
+            "max_ms": 835.625
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 835625,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 185116,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 231473,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 203975,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 312481,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 187689,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 312408,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 194266,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 293562,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 171288,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 183991,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 230766,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 207649,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 277574,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 168948,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 209715,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 190609,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 186874,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 259737,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 200156,
+              "failed": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "summary": {
+            "count": 20,
+            "p50_ms": 217.982,
+            "p95_ms": 439.428,
+            "max_ms": 747.761
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 747761,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 439428,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 361057,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 192668,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 299817,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 186501,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 293205,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 224247,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 296914,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 201288,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 188257,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 197933,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 205075,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 245629,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 209285,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 212775,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 177632,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 221758,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 258075,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 214207,
+              "failed": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "summary": {
+            "count": 20,
+            "p50_ms": 265.493,
+            "p95_ms": 422.732,
+            "max_ms": 1016.529
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 1016529,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 351396,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 370406,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 253954,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 315348,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 248708,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 257179,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 273808,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 231875,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 218698,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 422732,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 336887,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 208398,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 208024,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 204009,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 191278,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 333242,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 212314,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 356670,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 367380,
+              "failed": false
+            }
+          ]
+        }
+      ],
+      "pooled": {
+        "count": 60,
+        "p50_ms": 227.506,
+        "p95_ms": 439.428,
+        "max_ms": 1016.529
+      }
+    },
+    "candidate": {
+      "layer": "mount-owned ReadSource.Fetch over decrypted driver",
+      "rounds": [
+        {
+          "round": 1,
+          "summary": {
+            "count": 20,
+            "p50_ms": 334.748,
+            "p95_ms": 1233.429,
+            "max_ms": 1481.047
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 1481047,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 521871,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 629995,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 528829,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 488893,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 391984,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 234094,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 1233429,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 255982,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 315799,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 196084,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 344909,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 262688,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 253308,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 449266,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 324588,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 509925,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 287013,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 216910,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 309041,
+              "failed": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "summary": {
+            "count": 20,
+            "p50_ms": 266.589,
+            "p95_ms": 558.68,
+            "max_ms": 865.825
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 865825,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 189683,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 286955,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 236293,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 272744,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 207485,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 308632,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 245551,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 282990,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 194782,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 281583,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 176182,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 211252,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 224427,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 200925,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 558680,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 260433,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 280894,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 451279,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 288394,
+              "failed": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "summary": {
+            "count": 20,
+            "p50_ms": 335.675,
+            "p95_ms": 402.265,
+            "max_ms": 716.884
+          },
+          "samples": [
+            {
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "elapsed_us": 716884,
+              "failed": false
+            },
+            {
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "elapsed_us": 197871,
+              "failed": false
+            },
+            {
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "elapsed_us": 207342,
+              "failed": false
+            },
+            {
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "elapsed_us": 309655,
+              "failed": false
+            },
+            {
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "elapsed_us": 392500,
+              "failed": false
+            },
+            {
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "elapsed_us": 348912,
+              "failed": false
+            },
+            {
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "elapsed_us": 219060,
+              "failed": false
+            },
+            {
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "elapsed_us": 378685,
+              "failed": false
+            },
+            {
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "elapsed_us": 216660,
+              "failed": false
+            },
+            {
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "elapsed_us": 332004,
+              "failed": false
+            },
+            {
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "elapsed_us": 339347,
+              "failed": false
+            },
+            {
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "elapsed_us": 257448,
+              "failed": false
+            },
+            {
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "elapsed_us": 389083,
+              "failed": false
+            },
+            {
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "elapsed_us": 299088,
+              "failed": false
+            },
+            {
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "elapsed_us": 260860,
+              "failed": false
+            },
+            {
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "elapsed_us": 361301,
+              "failed": false
+            },
+            {
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "elapsed_us": 350234,
+              "failed": false
+            },
+            {
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "elapsed_us": 377230,
+              "failed": false
+            },
+            {
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "elapsed_us": 402265,
+              "failed": false
+            },
+            {
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "elapsed_us": 312282,
+              "failed": false
+            }
+          ]
+        }
+      ],
+      "pooled": {
+        "count": 60,
+        "p50_ms": 303.86,
+        "p95_ms": 716.884,
+        "max_ms": 1481.047
+      }
+    }
+  },
+  "mounted_cold": {
+    "before": {
+      "rounds": [
+        {
+          "round": 1,
+          "pass": true,
+          "summary": {
+            "count": 20,
+            "p50_ms": 4057.067,
+            "p95_ms": 4207.326,
+            "max_ms": 5038.601
+          },
+          "status": "complete",
+          "errors": [],
+          "samples": [
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 143,
+              "seek_us": 2,
+              "seek_load_us": 5038601,
+              "seek_total_us": 5038684,
+              "load_bps": 208108,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 230,
+              "seek_us": 2,
+              "seek_load_us": 4001076,
+              "seek_total_us": 4001100,
+              "load_bps": 262073,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 377,
+              "seek_us": 3,
+              "seek_load_us": 3942898,
+              "seek_total_us": 3942943,
+              "load_bps": 265940,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 202,
+              "seek_us": 4,
+              "seek_load_us": 3177865,
+              "seek_total_us": 3177891,
+              "load_bps": 329962,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 240,
+              "seek_us": 5,
+              "seek_load_us": 3987247,
+              "seek_total_us": 3987264,
+              "load_bps": 262982,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 230,
+              "seek_us": 2,
+              "seek_load_us": 4046390,
+              "seek_total_us": 4046407,
+              "load_bps": 259138,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 173,
+              "seek_us": 2,
+              "seek_load_us": 3977070,
+              "seek_total_us": 3977089,
+              "load_bps": 263655,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 264,
+              "seek_us": 4,
+              "seek_load_us": 4023478,
+              "seek_total_us": 4023504,
+              "load_bps": 260614,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 238,
+              "seek_us": 3,
+              "seek_load_us": 4067744,
+              "seek_total_us": 4067765,
+              "load_bps": 257778,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 316,
+              "seek_us": 4,
+              "seek_load_us": 3966819,
+              "seek_total_us": 3966847,
+              "load_bps": 264336,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 273,
+              "seek_us": 2,
+              "seek_load_us": 4018060,
+              "seek_total_us": 4018074,
+              "load_bps": 260965,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 261,
+              "seek_us": 3,
+              "seek_load_us": 4203151,
+              "seek_total_us": 4203172,
+              "load_bps": 249473,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 184,
+              "seek_us": 7,
+              "seek_load_us": 4095028,
+              "seek_total_us": 4095073,
+              "load_bps": 256060,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 266,
+              "seek_us": 4,
+              "seek_load_us": 4113761,
+              "seek_total_us": 4113786,
+              "load_bps": 254894,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 171,
+              "seek_us": 2,
+              "seek_load_us": 4206331,
+              "seek_total_us": 4206349,
+              "load_bps": 249285,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 149,
+              "seek_us": 2,
+              "seek_load_us": 4118054,
+              "seek_total_us": 4118068,
+              "load_bps": 254629,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 157,
+              "seek_us": 2,
+              "seek_load_us": 4207326,
+              "seek_total_us": 4207346,
+              "load_bps": 249226,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 212,
+              "seek_us": 2,
+              "seek_load_us": 4149520,
+              "seek_total_us": 4149539,
+              "load_bps": 252698,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 246,
+              "seek_us": 3,
+              "seek_load_us": 4176428,
+              "seek_total_us": 4176448,
+              "load_bps": 251070,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 515,
+              "seek_us": 5,
+              "seek_load_us": 984113,
+              "seek_total_us": 984147,
+              "load_bps": 1065502,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            }
+          ],
+          "retained_wait_bypass_events": 18,
+          "retained_wait_bypass_p50_ms": 3001.0
+        },
+        {
+          "round": 2,
+          "pass": false,
+          "status": "client_timeout",
+          "timeout_seconds": 600,
+          "summary": null,
+          "samples": []
+        },
+        {
+          "round": 3,
+          "pass": false,
+          "summary": null,
+          "status": "failed",
+          "errors": [
+            {
+              "operation": "cold_seek",
+              "category": "local_io"
+            }
+          ],
+          "samples": [
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 0,
+              "chunks_touched": 3,
+              "open_us": 205,
+              "seek_us": 2,
+              "seek_load_us": 43064880,
+              "seek_total_us": 43064973,
+              "load_bps": 0,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 0,
+              "vfs_offset_match": false,
+              "traversed_vfs": false,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            }
+          ],
+          "retained_wait_bypass_events": 0,
+          "retained_wait_bypass_p50_ms": null
+        }
+      ],
+      "pooled_complete_rounds_only": {
+        "count": 20,
+        "p50_ms": 4057.067,
+        "p95_ms": 4207.326,
+        "max_ms": 5038.601
+      }
+    },
+    "candidate": {
+      "rounds": [
+        {
+          "round": 1,
+          "pass": true,
+          "summary": {
+            "count": 20,
+            "p50_ms": 3533.274,
+            "p95_ms": 3976.281,
+            "max_ms": 4042.652
+          },
+          "status": "complete",
+          "errors": [],
+          "samples": [
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 170,
+              "seek_us": 3,
+              "seek_load_us": 4042652,
+              "seek_total_us": 4042657,
+              "load_bps": 259378,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 216,
+              "seek_us": 3,
+              "seek_load_us": 3602865,
+              "seek_total_us": 3602902,
+              "load_bps": 291039,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 278,
+              "seek_us": 2,
+              "seek_load_us": 3600661,
+              "seek_total_us": 3600708,
+              "load_bps": 291217,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 455,
+              "seek_us": 7,
+              "seek_load_us": 3514305,
+              "seek_total_us": 3514353,
+              "load_bps": 298373,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 191,
+              "seek_us": 2,
+              "seek_load_us": 3443518,
+              "seek_total_us": 3443542,
+              "load_bps": 304507,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 187,
+              "seek_us": 2,
+              "seek_load_us": 3543327,
+              "seek_total_us": 3543347,
+              "load_bps": 295929,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 165,
+              "seek_us": 2,
+              "seek_load_us": 3456342,
+              "seek_total_us": 3456359,
+              "load_bps": 303377,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 200,
+              "seek_us": 3,
+              "seek_load_us": 3493010,
+              "seek_total_us": 3493039,
+              "load_bps": 300192,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 194,
+              "seek_us": 3,
+              "seek_load_us": 3497291,
+              "seek_total_us": 3497312,
+              "load_bps": 299825,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 90162,
+              "seek_us": 2,
+              "seek_load_us": 3557788,
+              "seek_total_us": 3557802,
+              "load_bps": 294726,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 65,
+              "vfs_offset_match": true,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 199,
+              "seek_us": 2,
+              "seek_load_us": 3662013,
+              "seek_total_us": 3662034,
+              "load_bps": 286338,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 164,
+              "seek_us": 2,
+              "seek_load_us": 3713833,
+              "seek_total_us": 3713852,
+              "load_bps": 282343,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 53057,
+              "seek_us": 3,
+              "seek_load_us": 3565782,
+              "seek_total_us": 3565805,
+              "load_bps": 294066,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 65,
+              "vfs_offset_match": true,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 191,
+              "seek_us": 2,
+              "seek_load_us": 3976281,
+              "seek_total_us": 3976301,
+              "load_bps": 263707,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 660,
+              "seek_us": 5,
+              "seek_load_us": 3486988,
+              "seek_total_us": 3487012,
+              "load_bps": 300711,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 194,
+              "seek_us": 2,
+              "seek_load_us": 3521474,
+              "seek_total_us": 3521492,
+              "load_bps": 297766,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 495,
+              "seek_us": 5,
+              "seek_load_us": 3524297,
+              "seek_total_us": 3524321,
+              "load_bps": 297527,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 252,
+              "seek_us": 2,
+              "seek_load_us": 3542251,
+              "seek_total_us": 3542268,
+              "load_bps": 296019,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 296,
+              "seek_us": 2,
+              "seek_load_us": 2432520,
+              "seek_total_us": 2432541,
+              "load_bps": 431065,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 226,
+              "seek_us": 3,
+              "seek_load_us": 390987,
+              "seek_total_us": 391005,
+              "load_bps": 2681864,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            }
+          ],
+          "retained_wait_bypass_events": 18,
+          "retained_wait_bypass_p50_ms": 3001.0
+        },
+        {
+          "round": 2,
+          "pass": true,
+          "summary": {
+            "count": 20,
+            "p50_ms": 3573.424,
+            "p95_ms": 3658.032,
+            "max_ms": 4012.63
+          },
+          "status": "complete",
+          "errors": [],
+          "samples": [
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 128,
+              "seek_us": 3,
+              "seek_load_us": 4012630,
+              "seek_total_us": 4012649,
+              "load_bps": 261318,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 126,
+              "seek_us": 2,
+              "seek_load_us": 3452915,
+              "seek_total_us": 3452935,
+              "load_bps": 303678,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 262,
+              "seek_us": 2,
+              "seek_load_us": 3541242,
+              "seek_total_us": 3541271,
+              "load_bps": 296104,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 276,
+              "seek_us": 2,
+              "seek_load_us": 3609987,
+              "seek_total_us": 3610008,
+              "load_bps": 290465,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 425,
+              "seek_us": 2,
+              "seek_load_us": 3633955,
+              "seek_total_us": 3633977,
+              "load_bps": 288549,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 219,
+              "seek_us": 2,
+              "seek_load_us": 3522010,
+              "seek_total_us": 3522063,
+              "load_bps": 297720,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 49757,
+              "seek_us": 4,
+              "seek_load_us": 3542271,
+              "seek_total_us": 3542304,
+              "load_bps": 296017,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 65,
+              "vfs_offset_match": true,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 142,
+              "seek_us": 2,
+              "seek_load_us": 3438723,
+              "seek_total_us": 3438756,
+              "load_bps": 304931,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 203,
+              "seek_us": 3,
+              "seek_load_us": 3630709,
+              "seek_total_us": 3630731,
+              "load_bps": 288807,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 206,
+              "seek_us": 3,
+              "seek_load_us": 3648088,
+              "seek_total_us": 3648108,
+              "load_bps": 287431,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 196,
+              "seek_us": 5,
+              "seek_load_us": 3646130,
+              "seek_total_us": 3646162,
+              "load_bps": 287585,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 351,
+              "seek_us": 7,
+              "seek_load_us": 3658032,
+              "seek_total_us": 3658074,
+              "load_bps": 286650,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 1410,
+              "seek_us": 8,
+              "seek_load_us": 3626480,
+              "seek_total_us": 3626539,
+              "load_bps": 289144,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 188,
+              "seek_us": 2,
+              "seek_load_us": 3604577,
+              "seek_total_us": 3604594,
+              "load_bps": 290901,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 452,
+              "seek_us": 6,
+              "seek_load_us": 3531975,
+              "seek_total_us": 3532015,
+              "load_bps": 296880,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 242,
+              "seek_us": 2,
+              "seek_load_us": 3456383,
+              "seek_total_us": 3456402,
+              "load_bps": 303373,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 358,
+              "seek_us": 6,
+              "seek_load_us": 3497361,
+              "seek_total_us": 3497386,
+              "load_bps": 299819,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 186,
+              "seek_us": 4,
+              "seek_load_us": 3619052,
+              "seek_total_us": 3619129,
+              "load_bps": 289737,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 61120,
+              "seek_us": 3,
+              "seek_load_us": 2749820,
+              "seek_total_us": 2749843,
+              "load_bps": 381325,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 65,
+              "vfs_offset_match": true,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 211,
+              "seek_us": 4,
+              "seek_load_us": 446972,
+              "seek_total_us": 446995,
+              "load_bps": 2345949,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            }
+          ],
+          "retained_wait_bypass_events": 18,
+          "retained_wait_bypass_p50_ms": 3001.0
+        },
+        {
+          "round": 3,
+          "pass": true,
+          "summary": {
+            "count": 20,
+            "p50_ms": 3854.447,
+            "p95_ms": 4196.272,
+            "max_ms": 6519.259
+          },
+          "status": "complete",
+          "errors": [],
+          "samples": [
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 1,
+              "offset": 20262005,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 111,
+              "seek_us": 2,
+              "seek_load_us": 6519259,
+              "seek_total_us": 6519541,
+              "load_bps": 160842,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 2,
+              "offset": 40524010,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 342,
+              "seek_us": 5,
+              "seek_load_us": 4196272,
+              "seek_total_us": 4196297,
+              "load_bps": 249882,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 3,
+              "offset": 60786016,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 385,
+              "seek_us": 7,
+              "seek_load_us": 3988003,
+              "seek_total_us": 3988041,
+              "load_bps": 262932,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 4,
+              "offset": 81048021,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 414,
+              "seek_us": 6,
+              "seek_load_us": 4094426,
+              "seek_total_us": 4094500,
+              "load_bps": 256098,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 5,
+              "offset": 101310026,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 546,
+              "seek_us": 7,
+              "seek_load_us": 3907610,
+              "seek_total_us": 3907653,
+              "load_bps": 268341,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 6,
+              "offset": 121572032,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 415,
+              "seek_us": 3,
+              "seek_load_us": 3859947,
+              "seek_total_us": 3859971,
+              "load_bps": 271655,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 7,
+              "offset": 141834037,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 535,
+              "seek_us": 5,
+              "seek_load_us": 3883651,
+              "seek_total_us": 3883693,
+              "load_bps": 269997,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 8,
+              "offset": 162096042,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 286,
+              "seek_us": 8,
+              "seek_load_us": 3871332,
+              "seek_total_us": 3871377,
+              "load_bps": 270856,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 9,
+              "offset": 182358048,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 245,
+              "seek_us": 4,
+              "seek_load_us": 2926352,
+              "seek_total_us": 2926379,
+              "load_bps": 358321,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 10,
+              "offset": 202620053,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 145,
+              "seek_us": 2,
+              "seek_load_us": 3755883,
+              "seek_total_us": 3755903,
+              "load_bps": 279182,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 11,
+              "offset": 222882058,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 283,
+              "seek_us": 5,
+              "seek_load_us": 3875631,
+              "seek_total_us": 3875665,
+              "load_bps": 270556,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 12,
+              "offset": 243144064,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 277,
+              "seek_us": 2,
+              "seek_load_us": 3821775,
+              "seek_total_us": 3821797,
+              "load_bps": 274368,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 13,
+              "offset": 263406069,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 205,
+              "seek_us": 2,
+              "seek_load_us": 3759437,
+              "seek_total_us": 3759460,
+              "load_bps": 278918,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 14,
+              "offset": 283668074,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 177,
+              "seek_us": 2,
+              "seek_load_us": 3839579,
+              "seek_total_us": 3839599,
+              "load_bps": 273096,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 15,
+              "offset": 303930080,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 268,
+              "seek_us": 5,
+              "seek_load_us": 3848947,
+              "seek_total_us": 3848970,
+              "load_bps": 272431,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 16,
+              "offset": 324192085,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 413,
+              "seek_us": 8,
+              "seek_load_us": 3812109,
+              "seek_total_us": 3812146,
+              "load_bps": 275064,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 17,
+              "offset": 344454090,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 214,
+              "seek_us": 2,
+              "seek_load_us": 3771013,
+              "seek_total_us": 3771032,
+              "load_bps": 278062,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 18,
+              "offset": 364716096,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 360,
+              "seek_us": 3,
+              "seek_load_us": 3871533,
+              "seek_total_us": 3871562,
+              "load_bps": 270842,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 19,
+              "offset": 384978101,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 233,
+              "seek_us": 3,
+              "seek_load_us": 3784099,
+              "seek_total_us": 3784122,
+              "load_bps": 277100,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            },
+            {
+              "mode": "cold",
+              "scenario": "isolated",
+              "sample": 1,
+              "index": 20,
+              "offset": 405240107,
+              "bytes": 1048576,
+              "chunks_touched": 3,
+              "open_us": 399,
+              "seek_us": 7,
+              "seek_load_us": 581718,
+              "seek_total_us": 581861,
+              "load_bps": 1802549,
+              "cache_hits": 0,
+              "cache_misses": 0,
+              "cache_hit_rate": 0,
+              "vfs_read_calls": 64,
+              "vfs_offset_match": false,
+              "traversed_vfs": true,
+              "os_cache_control": "f_nocache",
+              "overlap": false
+            }
+          ],
+          "retained_wait_bypass_events": 18,
+          "retained_wait_bypass_p50_ms": 3001.0
+        }
+      ],
+      "pooled_complete_rounds_only": {
+        "count": 60,
+        "p50_ms": 3614.519,
+        "p95_ms": 4042.652,
+        "max_ms": 6519.259
+      }
+    }
+  },
+  "limitations": [
+    "Uncached direct reads bypass all VFS read cache and OS file cache but do not exercise interactive stage planning. Old releases use Driver.Read because they have no ReadSource API.",
+    "Mounted cold runs clear Qrypt caches before every seek and use macOS F_NOCACHE; in-memory hot chunks can still coalesce reads inside a sample. They are not zero-cache reads.",
+    "The before-policy control is rebuilt with identical probe range-traversal repair via a local Go overlay; policy matches the pre-tuning implementation.",
+    "The first uncached candidate round was run before the remaining interleaved rounds; its startup outlier is retained. Direct/mounted first runs briefly overlapped; no speedup claim is made from that overlap.",
+    "Bounded diagnostic rings omit early events, so retained request/byte/concurrency counts cannot establish total amplification.",
+    "These durations measure reading a full 1MiB, not player decode/render or network first-byte latency.",
+    "No continuous download or three-backend acceptance was completed."
+  ],
+  "effective_policy_diagnostics": {
+    "before": {
+      "recommended": {
+        "interactive": {
+          "initial": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          },
+          "seek": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          },
+          "sequential": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "fixed",
+              "window_bytes": 8388608,
+              "depth": 4
+            }
+          }
+        },
+        "bulk": {
+          "window_bytes": 8388608,
+          "streams": 3,
+          "split": {
+            "part_bytes": 8388608,
+            "min_parallel_bytes": 4194304
+          }
+        },
+        "max_in_flight": 4,
+        "fetch": {
+          "idle_ns": 30000000000,
+          "total_ns": 90000000000
+        }
+      },
+      "limits": {
+        "max_in_flight": 32,
+        "parallel": true
+      },
+      "effective": {
+        "interactive": {
+          "initial": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          },
+          "seek": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          },
+          "sequential": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "fixed",
+              "window_bytes": 8388608,
+              "depth": 4
+            }
+          }
+        },
+        "bulk": {
+          "window_bytes": 8388608,
+          "streams": 3,
+          "split": {
+            "part_bytes": 8388608,
+            "min_parallel_bytes": 4194304
+          }
+        },
+        "max_in_flight": 4,
+        "fetch": {
+          "idle_ns": 30000000000,
+          "total_ns": 90000000000
+        }
+      },
+      "origins": {
+        "bulk.min_parallel_size": "driver",
+        "bulk.part_size": "driver",
+        "bulk.streams": "driver",
+        "bulk.window": "driver",
+        "fetch": "driver",
+        "interactive": "driver",
+        "max_in_flight": "driver"
+      }
+    },
+    "candidate": {
+      "recommended": {
+        "interactive": {
+          "initial": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          },
+          "seek": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          },
+          "sequential": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          }
+        },
+        "bulk": {
+          "window_bytes": 4194304,
+          "streams": 3,
+          "split": {
+            "part_bytes": 8388608,
+            "min_parallel_bytes": 4194304
+          }
+        },
+        "max_in_flight": 7,
+        "fetch": {
+          "idle_ns": 30000000000,
+          "total_ns": 90000000000
+        }
+      },
+      "limits": {
+        "max_in_flight": 32,
+        "parallel": true
+      },
+      "effective": {
+        "interactive": {
+          "initial": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          },
+          "seek": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          },
+          "sequential": {
+            "window": {
+              "mode": "caller"
+            },
+            "prefetch": {
+              "mode": "adaptive"
+            }
+          }
+        },
+        "bulk": {
+          "window_bytes": 4194304,
+          "streams": 3,
+          "split": {
+            "part_bytes": 8388608,
+            "min_parallel_bytes": 4194304
+          }
+        },
+        "max_in_flight": 7,
+        "fetch": {
+          "idle_ns": 30000000000,
+          "total_ns": 90000000000
+        }
+      },
+      "origins": {
+        "bulk.min_parallel_size": "driver",
+        "bulk.part_size": "driver",
+        "bulk.streams": "driver",
+        "bulk.window": "driver",
+        "fetch": "driver",
+        "interactive": "driver",
+        "max_in_flight": "driver"
+      }
+    }
+  },
+  "commands": {
+    "direct": [
+      "/private/tmp/qrypt-quark-sample/uncached-<version>",
+      "--config",
+      "/private/tmp/qrypt-quark-sample/config.toml",
+      "--out",
+      "/private/tmp/qrypt-quark-sample/direct-<version>-<round>.json"
+    ],
+    "mounted": [
+      "qrypt",
+      "probe",
+      "test",
+      "read",
+      "--config",
+      "<isolated-private-config>",
+      "--mount",
+      "quark-encrypt",
+      "--mount-point",
+      "<isolated-mount>",
+      "--path",
+      "/影视飓风样片.mp4",
+      "--pattern",
+      "seek",
+      "--seek-count",
+      "20",
+      "--seek-size",
+      "1m",
+      "--cache-mode",
+      "cold",
+      "--samples",
+      "1"
+    ]
+  },
+  "verification": {
+    "targeted_tests": "passed: Quark, drive, vfs/read, contracttest",
+    "race": "passed: Quark, contracttest",
+    "full_local_ci": {
+      "command": "scripts/ci/check-all.sh",
+      "go": "1.27.4",
+      "exit_code": 0,
+      "pass_marker": "== local CI check passed =="
+    },
+    "openspec_strict": "passed",
+    "diff_check": "passed",
+    "test_mounts_cleaned": true,
+    "committed": false
+  }
+}

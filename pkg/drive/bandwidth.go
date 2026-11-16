@@ -147,7 +147,13 @@ func (r *limitedReadCloser) Read(p []byte) (int, error) {
 	}
 	n, err := r.rc.Read(p)
 	if n > 0 {
-		if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
+		// A token wait is local work, not provider silence: report it so the
+		// fetch idle bound does not abandon a body the provider already served.
+		watch := localWaitWatchFrom(r.ctx)
+		watch.enter()
+		waitErr := r.limiter.WaitN(r.ctx, n)
+		watch.exit()
+		if waitErr != nil {
 			return 0, waitErr
 		}
 	}

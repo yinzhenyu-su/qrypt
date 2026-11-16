@@ -289,45 +289,40 @@ parallelize one `Read` internally declare
 `drive.CapabilityInternalParallelRead` instead; the VFS then keeps that read
 single-stream so the two layers do not multiply concurrency.
 
-A driver provides recommendations; a mount may optionally override the bulk
-stream count and window:
+A driver declares a complete recommendation through `drive.ReadPolicyProvider`.
+Start from `drive.DefaultReadPolicy()` and replace only measured values:
 
 ```go
-type ReadProfiler interface {
-	ReadProfile() drive.ReadProfile
-}
-
-type ParallelReadLimiter interface {
-	MaxParallelReads() int
+func (d *Driver) ReadPolicy() drive.ReadPolicy {
+    p := drive.DefaultReadPolicy()
+    p.Bulk.Streams = 1
+    return p
 }
 ```
 
-`drive.ReadProfile` carries bulk stream count, window sizes, prefetch depth,
-and the parallel threshold. `drive.ReadProfileOf(driver)` merges the driver's
-profile with the capability gates and clamps it to the optional limiter. The
-same profile is used by the VFS and by `drive.ReadParallel`, which the direct
-copy and share-fetch fallback paths use. Drivers without the capability stay
-single-stream; do not declare it unless range semantics are guaranteed.
+`ReadLimitProvider` optionally supplies immutable hard limits. Mount overrides
+cannot exceed them. Capability gates still prohibit shared parallel ranges for
+drivers without `parallel_range` or with `internal_parallel_read`.
 
-A driver's profile is the default. A mount may opt into a different bulk
-profile without a rebuild:
+The mount creates one `drive.ReadSource`, resolving recommendations, sparse
+`ReadOverride`, and hard limits once. VFS, copy, share-fetch fallback, and remote
+edit staging use that source. Pass the existing source to another consumer;
+constructing one per request would create independent budgets. Crypt forwards
+recommendations and limits; the source charges the outer read once.
 
-```toml
-[[mounts]]
-name = "koofr"
-type = "koofr"
+`Interactive.Initial`, `Seek`, and `Sequential` are complete access policies.
+A window is `caller` or `fixed`; prefetch is `disabled`, `fixed`, or `adaptive`.
+Adaptive values are evaluated before execution, including at each stream refill.
+All external sizes are bytes. `Bulk.Split.PartBytes` is a strict ceiling; zero
+means even division of one bounded window. More tasks than workers are allowed.
+The split threshold uses the current window, independently of total file size.
+See [read policy execution](read-policy.md) for ownership and failure semantics.
 
-[mounts.read_profile]
-streams = 4
-window_chunks = 16
-```
-
-`streams` maps to `BulkStreams`; `window_chunks` maps to `BulkWindowChunks`
-(512 KiB units). Omitted/zero fields inherit the driver profile. The override
-applies only to `bulk` reads; `interactive` and `probe` stay single-stream, and
-`streams > 1` is rejected for drivers without `parallel_range` or with
-`internal_parallel_read`. See `read-profile-config` in OpenSpec for the full
-rules.
+A mount can override bulk values under `[mounts.read.bulk]` using `streams`,
+`window`, `part_size`, and `min_parallel_size`. Omission inherits. `part_size =
+"auto"` selects even division; only `min_parallel_size = "0"` accepts zero.
+`[mounts.read] max_in_flight` bounds foreground, prefetch, and copies together.
+The old Go profile/resolver/direct-read APIs and TOML table have been removed.
 
 Parallel sub-range reads carry a strict-range context
 (`drive.StrictRangeFromContext`). If the provider answers 200 with the whole

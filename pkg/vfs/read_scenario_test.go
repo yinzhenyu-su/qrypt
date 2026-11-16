@@ -3,6 +3,7 @@ package vfs_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,9 +19,28 @@ import (
 func TestVFSDeleteCancelsPrefetchButNotForeground(t *testing.T) {
 	driver := drive.NewFakeDriver()
 	content := make([]byte, 4*vfsread.ChunkSize)
-	gate := make(chan struct{})
-	driver.ReadBehavior.BodyGate = gate
-	if err := driver.Seed(map[string]string{"file.bin": string(content)}); err != nil {
+	// Gate only the two Ranges under test: the lookahead window of the first
+	// file and the foreground Range of the second file.
+	prefetchGate := make(chan struct{})
+	foregroundGate := make(chan struct{})
+	var prefetchOnce, foregroundOnce sync.Once
+	releasePrefetch := func() { prefetchOnce.Do(func() { close(prefetchGate) }) }
+	releaseForeground := func() { foregroundOnce.Do(func() { close(foregroundGate) }) }
+	defer releasePrefetch()
+	defer releaseForeground()
+	driver.ReadBehavior.GateFunc = func(offset, _ int64) <-chan struct{} {
+		switch offset {
+		case vfsread.ChunkSize:
+			return prefetchGate
+		case 2 * vfsread.ChunkSize:
+			return foregroundGate
+		}
+		return nil
+	}
+	if err := driver.Seed(map[string]string{
+		"file.bin":  string(content),
+		"other.bin": string(content),
+	}); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
 
@@ -33,29 +53,38 @@ func TestVFSDeleteCancelsPrefetchButNotForeground(t *testing.T) {
 	fs.Start(ctx)
 	defer stopVFS(t, fs)
 
+	// The first file's read completes and leaves its speculative window gated.
+	if rc, err := fs.Read(ctx, "/file.bin", 0, 1); err != nil {
+		t.Fatalf("Read: %v", err)
+	} else {
+		_ = rc.Close()
+	}
+	waitForReadCalls(t, driver, 2)
+
+	// An unrelated file's foreground read is held by its own gate.
 	readCtx, readCancel := context.WithCancel(ctx)
 	defer readCancel()
 	readDone := make(chan error, 1)
 	go func() {
-		rc, err := fs.Read(readCtx, "/file.bin", vfsread.ChunkSize+100, 1)
+		rc, err := fs.Read(readCtx, "/other.bin", 2*vfsread.ChunkSize, 1)
 		if rc != nil {
 			rc.Close()
 		}
 		readDone <- err
 	}()
+	waitForReadCalls(t, driver, 3)
 
-	waitForReadCalls(t, driver, 2)
 	if err := fs.Remove(context.Background(), "/file.bin"); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
-	// The prefetch body is canceled by invalidation; the foreground read is
-	// still blocked on its own context.
+	// The prefetch body is canceled by invalidation; the unrelated foreground
+	// read stays blocked on its own context.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		canceled := false
 		for _, call := range driver.ReadCalls() {
-			if call.Err != nil && errors.Is(call.Err, context.Canceled) {
+			if call.Offset == vfsread.ChunkSize && call.Err != nil && errors.Is(call.Err, context.Canceled) {
 				canceled = true
 				break
 			}

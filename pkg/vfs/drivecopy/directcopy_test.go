@@ -10,6 +10,7 @@ import (
 	"io"
 	pathpkg "path"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -21,15 +22,28 @@ var _ diagnostics.DriverCopySource = (*vfs.Namespace)(nil)
 type directCopyTestSource struct {
 	drivers  []diagnostics.NamedDriver
 	resolves map[string]diagnostics.DebugResolveInfo
-	profile  *drive.ReadProfile
+	sources  *sync.Map
 }
 
-func (s directCopyTestSource) ReadProfileForPath(string) *drive.ReadProfile {
-	if s.profile == nil {
-		return nil
+func (s directCopyTestSource) ReadSourceForPath(path string) *drive.ReadSource {
+	name := firstPathSegment(path)
+	if source, ok := s.sources.Load(name); ok {
+		return source.(*drive.ReadSource)
 	}
-	profile := *s.profile
-	return &profile
+	for _, d := range s.drivers {
+		if d.Name == name {
+			source, err := drive.NewReadSource(d.Driver, nil)
+			if err != nil {
+				panic(err)
+			}
+			actual, loaded := s.sources.LoadOrStore(name, source)
+			if loaded {
+				_ = source.Close()
+			}
+			return actual.(*drive.ReadSource)
+		}
+	}
+	return nil
 }
 
 func (s directCopyTestSource) Drivers() []diagnostics.NamedDriver {
@@ -243,7 +257,7 @@ func TestRunDirectDriverCopyDirReportsEntries(t *testing.T) {
 			},
 		},
 	}
-	source := directCopyTestSource{
+	source := directCopyTestSource{sources: &sync.Map{},
 		drivers: []diagnostics.NamedDriver{
 			{Name: "src", Driver: srcDriver},
 			{Name: "dst", Driver: dstDriver},
@@ -301,7 +315,7 @@ func TestRunDirectDriverCopyDirReportsFailedEntry(t *testing.T) {
 			"/src/parent": {{Name: "missing.txt", Size: 7}},
 		},
 	}
-	source := directCopyTestSource{
+	source := directCopyTestSource{sources: &sync.Map{},
 		drivers: []diagnostics.NamedDriver{
 			{Name: "src", Driver: srcDriver},
 			{Name: "dst", Driver: dstDriver},
@@ -386,7 +400,7 @@ func directCopyFixture(srcDriver, dstDriver *directCopyTestDriver, existingDest 
 	if existingDest != nil {
 		resolves["/dst/copied.bin"] = *existingDest
 	}
-	return directCopyTestSource{
+	return directCopyTestSource{sources: &sync.Map{},
 		drivers: []diagnostics.NamedDriver{
 			{Name: "src", Driver: srcDriver},
 			{Name: "dst", Driver: dstDriver},
@@ -469,25 +483,12 @@ func hasCopyStep(result *DriverCopyResult, phase string) bool {
 	return false
 }
 
-func TestEffectiveReadProfileUsesSourceOverride(t *testing.T) {
-	driver := parallelProfileCopyDriver{directCopyTestDriver: &directCopyTestDriver{
-		driverName: "src-test",
-		files:      map[string][]byte{},
-	}}
-	source := directCopyTestSource{profile: &drive.ReadProfile{BulkStreams: 4, BulkWindowChunks: 16}}
-	got := effectiveReadProfile(source, "/src/file", driver)
-	if got.BulkStreams != 4 || got.BulkWindowChunks != 16 {
-		t.Fatalf("profile = %+v, want 4/16", got)
-	}
-}
-
-func TestEffectiveReadProfileWithoutProviderUsesDriver(t *testing.T) {
-	driver := parallelProfileCopyDriver{directCopyTestDriver: &directCopyTestDriver{
-		driverName: "src-test",
-		files:      map[string][]byte{},
-	}}
-	got := effectiveReadProfile(directCopyTestSource{}, "/src/file", driver)
-	if got.BulkStreams != drive.DefaultBulkStreams {
-		t.Fatalf("streams = %d, want driver default %d", got.BulkStreams, drive.DefaultBulkStreams)
+func TestCopyUsesMountedSourceIdentity(t *testing.T) {
+	d := parallelProfileCopyDriver{directCopyTestDriver: &directCopyTestDriver{driverName: "src-test", files: map[string][]byte{}}}
+	s := directCopyTestSource{sources: &sync.Map{}, drivers: []diagnostics.NamedDriver{{Name: "src", Driver: d}}}
+	first := s.ReadSourceForPath("/src/one")
+	defer first.Close()
+	if first != s.ReadSourceForPath("/src/renamed") {
+		t.Fatal("copy rediscovered a source per path")
 	}
 }

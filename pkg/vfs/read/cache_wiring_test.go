@@ -50,7 +50,7 @@ func (c *recordingCache) PutChunkAsync(_ string, _, _ int64, _ []byte, access re
 // run, otherwise the cache cannot tell the stream's own read-ahead from reuse.
 func TestStoreChunkCarriesTheRunFromContext(t *testing.T) {
 	cache := &recordingCache{}
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(cache)})
+	reader := newTestReader(testReaderDeps{Host: stubHost{}, State: NewState(cache)})
 	backend := reader.newBackend()
 
 	ctx := WithCacheAccess(context.Background(), readcache.Access{Run: 42})
@@ -67,7 +67,7 @@ func TestStoreChunkCarriesTheRunFromContext(t *testing.T) {
 // TestReadChunkRangeCarriesTheRunFromContext pins the read half.
 func TestReadChunkRangeCarriesTheRunFromContext(t *testing.T) {
 	runtime := &fakeReadRuntime{cacheKey: "cache-key"}
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(nil)})
+	reader := newTestReader(testReaderDeps{Host: stubHost{}, State: NewState(nil)})
 
 	ctx := WithCacheAccess(context.Background(), readcache.Access{Run: 7})
 	if _, err := reader.readChunkRangeWithRuntime(ctx, drive.Entry{ID: "id", Size: ChunkSize}, 0, 0, 16, 1, runtime); err != nil {
@@ -89,7 +89,7 @@ func TestReadChunkRangeCarriesTheRunFromContext(t *testing.T) {
 // which is the pre-existing behaviour rather than a wrong answer.
 func TestStoreChunkWithoutCacheAccessAdmitsAsUnknownRun(t *testing.T) {
 	cache := &recordingCache{}
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(cache)})
+	reader := newTestReader(testReaderDeps{Host: stubHost{}, State: NewState(cache)})
 
 	reader.newBackend().StoreChunk(context.Background(), "cache-key", drive.Entry{ID: "id"}, 0, []byte("chunk"))
 

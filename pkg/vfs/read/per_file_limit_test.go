@@ -16,7 +16,7 @@ func TestPerFileLimitStableAcrossWindows(t *testing.T) {
 
 	var releases []func()
 	for i := 0; i < 4; i++ {
-		release, err := state.acquireParallel(ctx, "file", 4)
+		release, err := state.scheduler.AcquireRange(ctx, "file", 4, PriorityNormal)
 		if err != nil {
 			t.Fatalf("acquire %d: %v", i, err)
 		}
@@ -30,7 +30,7 @@ func TestPerFileLimitStableAcrossWindows(t *testing.T) {
 
 	blockedCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
-	release, err := state.acquireParallel(blockedCtx, "file", 2)
+	release, err := state.scheduler.AcquireRange(blockedCtx, "file", 2, PriorityNormal)
 	if err == nil {
 		release()
 		t.Fatal("a second window with a different limit acquired past the per-file cap")

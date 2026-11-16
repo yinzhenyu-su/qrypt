@@ -61,7 +61,7 @@ type MountedReadTestResult struct {
 // size for the duration of one measurement. The VFS implements it behind
 // probe test read; production paths never set an override.
 type readPlanOverrider interface {
-	SetReadPlanOverride(mount string, maxStreams, windowChunks int, idle, total time.Duration) error
+	SetReadPlanOverride(mount string, maxStreams int, windowBytes int64, idle, total time.Duration) error
 	ClearReadPlanOverride()
 }
 
@@ -215,8 +215,8 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	if req.Streams < 0 || req.Streams > 32 {
 		optionErr = fmt.Errorf("read test streams override must be between 1 and 32")
 	}
-	if req.WindowChunks < 0 || req.WindowChunks > 64 {
-		optionErr = fmt.Errorf("read test window chunks override must be between 1 and 64")
+	if req.WindowBytes < 0 || req.WindowBytes > 32<<20 {
+		optionErr = fmt.Errorf("read test window override must be between 1 byte and 32 MiB")
 	}
 	seekSize := ParseXferSize(req.SeekSize)
 	if req.SeekSize != "" && (seekSize < 1 || seekSize > 16<<20) {
@@ -341,8 +341,11 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	if existingPath != "" {
 		retryCommand = fmt.Sprintf("qrypt probe test read --mount %s --mount-point PATH --path %s --block-size %d --cache-mode %s --pattern %s --samples %d --seek-count %d --seek-size %d --seek-scenario %s --seek-warmup-chunks %d --seek-overlap-timeout %s", mount, existingPath, blockSize, cacheMode, readPattern, samples, seekCount, seekSize, seekScenario, seekWarmup, seekOverlapTimeout)
 	}
-	if req.Streams > 0 || req.WindowChunks > 0 {
-		retryCommand += fmt.Sprintf(" --streams %d --window-chunks %d", req.Streams, req.WindowChunks)
+	if req.Streams > 0 {
+		retryCommand += fmt.Sprintf(" --streams %d", req.Streams)
+	}
+	if req.WindowBytes > 0 {
+		retryCommand += fmt.Sprintf(" --window %d", req.WindowBytes)
 	}
 	if req.Offset != "" || req.Length != "" {
 		retryCommand += fmt.Sprintf(" --offset %s --length %s", req.Offset, req.Length)
@@ -385,20 +388,20 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		err = optionErr
 	}
 	step := fsStep("validate")
-	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "offset": startOffset, "length": rangeLength, "streams": req.Streams, "window_chunks": req.WindowChunks, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String(), "fetch_idle_timeout": fetchIdleTimeout.String(), "fetch_total_timeout": fetchTotalTimeout.String()}
+	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "offset": startOffset, "length": rangeLength, "streams": req.Streams, "window_bytes": req.WindowBytes, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String(), "fetch_idle_timeout": fetchIdleTimeout.String(), "fetch_total_timeout": fetchTotalTimeout.String()}
 	step.finish(time.Now(), err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
 		return result
 	}
 
-	if req.Streams > 0 || req.WindowChunks > 0 || fetchIdleTimeout > 0 || fetchTotalTimeout > 0 {
+	if req.Streams > 0 || req.WindowBytes > 0 || fetchIdleTimeout > 0 || fetchTotalTimeout > 0 {
 		overrider, ok := fs.(readPlanOverrider)
 		if !ok {
 			result.Steps = append(result.Steps, failedFSStep("read_override", fmt.Errorf("this filesystem does not support read plan overrides")))
 			return result
 		}
-		if err := overrider.SetReadPlanOverride(mount, req.Streams, req.WindowChunks, fetchIdleTimeout, fetchTotalTimeout); err != nil {
+		if err := overrider.SetReadPlanOverride(mount, req.Streams, req.WindowBytes, fetchIdleTimeout, fetchTotalTimeout); err != nil {
 			result.Steps = append(result.Steps, failedFSStep("read_override", err))
 			return result
 		}
@@ -837,10 +840,10 @@ func runMountedSeekProbe(ctx context.Context, fs vfs.FileSystem, mount, mountedP
 	events, truncated := mountedReadEvents(fs, mount, virtualPath, started)
 	measurement.VFSReadCalls = mountedVFSReadCalls(events)
 	measurement.VFSOffsetMatch = mountedVFSReadAtOffset(events, offset)
-	// The exact-offset event can be missing when the window read starts before
-	// the requested offset or when the bounded event ring evicts it. Cache
-	// lookups are monotonic counters and prove the read went through the VFS.
-	measurement.TraversedVFS = measurement.VFSOffsetMatch || measurement.CacheHits+measurement.CacheMisses > 0
+	// A mounted read can be split into small FUSE requests. The bounded ring
+	// may evict the request covering the first byte, so accept a retained read
+	// overlapping the measured range. Warmup ranges are disjoint from it.
+	measurement.TraversedVFS = mountedVFSReadInRange(events, offset, measurement.Bytes) || measurement.CacheHits+measurement.CacheMisses > 0
 	if err == nil && !measurement.TraversedVFS {
 		err = fmt.Errorf("mounted seek read did not traverse qrypt; verify --mount-point")
 	}
@@ -1421,6 +1424,25 @@ func mountedVFSReadAtOffset(events []drive.MetricEvent, offset int64) bool {
 	for _, event := range events {
 		if event.Kind == "vfs_read" && event.Phase == "read" && event.Bytes > 0 &&
 			event.Offset <= offset && offset-event.Offset < event.Bytes {
+			return true
+		}
+	}
+	return false
+}
+
+func mountedVFSReadInRange(events []drive.MetricEvent, offset, size int64) bool {
+	if offset < 0 || size <= 0 {
+		return false
+	}
+	for _, event := range events {
+		if event.Kind != "vfs_read" || event.Phase != "read" || event.Offset < 0 || event.Bytes <= 0 {
+			continue
+		}
+		if event.Offset <= offset {
+			if offset-event.Offset < event.Bytes {
+				return true
+			}
+		} else if event.Offset-offset < size {
 			return true
 		}
 	}

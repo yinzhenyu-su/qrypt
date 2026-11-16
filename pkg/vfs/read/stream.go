@@ -95,15 +95,18 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 		return nil, err
 	}
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
-	streamCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path})
+	lifetime, cancel := context.WithCancel(ctx)
+	scope := &ReadScope{ctx: lifetime, cancel: cancel}
+	streamCtx := drive.WithDebugOperation(context.WithValue(lifetime, streamScopeKey{}, scope), drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path})
 	streamCtx = r.withFetchTimeouts(streamCtx)
 	streamCtx, timing := withFetchTiming(streamCtx)
-	plan := r.resolvePlan(ctx, entry, PrefetchChunks)
+	plan := r.resolvePlan(ctx, PrefetchChunks, StageInitial)
 	streamCtx = WithReadPlan(streamCtx, plan)
 	streamCtx = WithGrantedStreams(streamCtx, 1)
 	streamCtx = applyIntentPriority(streamCtx, plan)
 	return &chunkedStreamReader{
 		ctx:          streamCtx,
+		scope:        scope,
 		reader:       r,
 		path:         path,
 		entry:        entry,
@@ -133,10 +136,7 @@ type chunkedStreamReader struct {
 	// summary event on Close so a timed-out refill is visible as a failure.
 	readErr error
 
-	prefetchMu     sync.Mutex
-	prefetching    bool
-	prefetchDone   chan struct{}
-	prefetchCancel context.CancelFunc
+	scope *ReadScope
 
 	// Debug bookkeeping finalized on Close.
 	opID         string
@@ -166,7 +166,9 @@ func (r *chunkedStreamReader) ReadContext(ctx context.Context, p []byte) (int, e
 			return 0, io.EOF
 		}
 	}
+	deliverStarted := util.Now()
 	n := copy(p, r.buf[r.bufPos:])
+	r.timing.recordDeliver(util.Now().Sub(deliverStarted))
 	r.bufPos += n
 	r.pos += int64(n)
 	r.bytesRead += int64(n)
@@ -177,7 +179,6 @@ func (r *chunkedStreamReader) ReadContext(ctx context.Context, p []byte) (int, e
 // stream (the file has no more data), matching readRange's stop condition.
 func (r *chunkedStreamReader) refill(ctx context.Context) error {
 	ctx = ensureFetchTiming(ctx, r.timing)
-	r.waitPrefetch()
 	r.buf = nil
 	r.bufPos = 0
 	if r.entry.Size > 0 && r.pos >= r.entry.Size {
@@ -189,10 +190,16 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 	if r.entry.Size > 0 && r.entry.Size-r.pos < want {
 		want = r.entry.Size - r.pos
 	}
-	windowChunks := PrefetchChunks
-	if plan, ok := readPlanFromContext(ctx); ok && plan.WindowChunks > 0 {
-		windowChunks = plan.WindowChunks
+	stage := StageInitial
+	if r.pos > 0 {
+		stage = StageSequential
 	}
+	plan := r.reader.resolvePlan(r.ctx, PrefetchChunks, stage)
+	ctx = WithReadPlan(ctx, plan)
+	ctx = WithGrantedStreams(ctx, plan.MaxStreams)
+	ctx = applyIntentPriority(ctx, plan)
+	ctx = context.WithValue(ctx, streamScopeKey{}, r.scope)
+	windowChunks := plan.WindowChunks
 	data, err := r.reader.readChunkRange(ctx, r.entry, chunkIndex, start, want, windowChunks)
 	if err != nil {
 		return err
@@ -201,73 +208,12 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 		return nil
 	}
 	r.buf = data
-	r.startPrefetch(windowChunks)
+	if readPrefetchEnabled(r.ctx) {
+		// A ReadStream owns its own scope and never enters the session
+		// controller, so it reports no consumption credit.
+		r.reader.schedulePrefetch(ctx, r.entry, chunkIndex+int64(windowChunks)-1, windowChunks, stage == StageSequential, plan, deliveredRange{})
+	}
 	return nil
-}
-
-// startPrefetch fills the next window into the hot cache while the caller
-// consumes the current one. Depth is fixed at one window so memory stays
-// bounded by the window size.
-func (r *chunkedStreamReader) startPrefetch(windowChunks int) {
-	if !readPrefetchEnabled(r.ctx) {
-		return
-	}
-	if plan, ok := readPlanFromContext(r.ctx); ok && plan.PrefetchDepth == 0 {
-		return
-	}
-	nextPos := r.pos + int64(len(r.buf))
-	if r.entry.Size > 0 && nextPos >= r.entry.Size {
-		return
-	}
-	r.prefetchMu.Lock()
-	if r.prefetching || r.closed {
-		r.prefetchMu.Unlock()
-		return
-	}
-	done := make(chan struct{})
-	prefetchCtx, cancel := context.WithCancel(r.ctx)
-	prefetchCtx = WithPrefetchRead(prefetchCtx)
-	r.prefetching = true
-	r.prefetchDone = done
-	r.prefetchCancel = cancel
-	r.prefetchMu.Unlock()
-
-	go func() {
-		defer func() {
-			cancel()
-			r.prefetchMu.Lock()
-			r.prefetching = false
-			r.prefetchDone = nil
-			r.prefetchCancel = nil
-			r.prefetchMu.Unlock()
-			close(done)
-		}()
-		chunkIndex := nextPos / ChunkSize
-		start := nextPos - chunkIndex*ChunkSize
-		want := ChunkSize - start
-		if r.entry.Size > 0 && r.entry.Size-nextPos < want {
-			want = r.entry.Size - nextPos
-		}
-		_, _ = r.reader.readChunkRange(prefetchCtx, r.entry, chunkIndex, start, want, windowChunks)
-	}()
-}
-
-func (r *chunkedStreamReader) waitPrefetch() {
-	r.prefetchMu.Lock()
-	done := r.prefetchDone
-	r.prefetchMu.Unlock()
-	if done != nil {
-		<-done
-	}
-}
-
-func (r *chunkedStreamReader) cancelPrefetch() {
-	r.prefetchMu.Lock()
-	cancel := r.prefetchCancel
-	r.prefetchMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
 }
 
 func (r *chunkedStreamReader) Close() error {
@@ -275,8 +221,8 @@ func (r *chunkedStreamReader) Close() error {
 		return nil
 	}
 	r.closed = true
-	r.cancelPrefetch()
-	r.waitPrefetch()
+	r.scope.cancel()
+	r.scope.jobs.Wait()
 	r.finish(r.bytesRead, nil)
 	return nil
 }

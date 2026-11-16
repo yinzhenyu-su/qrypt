@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -89,14 +90,19 @@ func (b *trickleTestBody) Close() error {
 	return nil
 }
 
-func fetchTimeoutCtx(t *testing.T, total time.Duration) (context.Context, context.CancelFunc) {
+func fetchTimeoutCtx(t *testing.T, total time.Duration) (context.Context, context.CancelCauseFunc) {
 	t.Helper()
-	return context.WithTimeout(context.Background(), total)
+	parent, cancelDeadline := context.WithTimeoutCause(context.Background(), total, ReadIdleStall)
+	ctx, cancel := context.WithCancelCause(parent)
+	return ctx, func(cause error) {
+		cancel(cause)
+		cancelDeadline()
+	}
 }
 
 func TestReadBodyLimitedAbortsStalledBody(t *testing.T) {
 	ctx, cancel := fetchTimeoutCtx(t, 5*time.Second)
-	defer cancel()
+	defer cancel(nil)
 	body := &stalledTestBody{ctx: ctx}
 	started := time.Now()
 	_, err := ReadBodyLimited(ctx, cancel, body, 1<<20, 50*time.Millisecond)
@@ -118,31 +124,58 @@ func TestReadBodyLimitedAbortsStalledBody(t *testing.T) {
 	}
 }
 
+func TestIdleTimeoutExcludesCompletedLocalWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(WithLocalWaitTracking(context.Background()))
+		defer cancel()
+		watch := localWaitWatchFrom(ctx)
+		reader := newTimeoutBody(ctx, cancel, nil, &stalledTestBody{ctx: ctx}, 40*time.Millisecond)
+		defer reader.Close()
+
+		// Delay the consumer until after the local wait has ended and its
+		// watchdog timer has expired. The provider then gets its full idle
+		// allowance, even though the limiter is no longer actively waiting.
+		watch.enter()
+		time.Sleep(125 * time.Millisecond)
+		watch.exit()
+		started := time.Now()
+		_, err := reader.Read(make([]byte, 1))
+		if !IsFetchTimeout(err) {
+			t.Fatalf("error = %v, want an idle timeout", err)
+		}
+		if elapsed := time.Since(started); elapsed != 40*time.Millisecond {
+			t.Fatalf("provider idle time = %s, want 40ms", elapsed)
+		}
+	})
+}
+
 func TestReadBodyLimitedAllowsSlowProgress(t *testing.T) {
-	ctx, cancel := fetchTimeoutCtx(t, 5*time.Second)
-	defer cancel()
-	body := &pacedTestBody{ctx: ctx, remaining: 8 * 1024, chunk: 1024, interval: 10 * time.Millisecond}
-	data, err := ReadBodyLimited(ctx, cancel, body, 16*1024, 100*time.Millisecond)
-	if err != nil {
-		t.Fatalf("ReadBodyLimited: %v", err)
-	}
-	if len(data) != 8*1024 {
-		t.Fatalf("bytes = %d, want %d", len(data), 8*1024)
-	}
-	if body.closed.Load() != 0 {
-		t.Fatalf("completed body was closed by ReadBodyLimited; the caller owns it")
-	}
-	if err := body.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if body.closed.Load() != 1 {
-		t.Fatalf("body closed %d times, want 1", body.closed.Load())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := fetchTimeoutCtx(t, 5*time.Second)
+		defer cancel(nil)
+		body := &pacedTestBody{ctx: ctx, remaining: 8 * 1024, chunk: 1024, interval: 20 * time.Millisecond}
+		data, err := ReadBodyLimited(ctx, cancel, body, 16*1024, 100*time.Millisecond)
+		if err != nil {
+			t.Fatalf("ReadBodyLimited: %v", err)
+		}
+		if len(data) != 8*1024 {
+			t.Fatalf("bytes = %d, want %d", len(data), 8*1024)
+		}
+		if body.closed.Load() != 0 {
+			t.Fatalf("completed body was closed by ReadBodyLimited; the caller owns it")
+		}
+		if err := body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if body.closed.Load() != 1 {
+			t.Fatalf("body closed %d times, want 1", body.closed.Load())
+		}
+	})
 }
 
 func TestReadBodyLimitedCapsTrickleWithTotalTimeout(t *testing.T) {
 	ctx, cancel := fetchTimeoutCtx(t, 100*time.Millisecond)
-	defer cancel()
+	defer cancel(nil)
 	body := &trickleTestBody{ctx: ctx, interval: 10 * time.Millisecond}
 	started := time.Now()
 	_, err := ReadBodyLimited(ctx, cancel, body, 1<<20, time.Second)
@@ -184,8 +217,8 @@ func (b *failingTestBody) Close() error {
 // error.
 func TestReadBodyLimitedClassifiesBodyReportedDeadline(t *testing.T) {
 	ctx := bodyDeadlineCtx{Context: context.Background()}
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	_, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	body := &failingTestBody{err: context.DeadlineExceeded}
 	_, err := ReadBodyLimited(ctx, cancel, body, 1<<20, time.Second)
 	if !IsFetchTimeout(err) {
@@ -205,7 +238,7 @@ func TestReadBodyLimitedClassifiesBodyReportedDeadline(t *testing.T) {
 
 func TestReadBodyLimitedRejectsOverlongBody(t *testing.T) {
 	ctx, cancel := fetchTimeoutCtx(t, 5*time.Second)
-	defer cancel()
+	defer cancel(nil)
 	body := io.NopCloser(bytes.NewReader(make([]byte, 11)))
 	_, err := ReadBodyLimited(ctx, cancel, body, 10, time.Second)
 	if err == nil || IsFetchTimeout(err) {

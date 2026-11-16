@@ -47,22 +47,16 @@ type client struct {
 	// connection pool instead of only being throttled.
 	downloadRotations  int
 	downloadLastReason string
-	// rateBest is the fastest recent download body rate; a read that sustains
-	// a small fraction of it is treated as a bad edge and reconnected.
-	rateMu         sync.Mutex
-	rateBest       float64
-	rateBestAt     time.Time
-	slowAbortAt    time.Time
-	ossClient      *http.Client
-	cookie         string
-	baseURL        string
-	v2URL          string
-	mu             sync.RWMutex
-	sem            chan struct{}
-	mgmtSem        chan struct{}
-	metaSem        chan struct{}
-	ossSem         chan struct{}
-	onCookieUpdate func(cookie string)
+	ossClient          *http.Client
+	cookie             string
+	baseURL            string
+	v2URL              string
+	mu                 sync.RWMutex
+	sem                chan struct{}
+	mgmtSem            chan struct{}
+	metaSem            chan struct{}
+	ossSem             chan struct{}
+	onCookieUpdate     func(cookie string)
 	// onAuthRetry reloads a newer shared credential after a 401 and reports
 	// whether the request should be retried once.
 	onAuthRetry func() bool
@@ -410,71 +404,6 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		return nil
 	}
 	return fmt.Errorf("max retries exceeded")
-}
-
-// downloadRateWindow is how long an observed best rate stays authoritative.
-// After it expires the floor falls back to downloadRateMinFloor so a
-// provider-wide slow period does not keep rotating connections.
-const downloadRateWindow = 3 * time.Minute
-
-// downloadRateMinFloor is the lowest throughput that still counts as
-// progress. Below it, a read that is merely slow is treated as a bad edge.
-const downloadRateMinFloor = 256 << 10
-
-// downloadRateBestDivisor turns the recent best rate into a floor: a healthy
-// edge is expected to deliver at least one sixteenth of the best observed
-// rate. The divisor is deliberately loose: concurrent direct reads split the
-// same connection, so a per-stream share can legitimately sit far below the
-// single-stream best.
-const downloadRateBestDivisor = 16
-
-// observeDownloadRate records a completed body's throughput.
-func (c *client) observeDownloadRate(bytes int64, elapsed time.Duration) {
-	if bytes <= 0 || elapsed <= 0 {
-		return
-	}
-	rate := float64(bytes) / elapsed.Seconds()
-	now := time.Now()
-	c.rateMu.Lock()
-	if now.Sub(c.rateBestAt) > downloadRateWindow || rate > c.rateBest {
-		c.rateBest = rate
-		c.rateBestAt = now
-	}
-	c.rateMu.Unlock()
-}
-
-// downloadRateFloor returns the minimum acceptable body rate right now.
-func (c *client) downloadRateFloor() int64 {
-	c.rateMu.Lock()
-	defer c.rateMu.Unlock()
-	if c.rateBest <= 0 || time.Since(c.rateBestAt) > downloadRateWindow {
-		return downloadRateMinFloor
-	}
-	floor := int64(c.rateBest / downloadRateBestDivisor)
-	if floor < downloadRateMinFloor {
-		floor = downloadRateMinFloor
-	}
-	return floor
-}
-
-// downloadSlowAbortCooldown bounds how often a slow read may be aborted to
-// reconnect. The retry after one abort either lands on a healthier edge or
-// keeps streaming slowly; repeating the abort would turn a provider-wide slow
-// period into a chain of failed reads.
-const downloadSlowAbortCooldown = time.Minute
-
-// allowSlowAbort reports whether a read may still be aborted for being slow.
-func (c *client) allowSlowAbort() bool {
-	c.rateMu.Lock()
-	defer c.rateMu.Unlock()
-	return c.slowAbortAt.IsZero() || time.Since(c.slowAbortAt) >= downloadSlowAbortCooldown
-}
-
-// noteSlowAbort records that a slow read was aborted to reconnect.
-func (c *client) noteSlowAbort() {
-	c.rateMu.Lock()
-	c.slowAbortAt = time.Now()
-	c.rateMu.Unlock()
 }
 
 // downloadHTTP returns the current download client generation. A failure from

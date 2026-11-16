@@ -127,3 +127,13 @@ Date: 2026-11-13 / 2026-11-14 (Asia/Shanghai)
   single-stream (1-chunk foreground windows, single-stream prefetch windows).
 - The validation was single-sample per region; Quark CDN throughput varies
   substantially over time, so absolute numbers are indicative only.
+
+## 后续修正（2026-11-15，optimize-seek-read-profiles）
+
+本变更引入的自适应吞吐下限看门狗已由
+[`optimize-seek-read-profiles`](../../../changes/optimize-seek-read-profiles/proposal.md)
+移除。真实挂载测量显示：seek 会主动取消预取，低速也可能来自预取竞争或本地限速；
+按“相对历史最佳速率 1/16”判定会把正常取消和持续有进展的低速读判成坏连接，进而惩罚
+CDN 地址 5 分钟、轮换连接池并重放已下载窗口。现在的语义是：只有真实传输错误才降级
+连接，idle/total 边界仍按原样终止长时间无进展的读取。本节保留原始记录，但不再描述
+当前行为。

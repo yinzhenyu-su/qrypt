@@ -19,3 +19,6 @@ draft
 __pycache__/
 *.pyc
 browser-data/
+
+# Local read-performance measurements; keep methods and summaries in Markdown.
+/openspec/changes/unify-read-policy-execution/*.json

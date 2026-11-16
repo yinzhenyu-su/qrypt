@@ -33,14 +33,14 @@ type DebugProcess struct {
 }
 
 type MountSnapshot struct {
-	Identity    MountSnapshotIdentity `json:"identity"`
-	Queues      MountSnapshotQueues   `json:"queues"`
-	Overlay     MountSnapshotOverlay  `json:"overlay"`
-	UploadState MountSnapshotUploads  `json:"upload_state"`
-	Cache       DebugCacheSnapshot    `json:"cache"`
-	Events      MountSnapshotEvents   `json:"events"`
-	Runtime     MountSnapshotRuntime  `json:"runtime"`
-	ReadProfile DebugReadProfile      `json:"read_profile"`
+	Identity    MountSnapshotIdentity    `json:"identity"`
+	Queues      MountSnapshotQueues      `json:"queues"`
+	Overlay     MountSnapshotOverlay     `json:"overlay"`
+	UploadState MountSnapshotUploads     `json:"upload_state"`
+	Cache       DebugCacheSnapshot       `json:"cache"`
+	Events      MountSnapshotEvents      `json:"events"`
+	Runtime     MountSnapshotRuntime     `json:"runtime"`
+	ReadPolicy  drive.ResolvedReadPolicy `json:"read_policy"`
 }
 
 // DebugCacheSnapshot aggregates the readcache snapshot with the upload
@@ -145,21 +145,6 @@ type DebugOverlayOp struct {
 type DebugCopyHidden struct {
 	Dir   string       `json:"dir"`
 	Names []DebugTimer `json:"names"`
-}
-
-// DebugReadProfile is the effective read scheduling profile for a mount.
-// Source is "driver", "mount_override", or "driver_limiter".
-type DebugReadProfile struct {
-	Streams                 int    `json:"streams"`
-	BulkWindowChunks        int    `json:"bulk_window_chunks"`
-	InteractiveWindowChunks int    `json:"interactive_window_chunks"`
-	ProbeWindowChunks       int    `json:"probe_window_chunks"`
-	PrefetchDepth           int    `json:"prefetch_depth"`
-	ParallelThreshold       int64  `json:"parallel_threshold"`
-	Source                  string `json:"source"`
-	Clamped                 bool   `json:"clamped,omitempty"`
-	FetchIdleTimeoutMS      int64  `json:"fetch_idle_timeout_ms"`
-	FetchTotalTimeoutMS     int64  `json:"fetch_total_timeout_ms"`
 }
 
 type DebugStagingReport struct {

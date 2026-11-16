@@ -26,7 +26,7 @@ type DriverTestRequest struct {
 	Offset             string `json:"offset,omitempty"`
 	Length             string `json:"length,omitempty"`
 	Streams            int    `json:"streams,omitempty"`
-	WindowChunks       int    `json:"window_chunks,omitempty"`
+	WindowBytes        int64  `json:"window_bytes,omitempty"`
 	BlockSize          string `json:"block_size,omitempty"`
 	CacheMode          string `json:"cache_mode,omitempty"`
 	ReadPattern        string `json:"read_pattern,omitempty"`

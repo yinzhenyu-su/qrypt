@@ -91,10 +91,15 @@ func TestParallelPolicyMatchesDirectRead(t *testing.T) {
 				ModTime: time.Unix(1700000000, 0),
 			}
 
-			reader := NewReader(ReaderDeps{
-				Host:    &policyHost{driver: driver, entry: entry, cacheKey: "cache"},
-				State:   NewState(nil),
-				Profile: drive.ReadProfileOf(driver),
+			source, err := drive.NewReadSource(driver, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer source.Close()
+			reader := newTestReader(testReaderDeps{
+				Host:   &policyHost{driver: driver, entry: entry, cacheKey: "cache"},
+				State:  NewState(nil),
+				Source: source,
 			})
 			ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentBulk))
 			rc, err := reader.Read(ctx, "/file.bin", 0, int64(len(content)))
@@ -109,7 +114,7 @@ func TestParallelPolicyMatchesDirectRead(t *testing.T) {
 
 			driver.strictCalls.Store(0)
 			driver.plainCalls.Store(0)
-			rc, err = drive.ReadParallel(context.Background(), driver, entry, 0, int64(len(content)))
+			rc, err = source.Read(context.Background(), entry, 0, int64(len(content)))
 			if err != nil {
 				t.Fatalf("direct read: %v", err)
 			}
@@ -122,8 +127,12 @@ func TestParallelPolicyMatchesDirectRead(t *testing.T) {
 			if got := classifyReadPolicy(vfsStrict, vfsPlain); got != tc.want {
 				t.Fatalf("VFS policy = %s (strict=%d plain=%d), want %s", got, vfsStrict, vfsPlain, tc.want)
 			}
-			if got := classifyReadPolicy(directStrict, directPlain); got != tc.want {
-				t.Fatalf("direct policy = %s (strict=%d plain=%d), want %s", got, directStrict, directPlain, tc.want)
+			wantDirect := tc.want
+			if tc.unsupported {
+				wantDirect = "single"
+			}
+			if got := classifyReadPolicy(directStrict, directPlain); got != wantDirect {
+				t.Fatalf("direct policy = %s (strict=%d plain=%d), want %s", got, directStrict, directPlain, wantDirect)
 			}
 		})
 	}
