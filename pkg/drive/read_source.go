@@ -35,15 +35,28 @@ type RangePlan struct {
 	Offset, Size int64
 	Streams      int
 	Split        SplitPolicy
-	Timeouts     FetchTimeouts
-	Priority     readbudget.Priority
-	Speculative  bool
+	// Workers and Part size the window's parts explicitly. Streaming windows
+	// let the read layer, which owns the shape policy, choose them; Workers is
+	// zero for buffered fetches that still use Split.
+	Workers     int
+	Part        int64
+	Timeouts    FetchTimeouts
+	Priority    readbudget.Priority
+	Speculative bool
 }
 
 type readRange struct{ Offset, Size int64 }
 type rangeLayout struct {
 	offset, size, part int64
 	workers            int
+}
+
+func explicitRangeLayout(offset, size int64, workers int, part int64) rangeLayout {
+	workers = max(1, workers)
+	if part <= 0 {
+		part = (size + int64(workers) - 1) / int64(workers)
+	}
+	return rangeLayout{offset: offset, size: size, part: part, workers: min(workers, int((size+part-1)/part))}
 }
 
 func partitionRange(offset, size int64, workers int, split SplitPolicy) rangeLayout {
@@ -394,7 +407,7 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		plan.Timeouts.Total = s.policy.Effective.Fetch.Total
 	}
 	plan.Timeouts.Idle = min(plan.Timeouts.Idle, plan.Timeouts.Total)
-	if plan.Split.PartBytes < 0 || plan.Split.PartBytes > MaxReadWindowBytes || plan.Split.MinParallelBytes < 0 || plan.Split.MinParallelBytes > MaxReadWindowBytes || plan.Streams < 0 || plan.Streams > 32 {
+	if plan.Split.PartBytes < 0 || plan.Split.PartBytes > MaxReadWindowBytes || plan.Split.MinParallelBytes < 0 || plan.Split.MinParallelBytes > MaxReadWindowBytes || plan.Streams < 0 || plan.Streams > 32 || plan.Workers < 0 || plan.Workers > 32 || plan.Part < 0 || plan.Part > MaxReadWindowBytes {
 		return nil, ErrInvalidInput
 	}
 	if plan.Offset < 0 || plan.Size <= 0 || plan.Size > MaxReadWindowBytes || plan.Offset > math.MaxInt64-plan.Size {
@@ -406,11 +419,16 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		}
 		plan.Size = min(plan.Size, e.Size-plan.Offset)
 	}
-	workers := max(1, min(plan.Streams, s.policy.Effective.MaxInFlight))
+	workers := plan.Streams
+	if plan.Workers > 0 {
+		// The read layer chose the part count for this window; keep its choice.
+		workers = plan.Workers
+	}
+	workers = max(1, min(workers, s.policy.Effective.MaxInFlight))
 	if !s.policy.Limits.Parallel || s.scheduler.IsNonParallel(e.ID) {
 		workers = 1
 	}
-	if plan.Size < plan.Split.MinParallelBytes {
+	if plan.Workers <= 0 && plan.Size < plan.Split.MinParallelBytes {
 		workers = 1
 	}
 	// Compute tasks lazily. Even a one-byte ceiling creates at most workers
@@ -418,9 +436,13 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 	if e.Size <= 0 {
 		workers = 1
 		plan.Split.PartBytes = 0
+		plan.Part = 0
 	}
 	workers = s.scheduler.GrantStreams(workers, e.ID, s.policy.Effective.MaxInFlight)
 	layout := partitionRange(plan.Offset, plan.Size, workers, plan.Split)
+	if plan.Workers > 0 {
+		layout = explicitRangeLayout(plan.Offset, plan.Size, workers, plan.Part)
+	}
 	workers = layout.workers
 	count := layout.count()
 	strict := workers > 1

@@ -860,7 +860,7 @@ func (r *Reader) runWindowFetch(ctx context.Context, entry drive.Entry, startInd
 	r.state.endWindowLoad(load)
 }
 
-// windowFetch is// windowFetch is the prepared shape of one foreground window fetch: the plan
+// windowFetch is the prepared shape of one foreground window fetch: the plan
 // resolved for this read, the stream/split choice, and the trace that carries
 // the range diagnostics. The buffered and progressive fetch paths share it so
 // the adaptive split sees the same inputs either way.
@@ -871,6 +871,7 @@ type windowFetch struct {
 	windowBytes int64
 	streams     int
 	split       drive.SplitPolicy
+	partBytes   int64
 	adaptive    bool
 	started     time.Time
 	trace       *drive.ReadTrace
@@ -887,6 +888,7 @@ func (r *Reader) prepareWindowFetch(ctx context.Context, entry drive.Entry, star
 	split := plan.Split
 	prefetch := isPrefetchRead(ctx)
 	adaptive := foregroundSplitEnabled() && !prefetch && plan.streaming() && windowBytes >= ChunkSize
+	partBytes := int64(0)
 	if adaptive {
 		if parts := r.foregroundSplitRequested(entry.ID); parts > 1 {
 			streams = parts
@@ -894,15 +896,15 @@ func (r *Reader) prepareWindowFetch(ctx context.Context, entry drive.Entry, star
 				streams = limit
 			}
 			if streams > 1 {
-				split = drive.SplitPolicy{MinParallelBytes: ChunkSize, PartBytes: foregroundSplitPartBytes}
+				partBytes = foregroundSplitPartBytes
 			}
 		}
 	}
-	return windowFetch{ctx: ctx, entry: entry, plan: plan, windowBytes: windowBytes, streams: streams, split: split, adaptive: adaptive, started: time.Now(), trace: trace}
+	return windowFetch{ctx: ctx, entry: entry, plan: plan, windowBytes: windowBytes, streams: streams, split: split, partBytes: partBytes, adaptive: adaptive, started: time.Now(), trace: trace}
 }
 
 func (w windowFetch) rangePlan(startIndex int64) drive.RangePlan {
-	return drive.RangePlan{
+	plan := drive.RangePlan{
 		Offset:      startIndex * ChunkSize,
 		Size:        w.windowBytes,
 		Streams:     w.streams,
@@ -911,6 +913,14 @@ func (w windowFetch) rangePlan(startIndex int64) drive.RangePlan {
 		Priority:    priority(w.ctx),
 		Speculative: isPrefetchRead(w.ctx),
 	}
+	if w.partBytes > 0 && w.streams > 1 {
+		// The read layer owns the streaming window's part layout; the drive
+		// source only executes the ranges it is given.
+		plan.Workers = w.streams
+		plan.Part = w.partBytes
+		plan.Split = drive.SplitPolicy{}
+	}
+	return plan
 }
 
 // observeWindowFetch feeds the window's transfer rate into the adaptive
@@ -926,7 +936,7 @@ func (r *Reader) observeWindowFetch(w windowFetch, snapshot map[string]any, deli
 	}
 	if w.streams > 1 {
 		snapshot["fg_split_streams"] = w.streams
-		snapshot["fg_split_part_bytes"] = w.split.PartBytes
+		snapshot["fg_split_part_bytes"] = w.partBytes
 	}
 	r.observeForegroundRate(w.entry.ID, delivered, elapsed)
 	snapshot["fg_split_mode"] = r.foregroundSplitting(w.entry.ID)

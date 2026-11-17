@@ -151,3 +151,47 @@ func (b *gatedBody) Read(p []byte) (int, error) {
 }
 
 func (b *gatedBody) Close() error { return nil }
+
+// TestFetchStreamHonorsExplicitPartLayout: a streaming window's part layout is
+// decided by the read layer, so an explicit Workers/Part choice must win over
+// the legacy split policy (here a policy that would otherwise force one stream).
+func TestFetchStreamHonorsExplicitPartLayout(t *testing.T) {
+	data := bytes.Repeat([]byte("p"), 2*ReadChunkSize)
+	driver := seededDriver(t, data, CapabilityParallelRange)
+	budget := 4
+	source, err := NewReadSource(driver, &ReadOverride{MaxInFlight: &budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+
+	entry := Entry{ID: "0/file.bin", Size: int64(len(data))}
+	trace := &ReadTrace{}
+	plan := RangePlan{
+		Offset:   0,
+		Size:     int64(len(data)),
+		Streams:  1,
+		Workers:  2,
+		Part:     128 << 10,
+		Split:    SplitPolicy{MinParallelBytes: MaxReadWindowBytes},
+		Timeouts: DefaultReadPolicy().Fetch,
+		Priority: readbudget.PriorityNormal,
+	}
+	var offsets []int64
+	err = source.FetchStream(WithReadTrace(context.Background(), trace), entry, plan, func(offset int64, block []byte) {
+		offsets = append(offsets, offset)
+		if len(block) != ReadChunkSize {
+			t.Errorf("block at %d has %d bytes, want %d", offset, len(block), ReadChunkSize)
+		}
+	})
+	if err != nil {
+		t.Fatalf("FetchStream: %v", err)
+	}
+	if len(offsets) != 2 || offsets[0] != 0 || offsets[1] != ReadChunkSize {
+		t.Fatalf("published offsets = %v, want [0 %d]", offsets, ReadChunkSize)
+	}
+	stats := trace.Snapshot()
+	if stats["granted_streams"] != 2 || stats["range_tasks"] != 8 || stats["part_bytes"] != int64(128<<10) {
+		t.Fatalf("executed layout = %+v, want 2 streams / 8 tasks / part 131072", stats)
+	}
+}
