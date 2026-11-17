@@ -302,8 +302,8 @@ func TestPendingReadCancellationAndSourceClose(t *testing.T) {
 	}
 	job.Close()
 	job.Close()
-	if _, err := job.Run(context.Background()); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("closed job ran: %v", err)
+	if _, err := job.Context(context.Background()); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("closed job handed out a context: %v", err)
 	}
 	gate := make(chan struct{})
 	d.ReadBehavior.GateFunc = func(int64, int64) <-chan struct{} { return gate }
@@ -311,8 +311,14 @@ func TestPendingReadCancellationAndSourceClose(t *testing.T) {
 	if job == nil {
 		t.Fatal("unstarted job retained admission")
 	}
+	jobCtx, err := job.Context(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
-	go func() { _, err := job.Run(context.Background()); done <- err }()
+	go func() {
+		done <- s.FetchStream(jobCtx, e, p, func(int64, []byte) {})
+	}()
 	waitForReadActive(t, d.FakeDriver, 1)
 	job.Close()
 	select {
@@ -333,7 +339,7 @@ func TestPendingReadCancellationAndSourceClose(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := job.Run(context.Background()); err == nil {
+	if _, closeErr := job.Context(context.Background()); closeErr == nil {
 		t.Fatal("source close left pending work runnable")
 	}
 	if s.scheduler.PerFileInUse(e.ID) != 0 {

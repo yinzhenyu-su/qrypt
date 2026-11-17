@@ -1385,6 +1385,7 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 			close(load.done)
 			r.state.releasePrefetch()
 			cancel()
+			job.Close()
 		}()
 		// Speculative range admission is atomic and never waits for capacity.
 		prefetchCtx = drive.WithReadTrace(prefetchCtx, trace)
@@ -1392,7 +1393,11 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 		// The window is executed through the same streaming FetchStream path
 		// the foreground single-stream window uses; the job's admission is
 		// reused by the Range inside it, so no second permit is taken.
-		prefetchCtx = job.SpeculativeContext(prefetchCtx)
+		var ctxErr error
+		if prefetchCtx, ctxErr = job.Context(prefetchCtx); ctxErr != nil {
+			load.err = ctxErr
+			return
+		}
 		backend := r.newBackend()
 		load.data = make(map[int64][]byte, len(load.chunks))
 		load.err = r.source.FetchStream(prefetchCtx, entry, drive.RangePlan{

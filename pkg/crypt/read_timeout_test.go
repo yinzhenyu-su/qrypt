@@ -131,8 +131,12 @@ func TestProgressivePrefetchKeepsAuthenticationBoundary(t *testing.T) {
 		t.Fatal("admission failed")
 	}
 	defer job.Close()
+	ctx, ctxErr := job.Context(context.Background())
+	if ctxErr != nil {
+		t.Fatal(ctxErr)
+	}
 	var got []byte
-	err = job.RunChunks(context.Background(), func(_ int64, b []byte) { got = append(got, b...) })
+	err = source.FetchStream(ctx, drive.Entry{ID: "file", Size: int64(len(plain))}, drive.RangePlan{Size: int64(len(plain))}, func(_ int64, b []byte) { got = append(got, b...) })
 	if err == nil {
 		t.Fatal("authentication failure accepted")
 	}

@@ -67,7 +67,7 @@ func (t *ReadTrace) bodyProgress(n int, offset, received int64, started time.Tim
 
 // BodyProgress returns the furthest received plaintext offset and the time it
 // advanced. Replayed bytes count as traffic but do not renew progress. It is a
-// contiguous frontier only for single-stream windows (including RunChunks);
+// contiguous frontier only for single-stream windows (including FetchStream);
 // parallel windows may contain holes and must not use it to decide readiness.
 // Progress never substitutes for validated block delivery.
 func (t *ReadTrace) BodyProgress() (end int64, advanced time.Time) {

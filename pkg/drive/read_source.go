@@ -171,7 +171,7 @@ func (s *ReadSource) OpenRange(ctx context.Context, e Entry, offset, size int64,
 	trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace)
 	var release func()
 	var err error
-	if job, ok := ctx.Value(pendingReadKey{}).(*PendingRead); ok && job.source == s && job.entry.ID == e.ID {
+	if job, ok := ctx.Value(pendingReadKey{}).(*PendingRead); ok && job.source == s && job.entry.ID == e.ID && job.active() {
 		release = func() {}
 	} else if speculative {
 		var ok bool
@@ -295,11 +295,12 @@ func (b *sourceReadBody) Close() error {
 func (b *sourceReadBody) closeBody() { b.bodyOnce.Do(func() { b.closeErr = b.ReadCloser.Close() }) }
 
 // PendingRead reserves complete speculative admission without opening a
-// network request. Run consumes it once; Close also releases an unstarted job.
+// network request. Context hands the reservation to the read layer, which
+// executes the window through FetchStream or its own part workers; Close
+// releases it and cancels any work running under it.
 type PendingRead struct {
 	source          *ReadSource
 	entry           Entry
-	plan            RangePlan
 	release         func()
 	once            sync.Once
 	mu              sync.Mutex
@@ -321,87 +322,54 @@ func (s *ReadSource) TryFetch(e Entry, plan RangePlan) *PendingRead {
 	if !ok {
 		return nil
 	}
-	// Speculative work always uses one admitted stream and no split policy:
-	// its purpose is to have bytes ready, not to compete with the foreground
-	// for the provider's parallelism. Foreground windows are the only place a
-	// fan-out observes the caller's throughput and window shape.
-	plan.Streams = 1
-	plan.Workers = 1
-	plan.Part = 0
-	plan.Speculative = true
-	job := &PendingRead{source: s, entry: e, plan: plan, release: release}
+	job := &PendingRead{source: s, entry: e, release: release}
 	if s.pending == nil {
 		s.pending = map[*PendingRead]struct{}{}
 	}
 	s.pending[job] = struct{}{}
 	return job
 }
-func (p *PendingRead) Run(ctx context.Context) ([]byte, error) {
-	return p.run(ctx)
-}
 
-// RunChunks consumes an aligned speculative window in ReadChunkSize blocks.
-// emit owns each immutable block and is called synchronously, in offset order.
-// A later error applies only to the unconsumed tail; completed blocks remain
-// valid. Retries request only the unpublished suffix. The last block is emitted
-// only after response length and Close validation. Unknown-size objects retain
-// whole-window validation. Run and RunChunks together may be called only once.
-func (p *PendingRead) RunChunks(ctx context.Context, emit func(int64, []byte)) error {
-	if emit == nil || p.plan.Offset%ReadChunkSize != 0 {
-		return ErrInvalidInput
-	}
-	ctx, cancel, err := p.begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { cancel(); p.finish() }()
-	return p.source.FetchStream(ctx, p.entry, p.plan, emit)
-}
-
-// SpeculativeContext returns a context carrying the admission this job already
-// holds, so Range requests executed on its behalf reuse that permit instead of
-// acquiring another one. The job must stay open until those requests finish.
-func (p *PendingRead) SpeculativeContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, pendingReadKey{}, p)
-}
-
-// begin claims the job for one consumer, returning a context that carries the
-// job's admission so inner Range requests do not acquire another permit.
-func (p *PendingRead) begin(ctx context.Context) (context.Context, context.CancelFunc, error) {
+// Context returns a context carrying the admission this job already holds, so
+// Range requests executed with it reuse that permit instead of acquiring
+// another one. The job must stay open until those requests finish; Close
+// cancels them and releases the reservation. A job can serve one consumer
+// only.
+func (p *PendingRead) Context(ctx context.Context) (context.Context, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed || p.started {
-		p.mu.Unlock()
-		return nil, nil, ErrInvalidInput
+		return nil, ErrInvalidInput
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	p.started = true
 	p.cancel = cancel
-	p.mu.Unlock()
-	return p.SpeculativeContext(ctx), cancel, nil
+	return context.WithValue(ctx, pendingReadKey{}, p), nil
 }
 
-func (p *PendingRead) run(ctx context.Context) ([]byte, error) {
-	ctx, cancel, err := p.begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { cancel(); p.finish() }()
-	return p.source.Fetch(ctx, p.entry, p.plan)
+// active reports whether the job still holds its reservation.
+func (p *PendingRead) active() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.closed
 }
+
 func (p *PendingRead) finish() {
 	p.once.Do(func() { p.release(); p.source.mu.Lock(); delete(p.source.pending, p); p.source.mu.Unlock() })
 }
 func (p *PendingRead) Close() error {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
 	p.closed = true
-	started, cancel := p.started, p.cancel
+	cancel := p.cancel
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	if !started {
-		p.finish()
-	}
+	p.finish()
 	return nil
 }
 

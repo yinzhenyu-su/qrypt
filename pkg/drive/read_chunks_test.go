@@ -41,10 +41,15 @@ func TestPendingReadDeliversPrefixBeforeTailWithOnePermit(t *testing.T) {
 	if job == nil {
 		t.Fatal("admission failed")
 	}
-	defer job.Close()
+	jobCtx, ctxErr := job.Context(ctx)
+	if ctxErr != nil {
+		t.Fatal(ctxErr)
+	}
 	chunks := make(chan []byte, 3)
 	done := make(chan error, 1)
-	go func() { done <- job.RunChunks(ctx, func(_ int64, b []byte) { chunks <- b }) }()
+	go func() {
+		done <- s.FetchStream(jobCtx, e, RangePlan{Size: int64(len(data))}, func(_ int64, b []byte) { chunks <- b })
+	}()
 	select {
 	case b := <-chunks:
 		if !bytes.Equal(b, data[:ReadChunkSize]) {
@@ -63,6 +68,9 @@ func TestPendingReadDeliversPrefixBeforeTailWithOnePermit(t *testing.T) {
 	}
 	close(release)
 	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := job.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if s.scheduler.PerFileInUse(e.ID) != 0 {
@@ -194,8 +202,12 @@ func TestPendingReadUnknownSizeRemainsBuffered(t *testing.T) {
 		t.Fatal("admission failed")
 	}
 	defer job.Close()
+	ctx, ctxErr := job.Context(context.Background())
+	if ctxErr != nil {
+		t.Fatal(ctxErr)
+	}
 	var got []byte
-	err := job.RunChunks(context.Background(), func(off int64, b []byte) {
+	err := s.FetchStream(ctx, Entry{ID: "0/file.bin"}, RangePlan{Size: int64(len(data)) + 100}, func(off int64, b []byte) {
 		if off != int64(len(got)) {
 			t.Errorf("unexpected offset=%d", off)
 		}
