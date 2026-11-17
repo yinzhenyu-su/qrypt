@@ -119,8 +119,8 @@ func setSlowStreak(t *testing.T, windows int) {
 
 // TestAdaptiveForegroundSplit pins the adaptive switch: a slow foreground
 // window flips the object into the split mode for the following windows, a
-// fast one keeps a single stream, and QRYPT_FG_SPLIT unset disables the
-// feature entirely.
+// fast one keeps a single stream, and QRYPT_FG_SPLIT=0 disables the feature
+// for a run (it is on by default).
 func TestAdaptiveForegroundSplit(t *testing.T) {
 	content := make([]byte, 4<<20)
 	for i := range content {
@@ -168,34 +168,73 @@ func TestAdaptiveForegroundSplit(t *testing.T) {
 		}
 	})
 
-	t.Run("one slow window is not enough", func(t *testing.T) {
+	t.Run("one slow window arms the next one", func(t *testing.T) {
 		t.Setenv("QRYPT_FG_SPLIT", "1")
 		setSplitThresholds(t, 1<<40, 1<<40)
 		reader, drv := newFGSplitTestReader(t, content)
-		readChunkAt(t, reader, 0) // no sample: single
-		readChunkAt(t, reader, 1) // one slow sample: still single
+		readChunkAt(t, reader, 0) // no sample yet: single stream
 		calls := drv.snapshot()
 		if n := callsInWindow(calls, 0, 1); n != 1 {
 			t.Fatalf("first window calls = %d, want 1", n)
 		}
-		if n := callsInWindow(calls, 1, 1); n != 1 {
-			t.Fatalf("second window calls = %d, want 1 until the slow streak reaches the threshold", n)
-		}
-		readChunkAt(t, reader, 2) // second slow sample arms the split for the next window
-		readChunkAt(t, reader, 3)
-		if n := callsInWindow(drv.snapshot(), 3, 1); n < 2 {
-			t.Fatalf("fourth window calls = %d, want the window split after two slow samples", n)
+		// The first slow sample arms the split, so the next window is fetched
+		// over several ranges instead of stalling playback for a whole window.
+		readChunkAt(t, reader, 1)
+		if n := callsInWindow(drv.snapshot(), 1, 1); n < 2 {
+			t.Fatalf("second window calls = %d, want the window split after one slow sample", n)
 		}
 	})
 
-	t.Run("switch off keeps one stream", func(t *testing.T) {
-		t.Setenv("QRYPT_FG_SPLIT", "")
+	t.Run("QRYPT_FG_SPLIT=0 keeps one stream", func(t *testing.T) {
+		t.Setenv("QRYPT_FG_SPLIT", "0")
 		setSplitThresholds(t, 1<<40, 1<<40)
 		reader, drv := newFGSplitTestReader(t, content)
 		readChunkAt(t, reader, 0)
 		readChunkAt(t, reader, 1)
+		readChunkAt(t, reader, 2)
 		if n := callsInWindow(drv.snapshot(), 1, 1); n != 1 {
-			t.Fatalf("split ran while QRYPT_FG_SPLIT was unset: calls = %d", n)
+			t.Fatalf("split ran while QRYPT_FG_SPLIT=0: calls = %d", n)
 		}
 	})
+}
+
+func setThrottleMemory(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := fgSplitThrottleMemory
+	fgSplitThrottleMemory = d
+	t.Cleanup(func() { fgSplitThrottleMemory = old })
+}
+
+// TestAdaptiveForegroundSplitThrottleMemory pins the cross-object hedge: after
+// any object measured a slow window, the next object that has no sample yet
+// starts split instead of paying a cold-start single-stream window.
+func TestAdaptiveForegroundSplitThrottleMemory(t *testing.T) {
+	t.Setenv("QRYPT_FG_SPLIT", "1")
+	setSplitThresholds(t, 1<<40, 1<<40) // any measured rate counts as slow
+	setSlowStreak(t, 1)
+	setThrottleMemory(t, time.Minute)
+
+	content := make([]byte, 4<<20)
+	reader, _ := newFGSplitTestReader(t, content)
+	if got := reader.foregroundSplitRequested("other.bin"); got != 0 {
+		t.Fatalf("unknown object split before any slow sample: %d", got)
+	}
+	readChunkAt(t, reader, 0) // one slow sample on this object
+	if got := reader.foregroundSplitRequested("other.bin"); got != foregroundSplitStreams {
+		t.Fatalf("new object split = %d, want %d after a recent slow sample", got, foregroundSplitStreams)
+	}
+	// An object that already has a fast sample is not hedged.
+	reader.fgMu.Lock()
+	reader.fgSplit["fast.bin"] = &fgSplitState{rate: 5 << 20}
+	reader.fgMu.Unlock()
+	if got := reader.foregroundSplitRequested("fast.bin"); got != 0 {
+		t.Fatalf("fast object split = %d, want 0", got)
+	}
+	// The memory expires: an old slow timestamp no longer hedges new objects.
+	reader.fgMu.Lock()
+	reader.fgLastSlow = time.Now().Add(-2 * time.Minute)
+	reader.fgMu.Unlock()
+	if got := reader.foregroundSplitRequested("later.bin"); got != 0 {
+		t.Fatalf("expired memory still split: %d", got)
+	}
 }
