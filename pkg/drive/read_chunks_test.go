@@ -185,12 +185,12 @@ func TestProgressiveRangeDoesNotPublishIncompleteTailAfterRetryLimit(t *testing.
 	var offsets []int64
 	var got []byte
 	delivery := &rangeDelivery{emit: func(_ int64, b []byte) { got = append(got, b...) }}
-	_, extra, err := fetchRange(context.Background(), Entry{Size: int64(len(data))}, 0, int64(len(data)), FetchTimeouts{Idle: time.Second, Total: time.Second}, func(_ context.Context, _ Entry, off, size int64) (io.ReadCloser, error) {
+	_, stats, err := fetchRange(context.Background(), Entry{Size: int64(len(data))}, 0, int64(len(data)), FetchTimeouts{Idle: time.Second, Total: time.Second}, func(_ context.Context, _ Entry, off, size int64) (io.ReadCloser, error) {
 		offsets = append(offsets, off)
 		return io.NopCloser(bytes.NewReader(data[off : int64(len(data))-1])), nil
 	}, delivery)
-	if !errors.Is(err, io.ErrUnexpectedEOF) || len(offsets) != 2 || offsets[1] != ReadChunkSize || len(got) != ReadChunkSize || extra["fetch_attempts"] != 2 {
-		t.Fatalf("unbounded retry or unsafe tail: offsets=%v bytes=%d extra=%v err=%v", offsets, len(got), extra, err)
+	if !errors.Is(err, io.ErrUnexpectedEOF) || len(offsets) != 2 || offsets[1] != ReadChunkSize || len(got) != ReadChunkSize || stats.attempts != 2 {
+		t.Fatalf("unbounded retry or unsafe tail: offsets=%v bytes=%d stats=%+v err=%v", offsets, len(got), stats, err)
 	}
 }
 

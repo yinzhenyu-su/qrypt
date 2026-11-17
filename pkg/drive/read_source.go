@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -202,7 +201,7 @@ func (s *ReadSource) OpenRange(ctx context.Context, e Entry, offset, size int64,
 			endRange()
 		})
 	}
-	trace.record(map[string]any{"queue_us": time.Since(queueStarted).Microseconds()})
+	trace.recordQueue(time.Since(queueStarted))
 	if err := readCtx.Err(); err != nil {
 		release()
 		finish()
@@ -210,7 +209,7 @@ func (s *ReadSource) OpenRange(ctx context.Context, e Entry, offset, size int64,
 	}
 	openStarted := time.Now()
 	body, err := s.driver.Read(readCtx, e, offset, size)
-	trace.record(map[string]any{"open_us": time.Since(openStarted).Microseconds()})
+	trace.recordOpen(time.Since(openStarted))
 	if err != nil {
 		release()
 		finish()
@@ -432,7 +431,7 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 			return nil, nil
 		}
 		if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-			trace.record(map[string]any{"granted_streams": 1, "range_tasks": 1, "window_bytes": plan.Size, "part_bytes": plan.Size})
+			trace.recordPlan(1, 1, plan.Size, plan.Size)
 		}
 		_, err := s.fetchPart(ctx, e, readRange{plan.Offset, plan.Size}, plan, delivery)
 		if err != nil {
@@ -463,7 +462,7 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 	count := layout.count()
 	strict := workers > 1
 	if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-		trace.record(map[string]any{"granted_streams": workers, "range_tasks": int(count), "window_bytes": plan.Size, "part_bytes": layout.part})
+		trace.recordPlan(workers, count, plan.Size, layout.part)
 	}
 	data := make([]byte, int(plan.Size))
 	var next atomic.Int64
@@ -522,18 +521,11 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 
 func (s *ReadSource) fetchPart(ctx context.Context, e Entry, span readRange, p RangePlan, delivery *rangeDelivery) ([]byte, error) {
 	bounds := p.Timeouts
-	data, extra, err := fetchRange(ctx, e, span.Offset, span.Size, bounds, func(ctx context.Context, e Entry, offset, size int64) (io.ReadCloser, error) {
+	data, stats, err := fetchRange(ctx, e, span.Offset, span.Size, bounds, func(ctx context.Context, e Entry, offset, size int64) (io.ReadCloser, error) {
 		return s.OpenRange(ctx, e, offset, size, p.Priority, p.Speculative)
 	}, delivery)
 	if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-		meta := make(map[string]any)
-		for k, v := range extra {
-			if strings.HasPrefix(k, "fetch_") {
-				meta[k] = v
-			}
-		}
-
-		trace.record(meta)
+		trace.recordFetch(stats)
 	}
 	return data, err
 }
@@ -608,7 +600,7 @@ func (r *sourceStream) Read(p []byte) (int, error) {
 	deliverStarted := time.Now()
 	n := copy(p, r.buf)
 	if trace, _ := r.ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-		trace.record(map[string]any{"deliver_us": time.Since(deliverStarted).Microseconds()})
+		trace.recordDeliver(time.Since(deliverStarted))
 	}
 	r.buf = r.buf[n:]
 	r.offset += int64(n)

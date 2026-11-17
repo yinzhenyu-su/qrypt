@@ -110,7 +110,10 @@ their scheduler admission through executor completion, so admitted and active
 counts can briefly differ. The executor exposes an optional `ReadTrace` sink;
 VFS installs the diagnostic adapter. A caller without a sink still contributes
 to the source count but emits no pair, so missing pairs leave its timeline
-incomplete.
+incomplete. The trace accumulates typed counters (queue/open/body/wait/close
+timings, byte and progress frontiers, executed window shape, retry and failure
+facts); the diagnostic key map is rendered only in `Snapshot`, so execution
+code never keys a map to report what it did.
 
 Debug-only `prefetch_plan` snapshots report the consumed `cursor_chunk`, the
 exclusive `horizon_end_chunk` and the contiguous memory-resident
