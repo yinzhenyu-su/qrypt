@@ -45,7 +45,10 @@ background for later reads; merging or joining the window later is unaffected.
 The final block waits for EOF, response length and successful Close. Encryption
 authenticates its own blocks before returning plaintext. An incomplete block is
 never published; already published prefix blocks remain valid if a later block
-fails. Idle/truncation retries resume
+fails. A split foreground window is partitioned by the read layer itself: it
+chooses the worker count and part size, hands each part to `ReadSource.FetchPart`
+as a single admitted Range, and reassembles the parts' blocks in order, so part
+scheduling and cancellation stay in one place. Idle/truncation retries resume
 at the first unpublished block, under the original total deadline and retry
 limits, without replaying delivered bytes. Unknown-size objects retain buffered
 whole-window validation. Closing a running job cancels it; admission is released

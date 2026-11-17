@@ -3,6 +3,7 @@ package drive
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 
@@ -181,4 +182,19 @@ func (c *chunkStream) publishLocked(index int64) {
 	end := start + int64(c.want[index])
 	c.delivery.publish(c.data[start:end:end])
 	c.next++
+}
+
+// FetchPart executes one part of a window with the same strict-range, timeout,
+// retry and truncated-body boundary a window fetch uses for its parts, handing
+// each complete ReadChunkSize block to emit in offset order. Admission happens
+// per Range inside OpenRange, so a read-layer worker pool bounds concurrency by
+// its own worker count.
+func (s *ReadSource) FetchPart(ctx context.Context, e Entry, offset, size int64, plan RangePlan, emit func(offset int64, block []byte)) error {
+	if emit == nil || e.ID == "" || offset < 0 || size <= 0 || offset > math.MaxInt64-size {
+		return ErrInvalidInput
+	}
+	plan.Offset, plan.Size = offset, size
+	delivery := &rangeDelivery{next: offset, emit: emit}
+	_, err := s.fetchPart(ctx, e, readRange{offset, size}, plan, delivery)
+	return err
 }

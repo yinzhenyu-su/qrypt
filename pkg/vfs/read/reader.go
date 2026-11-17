@@ -963,17 +963,24 @@ func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startI
 func (r *Reader) streamChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, load *windowLoad) (map[string]any, error) {
 	w := r.prepareWindowFetch(ctx, entry, startIndex, endIndex)
 	backend := r.newBackend()
-	delivered := 0
-	err := r.source.FetchStream(w.ctx, entry, w.rangePlan(startIndex), func(offset int64, block []byte) {
-		index := offset / ChunkSize
-		backend.StoreChunk(w.ctx, backend.CacheKey(entry), entry, index, block)
-		load.data[index] = block
-		load.publish(index, block)
-		delivered += len(block)
-	})
+	delivered := int64(0)
+	var err error
+	if w.streams > 1 && w.partBytes > 0 && w.rangePlan(startIndex).Offset%ChunkSize == 0 {
+		// A split foreground window is scheduled by the read layer: it owns the
+		// worker count and part layout instead of delegating the whole window.
+		delivered, err = r.streamWindowParts(w.ctx, entry, w, startIndex, load, backend)
+	} else {
+		err = r.source.FetchStream(w.ctx, entry, w.rangePlan(startIndex), func(offset int64, block []byte) {
+			index := offset / ChunkSize
+			backend.StoreChunk(w.ctx, backend.CacheKey(entry), entry, index, block)
+			load.data[index] = block
+			load.publish(index, block)
+			delivered += int64(len(block))
+		})
+	}
 	snapshot := w.trace.Snapshot()
 	if err == nil {
-		r.observeWindowFetch(w, snapshot, int64(delivered), time.Since(w.started))
+		r.observeWindowFetch(w, snapshot, delivered, time.Since(w.started))
 	}
 	return snapshot, err
 }
