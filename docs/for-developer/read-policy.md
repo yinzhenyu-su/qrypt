@@ -54,7 +54,10 @@ scheduling and cancellation stay in one place. Bulk downloads and `ReadStream`
 windows go through the same scheduler: the read layer translates the driver's
 bulk split policy into an explicit worker count and part size
 (`drive.WindowPartLayout`), so `RangePlan` carries only offset, size, workers and
-part and the source never interprets policy. Idle/truncation retries resume
+part and the source never interprets policy. `ReadStream` has no separate read
+engine: each refill calls the ordinary `Read` for one plan window, marked silent
+so the stream still reports a single read record, and keeps one lifetime scope
+so the lookahead scheduled by a refill survives until the handle is closed. Idle/truncation retries resume
 at the first unpublished block, under the original total deadline and retry
 limits, without replaying delivered bytes. Unknown-size objects retain buffered
 whole-window validation. Closing a running job cancels it; admission is released

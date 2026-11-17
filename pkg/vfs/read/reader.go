@@ -172,7 +172,10 @@ func (r *Reader) pendingUpload(path string) (vfstypes.PendingUpload, bool, error
 // from staging when present and otherwise reading remote chunks through
 // the cache window machinery.
 func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc io.ReadCloser, err error) {
-	defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
+	silent := silentReadEvents(ctx)
+	if !silent {
+		defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
+	}
 	path = CleanVirtualPath(path)
 	started := util.Now()
 	// One counter sample per read attempt, on every exit path. It measures
@@ -183,9 +186,11 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	// eventually drains. Counters deliberately track remote materialization,
 	// which is the part that costs bandwidth and time.
 	var countedBytes int64
-	defer func() { r.counters.RecordRead(countedBytes, util.Now().Sub(started), err) }()
+	if !silent {
+		defer func() { r.counters.RecordRead(countedBytes, util.Now().Sub(started), err) }()
+	}
 	opID := r.observer.DebugNextOpID()
-	activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
+	activeID := r.beginReadOp(silent, vfstypes.DebugActiveOp{
 		OpID:      opID,
 		Kind:      "vfs_read",
 		Phase:     "resolve",
@@ -194,34 +199,34 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		Requested: size,
 	})
 	if pending, ok, err := r.pendingUpload(path); err == nil && ok {
-		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
+		r.updateReadOp(silent, activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "staging_open"
 			op.RemoteID = pending.FID
 		})
 		rc, err := util.OpenRead(pending.LocalPath, offset, size)
 		if err != nil {
-			r.observer.DebugFinishActive(activeID)
-			r.observer.DebugRecordRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
+			r.finishReadOp(silent, activeID)
+			r.recordReadOp(silent, opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
 			return nil, err
 		}
 		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
-			r.observer.DebugFinishActive(activeID)
-			r.observer.DebugRecordRead(opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, nil, readErr)
+			r.finishReadOp(silent, activeID)
+			r.recordReadOp(silent, opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, nil, readErr)
 		}}, nil
 	}
 	entry, err := r.resolve(ctx, path)
 	if err != nil {
-		r.observer.DebugFinishActive(activeID)
-		r.observer.DebugRecordRead(opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, nil, err)
+		r.finishReadOp(silent, activeID)
+		r.recordReadOp(silent, opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
 	if entry.IsDir {
 		err := fmt.Errorf("vfs: %s is a directory", path)
-		r.observer.DebugFinishActive(activeID)
-		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, nil, err)
+		r.finishReadOp(silent, activeID)
+		r.recordReadOp(silent, opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
-	r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
+	r.updateReadOp(silent, activeID, func(op *vfstypes.DebugActiveOp) {
 		op.Phase = "read_range"
 		op.RemoteID = entry.ID
 	})
@@ -290,8 +295,8 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		if ctx.Err() != nil {
 			r.state.cancelReadScope(ctx, cacheKey, "caller")
 		}
-		r.observer.DebugFinishActive(activeID)
-		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, ReadEventExtra(readCtx, windowChunks, err), err)
+		r.finishReadOp(silent, activeID)
+		r.recordReadOp(silent, opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, ReadEventExtra(readCtx, windowChunks, err), err)
 		return nil, err
 	}
 	if !hinted {
@@ -305,7 +310,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		readCtx = WithCacheAccess(readCtx, actual)
 	}
 	if readPrefetchEnabled(ctx) && plan.PrefetchDepth > 0 && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
-		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
+		r.updateReadOp(silent, activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "prefetch_schedule"
 			op.Extra = map[string]any{
 				"start_chunk":   startChunk,
@@ -321,10 +326,43 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	if len(data) > 0 {
 		chunks = endChunk - startChunk + 1
 	}
-	r.observer.DebugFinishActive(activeID)
-	r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, ReadEventExtra(readCtx, windowChunks, nil), nil)
+	r.finishReadOp(silent, activeID)
+	r.recordReadOp(silent, opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, ReadEventExtra(readCtx, windowChunks, nil), nil)
 	countedBytes = int64(len(data))
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// beginReadOp starts an active operation for a read unless the read is a
+// silent stream refill.
+func (r *Reader) beginReadOp(silent bool, op vfstypes.DebugActiveOp) uint64 {
+	if silent {
+		return 0
+	}
+	return r.observer.DebugBeginActive(op)
+}
+
+// updateReadOp forwards an active-operation update unless the read is silent.
+func (r *Reader) updateReadOp(silent bool, id uint64, update func(*vfstypes.DebugActiveOp)) {
+	if silent {
+		return
+	}
+	r.observer.DebugUpdateActive(id, update)
+}
+
+// finishReadOp completes an active operation unless the read is silent.
+func (r *Reader) finishReadOp(silent bool, id uint64) {
+	if silent {
+		return
+	}
+	r.observer.DebugFinishActive(id)
+}
+
+// recordReadOp records a read event unless the read is silent.
+func (r *Reader) recordReadOp(silent bool, opID, path, fid string, offset, size, bytes int64, source string, hits, misses, chunks int64, started time.Time, extra map[string]any, err error) {
+	if silent {
+		return
+	}
+	r.observer.DebugRecordRead(opID, path, fid, offset, size, bytes, source, hits, misses, chunks, started, extra, err)
 }
 
 // CleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.

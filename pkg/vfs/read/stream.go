@@ -9,6 +9,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
+
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
@@ -49,10 +50,11 @@ func (d *debugReadCloser) ReadContext(ctx context.Context, p []byte) (int, error
 }
 
 // ReadStream opens path for sequential streaming reads. Unlike Read, which
-// reads the entire file into one buffer, ReadStream pulls chunk windows on
-// demand so large downloads (fs sync, media) keep memory bounded by the
-// read window size. Pending local changes are served from staging, matching
-// Read. The returned closer is not safe for concurrent use.
+// reads the requested range into one buffer, ReadStream pulls one window at a
+// time through the same Read engine so large downloads (fs sync, media) keep
+// memory bounded by the read window size. Pending local changes are served
+// from staging, matching Read. The returned closer is not safe for concurrent
+// use.
 func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, error) {
 	var err error
 	defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
@@ -96,17 +98,10 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 	}
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	lifetime, cancel := context.WithCancel(ctx)
-	scope := &ReadScope{ctx: lifetime, cancel: cancel}
-	streamCtx := drive.WithDebugOperation(context.WithValue(lifetime, streamScopeKey{}, scope), drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path})
-	streamCtx = r.withFetchTimeouts(streamCtx)
-	streamCtx, timing := withFetchTiming(streamCtx)
-	plan := r.resolvePlan(ctx, PrefetchChunks, StageInitial)
-	streamCtx = WithReadPlan(streamCtx, plan)
-	streamCtx = WithGrantedStreams(streamCtx, 1)
-	streamCtx = applyIntentPriority(streamCtx, plan)
 	return &chunkedStreamReader{
-		ctx:          streamCtx,
-		scope:        scope,
+		ctx:          lifetime,
+		cancel:       cancel,
+		scope:        &ReadScope{ctx: lifetime, cancel: cancel},
 		reader:       r,
 		path:         path,
 		entry:        entry,
@@ -115,28 +110,30 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 		started:      started,
 		hitsBefore:   hitsBefore,
 		missesBefore: missesBefore,
-		timing:       timing,
 	}, nil
 }
 
-// chunkedStreamReader serves one file through readChunkRange, refilling one
-// chunk at a time. The read window prefetch inside readChunkRange keeps the
-// backing memory bounded by the window size rather than the file size.
+// chunkedStreamReader serves one file by reading one window at a time through
+// the ordinary Read path. The stream keeps a persistent scope so the lookahead
+// scheduled by each refill survives until the handle is closed, and it marks
+// its refills silent because the stream reports one read record on Close.
 type chunkedStreamReader struct {
-	ctx       context.Context
-	reader    *Reader
-	path      string
-	entry     drive.Entry
-	pos       int64
-	buf       []byte
-	bufPos    int
+	ctx    context.Context
+	cancel context.CancelFunc
+	scope  *ReadScope
+	reader *Reader
+	path   string
+	entry  drive.Entry
+	pos    int64
+
+	buf    []byte
+	bufPos int
+
 	bytesRead int64
 	closed    bool
 	// readErr is the first error the stream surfaced, recorded with the
 	// summary event on Close so a timed-out refill is visible as a failure.
 	readErr error
-
-	scope *ReadScope
 
 	// Debug bookkeeping finalized on Close.
 	opID         string
@@ -144,7 +141,6 @@ type chunkedStreamReader struct {
 	started      time.Time
 	hitsBefore   int64
 	missesBefore int64
-	timing       *fetchTiming
 }
 
 func (r *chunkedStreamReader) Read(p []byte) (int, error) {
@@ -166,53 +162,44 @@ func (r *chunkedStreamReader) ReadContext(ctx context.Context, p []byte) (int, e
 			return 0, io.EOF
 		}
 	}
-	deliverStarted := util.Now()
 	n := copy(p, r.buf[r.bufPos:])
-	r.timing.recordDeliver(util.Now().Sub(deliverStarted))
 	r.bufPos += n
 	r.pos += int64(n)
 	r.bytesRead += int64(n)
 	return n, nil
 }
 
-// refill loads the chunk containing r.pos. A short or empty chunk ends the
-// stream (the file has no more data), matching readRange's stop condition.
+// refill loads the next window through the shared Read path. The window size
+// comes from the same plan the read path uses, so a streaming download fetches
+// the same Ranges an equivalent one-shot read would.
 func (r *chunkedStreamReader) refill(ctx context.Context) error {
-	ctx = ensureFetchTiming(ctx, r.timing)
-	r.buf = nil
-	r.bufPos = 0
+	r.buf, r.bufPos = nil, 0
 	if r.entry.Size > 0 && r.pos >= r.entry.Size {
 		return nil
-	}
-	chunkIndex := r.pos / ChunkSize
-	start := r.pos - chunkIndex*ChunkSize
-	want := ChunkSize - start
-	if r.entry.Size > 0 && r.entry.Size-r.pos < want {
-		want = r.entry.Size - r.pos
 	}
 	stage := StageInitial
 	if r.pos > 0 {
 		stage = StageSequential
 	}
 	plan := r.reader.resolvePlan(r.ctx, PrefetchChunks, stage)
-	ctx = WithReadPlan(ctx, plan)
-	ctx = WithGrantedStreams(ctx, plan.MaxStreams)
-	ctx = applyIntentPriority(ctx, plan)
-	ctx = context.WithValue(ctx, streamScopeKey{}, r.scope)
-	windowChunks := plan.WindowChunks
-	data, err := r.reader.readChunkRange(ctx, r.entry, chunkIndex, start, want, windowChunks)
+	want := int64(max(1, plan.WindowChunks)) * ChunkSize
+	if r.entry.Size > 0 && r.entry.Size-r.pos < want {
+		want = r.entry.Size - r.pos
+	}
+	readCtx := withSilentReadEvents(context.WithValue(ctx, streamScopeKey{}, r.scope))
+	rc, err := r.reader.Read(readCtx, r.path, r.pos, want)
 	if err != nil {
 		return err
 	}
-	if len(data) == 0 {
-		return nil
+	data, readErr := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
 	}
 	r.buf = data
-	if readPrefetchEnabled(r.ctx) {
-		// A ReadStream owns its own scope and never enters the session
-		// controller; schedulePrefetch then issues one bounded burst.
-		r.reader.schedulePrefetch(ctx, r.entry, chunkIndex+int64(windowChunks)-1, windowChunks, stage == StageSequential, plan)
-	}
 	return nil
 }
 
@@ -223,6 +210,7 @@ func (r *chunkedStreamReader) Close() error {
 	r.closed = true
 	r.scope.cancel()
 	r.scope.jobs.Wait()
+	r.cancel()
 	r.finish(r.bytesRead, nil)
 	return nil
 }

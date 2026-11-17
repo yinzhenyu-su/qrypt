@@ -214,3 +214,17 @@ func ensureFetchTiming(ctx context.Context, timing *fetchTiming) context.Context
 	}
 	return updateReadRequest(ctx, func(req *readRequest) { req.timing = timing })
 }
+
+// silentReadEventsKey marks the one-shot reads a streaming reader issues for
+// its refills. The stream reports one read record for the whole handle, so
+// those inner reads must not record their own events.
+type silentReadEventsKey struct{}
+
+func withSilentReadEvents(ctx context.Context) context.Context {
+	return context.WithValue(ctx, silentReadEventsKey{}, true)
+}
+
+func silentReadEvents(ctx context.Context) bool {
+	silent, _ := ctx.Value(silentReadEventsKey{}).(bool)
+	return silent
+}
