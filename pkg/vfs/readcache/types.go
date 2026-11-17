@@ -18,18 +18,12 @@ const (
 	readCacheIndexVersion    = 1
 	readCacheIndexName       = "index.json"
 	ReadCacheLargeFileBytes  = 16 << 20
-	readCacheSmallReserveDiv = 4
 	readCacheWriteQueueSize  = 64
 	readCacheWriteBatchLimit = 16
 	readCacheIndexSaveDelay  = 30 * time.Second
 
-	// readCacheStreamShare is the divisor for the unproven sub-budget of the
-	// large-file class. Chunks admitted by one sequential pass count against
-	// it until another read run touches them, so a one-pass stream can never
-	// occupy more than half of what the large class is allowed to hold.
-	readCacheStreamShare = 2
 	// readCacheProtectedShare is the divisor for the protected segment inside
-	// each budget: protected <= budget - budget/5, the rest is probationary.
+	// the single budget: protected <= total - total/5, the rest is probationary.
 	// Eviction only ever takes from probationary without demoting first.
 	readCacheProtectedShare = 5
 	// readCacheEvictLowWatermarkNum/Den is the occupancy an eviction pass
@@ -37,16 +31,11 @@ const (
 	// trigger another pass.
 	readCacheEvictLowWatermarkNum = 7
 	readCacheEvictLowWatermarkDen = 10
-)
-
-// sizeClass partitions the cache by file size so the classes cannot starve each
-// other: the small class has a floor the large class cannot consume.
-type sizeClass uint8
-
-const (
-	classSmall sizeClass = iota
-	classLarge
-	numSizeClasses
+	// readCachePinWindow keeps the chunks of a file that is being read in place:
+	// while a file saw a read or a write inside this window its chunks are
+	// evicted only after every unpinned chunk, so a stalled sequential stream
+	// does not lose the read-ahead it is about to consume.
+	readCachePinWindow = 60 * time.Second
 )
 
 // Access identifies the continuous read run an operation belongs to.
@@ -59,14 +48,6 @@ type Access struct {
 	Run uint64
 }
 
-// classOf reports the size class a chunk's file belongs to.
-func classOf(fileSize, cachedBytes int64) sizeClass {
-	if readCacheFileLarge(fileSize, cachedBytes) {
-		return classLarge
-	}
-	return classSmall
-}
-
 type chunkInfo struct {
 	file     string
 	offset   int64
@@ -75,7 +56,7 @@ type chunkInfo struct {
 	// admitRun is the read run that admitted this chunk; state is its
 	// replacement state. Both are in-memory only: they are deliberately absent
 	// from the persisted index so loading a cache never has to migrate the
-	// format. Chunks read back from disk start unproven and are promoted by use.
+	// format. Chunks read back from disk start probationary and are promoted by use.
 	admitRun uint64
 	state    chunkState
 }
@@ -122,12 +103,17 @@ type Store struct {
 	shards        [readCacheShards]shard
 	readBytes     atomic.Int64
 	lastDiskCheck atomic.Int64 // unix nano
-	stats         cacheStats
-	errMu         sync.Mutex
-	lastGetError  string
-	lastGetAt     time.Time
-	lastPutError  string
-	lastPutAt     time.Time
+	// activity holds the last read or write time per cached file, which is
+	// what the per-file pin uses. It is in-memory only and deliberately absent
+	// from the persisted index.
+	activityMu   sync.Mutex
+	activity     map[string]time.Time
+	stats        cacheStats
+	errMu        sync.Mutex
+	lastGetError string
+	lastGetAt    time.Time
+	lastPutError string
+	lastPutAt    time.Time
 
 	cacheWriteQueue     chan readCacheWrite
 	cacheWriteBytes     atomic.Int64

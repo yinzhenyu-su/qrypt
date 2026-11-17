@@ -343,7 +343,7 @@ scripts/dev/playback-sim.py --path ~/Qrypt/quark-encrypt/movie.mp4   --max-speed
 
 The summary reports median/p95 read latency, seek latency, stalls, and (with
 `--mount`) the matching `/v1/reads` window events split into
-`driver_open_ms` and `driver_body_ms`. That split distinguishes provider
+`open_us`, `body_us` and `close_us` (microseconds, summed over attempts). That split distinguishes provider
 time-to-first-byte from body throughput, and the event count shows whether a
 stall came from the remote read or from the cache. `--warm` keeps the OS page
 cache instead of bypassing it with `F_NOCACHE`; `--json FILE` stores the
@@ -539,28 +539,26 @@ Useful fields:
 ### Reading The Read-Cache Replacement State
 
 `cache.mounts[].cache` carries the counters visible to the eviction policy, and
-they answer two different questions:
+they answer three different questions:
 
-- `unproven_bytes` / `proven_bytes` split the cache by **state**: a chunk is
-  unproven until a read run other than the one that admitted it touches it. A
-  sequential stream consuming its own read-ahead only ever produces unproven
-  content, which is why a one-pass scan shows up here rather than as hits.
-- `stream_bytes` is the **budget** view: the unproven bytes that live in the
-  large-file class, i.e. what the sequential sub-budget is currently charging.
-  It is bounded by a share of the large-class ceiling whenever a drain runs.
-  Small-class unproven content has no sub-budget, so `stream_bytes` is normally
-  smaller than `unproven_bytes`.
-- `protected_bytes` / `probationary_bytes` split the proven content by segment.
-  A drain empties probationary before touching protected, so a cache whose
-  protected bytes hold steady across a large scan is working as intended.
+- `probationary_bytes` / `protected_bytes` split the cache by **state**: a chunk
+  is probationary until a read run other than the one that admitted it touches
+  it. A sequential stream consuming its own read-ahead only ever produces
+  probationary content, which is why a one-pass scan shows up here rather than as
+  hits.
+- `pinned_bytes` is the **budget** view: chunks of files that saw a read or write
+  in the last minute. A drain takes unpinned content first, so the file being
+  read keeps its read-ahead while the rest of the cache pays.
 - `evicted_bytes` and `promotions` are event counters: how much the cache has
   released, and how many chunks a later run has confirmed as reused.
 
-Expect the disk footprint to look different from older builds: content read once
-in a single pass is held in the sub-budget rather than filling the whole
-large-class ceiling, so a cache serving only streaming reads will settle below
-its `max_size` instead of at it. Content that is read again is promoted and
-released from that sub-budget, so repeatedly used files still fill the cache.
+A drain empties probationary before touching protected, so a cache whose
+protected bytes hold steady across a large scan is working as intended. The
+first pass skips pinned chunks; only when unpinned content cannot satisfy the
+drain are pinned chunks evicted too, so the pin never suspends the `max_size`
+bound.
+
+Expect the disk footprint to settle just under `max_size`: one-pass streaming content is admitted probationary and drained as it ages, so a cache serving only streaming reads does not pin at the cap. Content that is read again is promoted to protected and is drained only after the probationary segment empties.
 
 Read events are kept in two bounded rings and merged into one append-ordered
 list: **summaries** (one per read: offset, bytes, cache hits/misses, duration,
@@ -770,11 +768,28 @@ Mount state is reported as `vfs.MountSnapshot`:
 - `read_policy`: complete recommended/effective policy, hard limits, and field
   origins; bulk sizes are bytes and fetch bounds use explicit nanosecond keys
 
-Read event extras distinguish planned workers and actual grants, stage,
-foreground/lookahead windows, part ceiling, retries, and cancellation. Timing
-fields separate `queue_us`, `open_us`, `body_us`, `local_wait_us`, and
-`validate_us`; local wait overlaps body time and must not be added to it.
-Driver open is not CDN TTFB. Player first-frame latency requires player telemetry.
+Two events carry the read path's diagnostics, with a deliberately small fixed
+field set each.
+
+The summary `phase=read` event describes the whole read: `read_intent`,
+`read_stage`, `read_streams` (granted workers), `planned_streams`, the window
+(`window_chunks`), the prefetch shape (`prefetch_chunks`, `prefetch_depth`,
+`prefetch_mode`), the split thresholds (`part_bytes`, `min_parallel_bytes`),
+`cache_writes`, and both fetch bounds (`fetch_idle_timeout_ms`,
+`fetch_total_timeout_ms`). These are plan-level facts; they do not repeat on
+every window of the same read.
+
+A `phase=fetch_window` / `phase=prefetch_window` detail event carries only what
+explains that window: identity (`session_id`, `request_id`, `chunk_index`), shape
+(`window_chunks`, `window_bytes`, `part_bytes`, `read_streams` /
+`granted_streams`, `range_tasks`, `actual_in_flight`), the two shape flags
+(`read_intent`, `read_stage`) plus `prefetch_chunks`/`prefetch_depth`/
+`prefetch_mode` while an adaptive lookahead is armed, and timing (`queue_us`,
+`open_us`, `body_us`, `close_us`, `local_wait_us`, `validate_us`,
+`first_body_us`, `fetch_us`) with progress (`body_bytes`, `progress_end`).
+The window bounds are not repeated: `chunk_index` and `window_chunks` imply them.
+Local wait overlaps body time and must not be added to it. Driver open is not CDN
+TTFB. Player first-frame latency requires player telemetry.
 
 
 Events use `drive.MetricEvent`. `op_id`, `step`, and `name` are correlation

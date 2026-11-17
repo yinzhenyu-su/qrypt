@@ -8,24 +8,13 @@ import (
 // DebugReadCache is a point-in-time snapshot of the read cache for
 // debugging and tests.
 type DebugReadCache struct {
-	Enabled            bool  `json:"enabled"`
-	MaxBytes           int64 `json:"max_bytes"`
-	LargeFileThreshold int64 `json:"large_file_threshold"`
-	ChunkCount         int   `json:"chunk_count"`
-	Bytes              int64 `json:"bytes"`
-	LargeFileBytes     int64 `json:"large_file_bytes"`
-	SmallFileBytes     int64 `json:"small_file_bytes"`
-	// UnprovenBytes is content no read run has come back for; a sequential
-	// stream reading back its own read-ahead lands here. ProvenBytes is the
-	// rest and equals ProbationaryBytes + ProtectedBytes.
-	UnprovenBytes int64 `json:"unproven_bytes"`
-	ProvenBytes   int64 `json:"proven_bytes"`
-	// StreamBytes is the part of that unproven content the sequential
-	// sub-budget is charging: unproven bytes in the large-file class. An
-	// eviction pass cuts it back to a share of the large-class ceiling.
-	StreamBytes int64 `json:"stream_bytes"`
-	// ProtectedBytes and ProbationaryBytes split the proven content by segment;
-	// the drain order empties probationary before touching protected.
+	Enabled     bool  `json:"enabled"`
+	MaxBytes    int64 `json:"max_bytes"`
+	ChunkCount  int   `json:"chunk_count"`
+	Bytes       int64 `json:"bytes"`
+	PinnedBytes int64 `json:"pinned_bytes"`
+	// ProtectedBytes and ProbationaryBytes split the content by segment; the
+	// drain order empties probationary before touching protected.
 	ProtectedBytes      int64                `json:"protected_bytes"`
 	ProbationaryBytes   int64                `json:"probationary_bytes"`
 	FileCount           int                  `json:"file_count"`
@@ -57,14 +46,14 @@ type DebugReadCache struct {
 type DebugReadCacheFile struct {
 	ID         string `json:"id"`
 	Size       int64  `json:"size,omitempty"`
-	Large      bool   `json:"large,omitempty"`
+	Pinned     bool   `json:"pinned,omitempty"`
 	ChunkCount int    `json:"chunk_count"`
 	Bytes      int64  `json:"bytes"`
 }
 
 // DebugSnapshot returns a point-in-time view of the store for debugging.
 func (c *Store) DebugSnapshot() DebugReadCache {
-	snapshot := DebugReadCache{Enabled: c.enabled(), MaxBytes: c.maxSize, LargeFileThreshold: ReadCacheLargeFileBytes}
+	snapshot := DebugReadCache{Enabled: c.enabled(), MaxBytes: c.maxSize}
 	if !c.enabled() {
 		return snapshot
 	}
@@ -77,10 +66,33 @@ func (c *Store) DebugSnapshot() DebugReadCache {
 	snapshot.IndexFlushScheduled = c.debounce.Armed()
 	c.readIndexMu.Unlock()
 	fileCount := 0
+	now := time.Now()
 	for i := range c.shards {
 		sh := &c.shards[i]
 		sh.mu.RLock()
-		fileCount += len(sh.chunks)
+		for fid, fc := range sh.chunks {
+			fc.mu.RLock()
+			file := DebugReadCacheFile{ID: fid, Size: fc.fileSize, Pinned: c.filePinned(fid, now)}
+			for _, chunk := range fc.chunks {
+				snapshot.ChunkCount++
+				snapshot.Bytes += chunk.size
+				if chunk.state == stateProtected {
+					snapshot.ProtectedBytes += chunk.size
+				} else {
+					snapshot.ProbationaryBytes += chunk.size
+				}
+				if file.Pinned {
+					snapshot.PinnedBytes += chunk.size
+				}
+				file.ChunkCount++
+				file.Bytes += chunk.size
+			}
+			if file.ChunkCount > 0 {
+				snapshot.Files = append(snapshot.Files, file)
+				fileCount++
+			}
+			fc.mu.RUnlock()
+		}
 		sh.mu.RUnlock()
 	}
 	snapshot.FileCount = fileCount
@@ -95,6 +107,7 @@ func (c *Store) DebugSnapshot() DebugReadCache {
 	snapshot.MaxWriteMS = c.stats.maxWriteMS.Load()
 	snapshot.LastWriteQueueMS = c.stats.lastWriteQueueMS.Load()
 	snapshot.MaxWriteQueueMS = c.stats.maxWriteQueueMS.Load()
+	c.errMu.Lock()
 	snapshot.LastGetError = c.lastGetError
 	if !c.lastGetAt.IsZero() {
 		at := c.lastGetAt
@@ -105,51 +118,9 @@ func (c *Store) DebugSnapshot() DebugReadCache {
 		at := c.lastPutAt
 		snapshot.LastPutErrorAt = &at
 	}
-	for i := range c.shards {
-		sh := &c.shards[i]
-		sh.mu.RLock()
-		for fid, fc := range sh.chunks {
-			fc.mu.RLock()
-			// The class is decided by the file's total cached bytes, so the
-			// unproven total has to be known before the class is.
-			var cachedBytes, unproven int64
-			for _, chunk := range fc.chunks {
-				cachedBytes += chunk.size
-				if chunk.state == stateUnproven {
-					unproven += chunk.size
-				}
-			}
-			file := DebugReadCacheFile{ID: fid, Size: fc.fileSize}
-			for _, chunk := range fc.chunks {
-				snapshot.ChunkCount++
-				snapshot.Bytes += chunk.size
-				file.ChunkCount++
-				file.Bytes += chunk.size
-				switch chunk.state {
-				case stateProtected:
-					snapshot.ProtectedBytes += chunk.size
-				case stateProbationary:
-					snapshot.ProbationaryBytes += chunk.size
-				}
-			}
-			snapshot.UnprovenBytes += unproven
-			file.Large = classOf(file.Size, cachedBytes) == classLarge
-			if file.Large {
-				snapshot.StreamBytes += unproven
-				snapshot.LargeFileBytes += file.Bytes
-			} else {
-				snapshot.SmallFileBytes += file.Bytes
-			}
-			if file.ChunkCount > 0 {
-				snapshot.Files = append(snapshot.Files, file)
-			}
-			fc.mu.RUnlock()
-		}
-		sh.mu.RUnlock()
-	}
+	c.errMu.Unlock()
 	sort.Slice(snapshot.Files, func(i, j int) bool {
 		return snapshot.Files[i].ID < snapshot.Files[j].ID
 	})
-	snapshot.ProvenBytes = snapshot.ProbationaryBytes + snapshot.ProtectedBytes
 	return snapshot
 }
