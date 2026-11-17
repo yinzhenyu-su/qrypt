@@ -428,9 +428,9 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		trace.record(map[string]any{"granted_streams": workers, "range_tasks": int(count), "window_bytes": plan.Size, "part_bytes": layout.part})
 	}
 	if delivery != nil && e.Size > 0 {
-		// Pending reads have one admitted stream and no split policy: publish
-		// the window as one contiguous range, chunk by chunk as it arrives.
-		_, err := s.fetchPart(ctx, e, readRange{plan.Offset, plan.Size}, plan, delivery)
+		// Progressive reads publish complete blocks while the window is in
+		// flight, so a playback reader does not wait for the whole window.
+		_, err := s.fetchProgressively(ctx, e, plan, layout, count, strict, delivery)
 		if err != nil {
 			if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
 				trace.failure(ctx, err)

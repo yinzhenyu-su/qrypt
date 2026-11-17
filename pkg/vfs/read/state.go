@@ -114,6 +114,23 @@ func (w *windowLoad) finishChunks() {
 	}
 }
 
+// published reports the block at index once its fetch has published it.
+// Reading the data after the ready channel closes is ordered by that close.
+func (w *windowLoad) published(index int64) ([]byte, bool) {
+	if len(w.chunks) == 0 {
+		return nil, false
+	}
+	chunk := &w.chunks[index-w.start]
+	select {
+	case <-chunk.ready:
+		if chunk.data != nil {
+			return chunk.data, true
+		}
+	default:
+	}
+	return nil, false
+}
+
 func (w *windowLoad) chunkAvailable(index int64) bool {
 	if len(w.chunks) == 0 {
 		return false
@@ -671,7 +688,11 @@ func (s *State) findWindow(cacheKey string, index int64, streams int, maxChunks 
 		// foreground plans allow more. Their validated bytes are reusable;
 		// hiding them also prevents the foreground's bounded takeover timer
 		// from canceling its own stalled lookahead when the budget is full.
-		if streams > 0 && candidateStreams != streams && !candidate.prefetch {
+		// Progressive loads publish completed blocks while their window is in
+		// flight, so joining one to read a covered block never adds provider
+		// work regardless of the shape the window was admitted with. Only
+		// buffered loads need the stream shape to match.
+		if streams > 0 && candidateStreams != streams && !candidate.prefetch && !candidate.progressive {
 			continue
 		}
 		// A window far larger than the caller's own window is not worth

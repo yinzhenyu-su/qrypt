@@ -236,13 +236,25 @@ func TestObserverReceivesLifecycle(t *testing.T) {
 	if err := rc.Close(); err != nil {
 		t.Fatal(err)
 	}
-	begins, finishes, reads := obs.counts()
-	if begins == 0 || begins != finishes {
-		t.Fatalf("lifecycle counts: begins=%d finishes=%d, want paired and >=1", begins, finishes)
+	// Window fetches now run in their own goroutine so the reader can serve a
+	// published block before the window tail arrives; the fetch's active
+	// operation may therefore finish just after the read returns.
+	var begins, finishes, reads int
+	deadline := time.Now().Add(time.Second)
+	for {
+		begins, finishes, reads = obs.counts()
+		if begins > 0 && begins == finishes {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle counts: begins=%d finishes=%d, want paired and >=1", begins, finishes)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if reads != 1 {
 		t.Fatalf("read records = %d, want 1", reads)
 	}
+
 	// The second Close must be a no-op for the observer.
 	b2, f2, r2 := obs.counts()
 	if b2 != begins || f2 != finishes || r2 != reads {

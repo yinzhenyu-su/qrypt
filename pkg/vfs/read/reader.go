@@ -32,8 +32,9 @@ type Reader struct {
 	faults   ReadFaultInjector
 
 	// fgMu guards fgSplit: the per-object adaptive foreground-split state.
-	fgMu    sync.Mutex
-	fgSplit map[string]*fgSplitState
+	fgMu       sync.Mutex
+	fgSplit    map[string]*fgSplitState
+	fgLastSlow time.Time
 }
 
 // ReaderDeps is the explicit dependency set for a read-domain reader.
@@ -635,11 +636,19 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 	}
 	key := WindowShapeKey(WindowKey(LoadKey(r.host, entry), startIndex, endIndex), streams)
 	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: streams, done: make(chan struct{})}
-	registered := false
+	if entry.Size > 0 {
+		// Known-size windows publish completed blocks: initialize the per-block
+		// channels before the load is registered so joiners can wait on them.
+		load.progressive = true
+		load.chunks = make([]windowChunk, int(endIndex-startIndex+1))
+		for index := range load.chunks {
+			load.chunks[index].ready = make(chan struct{})
+		}
+		load.data = make(map[int64][]byte, len(load.chunks))
+	}
 	for attempt := 0; attempt <= fetchTimeoutAttempts; attempt++ {
 		existing, joined := r.state.beginWindowLoad(key, load)
 		if !joined {
-			registered = true
 			break
 		}
 		detach, ok := r.state.attachWindow(existing)
@@ -722,6 +731,89 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 	}
 
 	started := util.Now()
+	r.startWindowFetch(ctx, entry, startIndex, endIndex, load)
+	// The fetch runs in its own goroutine, so the block this read waits for is
+	// served as soon as the drive publishes it instead of after the window tail.
+	detach, attached := r.state.attachWindow(load)
+	if attached {
+		defer detach()
+		ready, waitErr := load.waitTarget(ctx, startIndex)
+		switch {
+		case waitErr != nil:
+			if data, ok := load.published(startIndex); ok {
+				fetchTimingFromContext(ctx).recordWait(util.Now().Sub(started))
+				return data, nil
+			}
+			// The caller went away before its block was published. Cancel the
+			// window fetch so it stops holding a provider slot, unless another
+			// reader has already joined the window.
+			detach()
+			detach = nil
+			if r.state.abandonWindow(load, 0, true) && load.cancel != nil {
+				// Cancel the fetch and wait for it to unwind so the read does
+				// not return while the window still holds a provider slot.
+				load.cancel()
+				<-load.done
+			}
+			return nil, waitErr
+		case ready:
+			if data, ok := load.published(startIndex); ok {
+				fetchTimingFromContext(ctx).recordWait(util.Now().Sub(started))
+				return data, nil
+			}
+			// The window finished without publishing this block; fall through to
+			// the fetch outcome so the caller sees the error instead of hanging.
+			<-load.done
+		}
+	} else {
+		<-load.done
+	}
+	if data, ok := load.published(startIndex); ok {
+		fetchTimingFromContext(ctx).recordWait(util.Now().Sub(started))
+		return data, nil
+	}
+	if load.err != nil {
+		return nil, load.err
+	}
+	if data, ok := load.data[startIndex]; ok && len(data) > 0 {
+		return data, nil
+	}
+	return nil, fmt.Errorf("vfs: window load finished without block %d", startIndex)
+}
+
+// startWindowFetch runs one foreground window fetch in its own goroutine and
+// ties its lifetime to the stream scope: a seek, session release or file close
+// abandons the window and cancels the fetch, while the reading goroutine waits
+// only for the block it needs.
+func (r *Reader) startWindowFetch(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, load *windowLoad) {
+	cacheKey := r.host.ReadCacheKey(entry)
+	scope, releaseScope := r.state.scopeFor(ctx, cacheKey)
+	fetchCtx, cancelFetch := context.WithCancelCause(context.WithoutCancel(ctx))
+	load.cancel = func() { cancelFetch(drive.ReadCallerCanceled) }
+	stopScope := context.AfterFunc(scope.ctx, func() {
+		if r.state.abandonWindow(load, 0, true) {
+			if reason := scope.cancelReason(); reason == "seek" || reason == "session_release" {
+				cancelFetch(drive.ReadSuperseded)
+			} else {
+				cancelFetch(drive.ReadCallerCanceled)
+			}
+		}
+	})
+	go func() {
+		defer releaseScope()
+		defer stopScope()
+		defer cancelFetch(nil)
+		r.runWindowFetch(fetchCtx, entry, startIndex, endIndex, load)
+	}()
+}
+
+// runWindowFetch executes one foreground window, publishing each block as the
+// drive layer completes it, then closes done and unregisters the load.
+func (r *Reader) runWindowFetch(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, load *windowLoad) {
+	cacheKey := r.host.ReadCacheKey(entry)
+	plan, _ := readPlanFromContext(ctx)
+	streams := grantedStreams(ctx, plan.MaxStreams)
+	started := util.Now()
 	activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
 		Kind:        "vfs_window_load",
 		Phase:       "acquire_slot",
@@ -734,10 +826,13 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		WindowEnd:   endIndex,
 		ReadIntent:  plan.Intent.String(),
 		ReadStreams: streams,
-		WaitFor:     key,
 	})
 	r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) { op.Phase = "fetch_window" })
-	load.data, load.extra, load.err = r.fetchChunkWindow(ctx, entry, startIndex, endIndex)
+	if load.progressive {
+		load.extra, load.err = r.streamChunkWindow(ctx, entry, startIndex, endIndex, load)
+	} else {
+		load.data, load.extra, load.err = r.fetchChunkWindow(ctx, entry, startIndex, endIndex)
+	}
 	fetchFinished := util.Now()
 	fetchTimingFromContext(ctx).recordFetch(fetchFinished.Sub(started))
 	r.observer.DebugFinishActive(activeID)
@@ -756,18 +851,32 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		fetchExtra["cancel_reason"] = "timeout"
 	}
 	RecordChunkDetail(r.observer, ctx, entry, "fetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, WindowBytes(load.data), started, fetchExtra, load.err)
+	if load.progressive {
+		// Wake any waiter of a block this fetch did not publish; result() then
+		// reports the window error instead of blocking forever.
+		load.finishChunks()
+	}
 	close(load.done)
-
-	if registered {
-		r.state.endWindowLoad(load)
-	}
-	if load.err != nil {
-		return nil, load.err
-	}
-	return load.data[startIndex], nil
+	r.state.endWindowLoad(load)
 }
 
-func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) (map[int64][]byte, map[string]any, error) {
+// windowFetch is// windowFetch is the prepared shape of one foreground window fetch: the plan
+// resolved for this read, the stream/split choice, and the trace that carries
+// the range diagnostics. The buffered and progressive fetch paths share it so
+// the adaptive split sees the same inputs either way.
+type windowFetch struct {
+	ctx         context.Context
+	entry       drive.Entry
+	plan        ReadPlan
+	windowBytes int64
+	streams     int
+	split       drive.SplitPolicy
+	adaptive    bool
+	started     time.Time
+	trace       *drive.ReadTrace
+}
+
+func (r *Reader) prepareWindowFetch(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) windowFetch {
 	ctx = r.withFetchTimeouts(ctx)
 	plan, _ := readPlanFromContext(ctx)
 	ctx = r.withReadFaults(ctx)
@@ -789,25 +898,74 @@ func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startI
 			}
 		}
 	}
-	fetchStarted := time.Now()
-	data, err := r.source.Fetch(ctx, entry, drive.RangePlan{Offset: startIndex * ChunkSize, Size: windowBytes, Streams: streams, Split: split, Timeouts: fetchTimeoutsFromContext(ctx), Priority: priority(ctx), Speculative: prefetch})
+	return windowFetch{ctx: ctx, entry: entry, plan: plan, windowBytes: windowBytes, streams: streams, split: split, adaptive: adaptive, started: time.Now(), trace: trace}
+}
+
+func (w windowFetch) rangePlan(startIndex int64) drive.RangePlan {
+	return drive.RangePlan{
+		Offset:      startIndex * ChunkSize,
+		Size:        w.windowBytes,
+		Streams:     w.streams,
+		Split:       w.split,
+		Timeouts:    fetchTimeoutsFromContext(w.ctx),
+		Priority:    priority(w.ctx),
+		Speculative: isPrefetchRead(w.ctx),
+	}
+}
+
+// observeWindowFetch feeds the window's transfer rate into the adaptive
+// foreground split and attaches its shape to the window's diagnostics.
+func (r *Reader) observeWindowFetch(w windowFetch, snapshot map[string]any, delivered int64, elapsed time.Duration) {
+	if !w.adaptive {
+		return
+	}
+	if us, ok := snapshot["body_us"].(int64); ok && us > 0 {
+		// Judge the provider's transfer rate, not its open latency: a fast
+		// link with a slow request open must not arm the split.
+		elapsed = time.Duration(us) * time.Microsecond
+	}
+	if w.streams > 1 {
+		snapshot["fg_split_streams"] = w.streams
+		snapshot["fg_split_part_bytes"] = w.split.PartBytes
+	}
+	r.observeForegroundRate(w.entry.ID, delivered, elapsed)
+	snapshot["fg_split_mode"] = r.foregroundSplitting(w.entry.ID)
+	if elapsed > 0 {
+		snapshot["fg_split_rate_kb_s"] = int64(float64(delivered) / elapsed.Seconds() / 1024)
+	}
+}
+
+func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) (map[int64][]byte, map[string]any, error) {
+	w := r.prepareWindowFetch(ctx, entry, startIndex, endIndex)
+	data, err := r.source.Fetch(w.ctx, entry, w.rangePlan(startIndex))
 	if err != nil {
-		return nil, trace.Snapshot(), err
+		return nil, w.trace.Snapshot(), err
 	}
-	snapshot := trace.Snapshot()
-	if adaptive {
-		elapsed := time.Since(fetchStarted)
-		if streams > 1 {
-			snapshot["fg_split_streams"] = streams
-			snapshot["fg_split_part_bytes"] = split.PartBytes
-		}
-		r.observeForegroundRate(entry.ID, int64(len(data)), elapsed)
-		snapshot["fg_split_mode"] = r.foregroundSplitting(entry.ID)
-		if elapsed > 0 {
-			snapshot["fg_split_rate_kb_s"] = int64(float64(len(data)) / elapsed.Seconds() / 1024)
-		}
+	snapshot := w.trace.Snapshot()
+	r.observeWindowFetch(w, snapshot, int64(len(data)), time.Since(w.started))
+	return storeWindowChunks(w.ctx, r.newBackend(), entry, startIndex, endIndex, data), snapshot, nil
+}
+
+// streamChunkWindow is fetchChunkWindow with progressive publication: every
+// block the drive layer completes is stored and published while the rest of
+// the window is still in flight, so a reader waiting for the head block does
+// not pay for the window's tail.
+func (r *Reader) streamChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, load *windowLoad) (map[string]any, error) {
+	w := r.prepareWindowFetch(ctx, entry, startIndex, endIndex)
+	backend := r.newBackend()
+	delivered := 0
+	err := r.source.FetchStream(w.ctx, entry, w.rangePlan(startIndex), func(offset int64, block []byte) {
+		index := offset / ChunkSize
+		backend.StoreChunk(w.ctx, backend.CacheKey(entry), entry, index, block)
+		load.data[index] = block
+		load.publish(index, block)
+		delivered += len(block)
+	})
+	snapshot := w.trace.Snapshot()
+	if err == nil {
+		r.observeWindowFetch(w, snapshot, int64(delivered), time.Since(w.started))
 	}
-	return storeWindowChunks(ctx, r.newBackend(), entry, startIndex, endIndex, data), snapshot, nil
+	return snapshot, err
 }
 
 const fetchTimeoutAttempts = 2
@@ -955,11 +1113,19 @@ func envFlag(name string) bool {
 	return false
 }
 
-// foregroundSplitEnabled enables the experimental foreground-window split:
-// a FUSE window (typically one 512 KiB chunk) is fetched as several parallel
-// Range requests instead of one, so a per-connection-throttled provider cannot
-// gate the whole read on a single connection. Disabled by default.
-func foregroundSplitEnabled() bool { return envFlag("QRYPT_FG_SPLIT") }
+// foregroundSplitEnabled reports whether the adaptive foreground-window split
+// is active. It is on by default: once a foreground window's measured rate
+// shows a per-connection throttle, later windows are fetched as several
+// parallel Range requests instead of one, so the provider cannot gate the whole
+// read on a single connection, and the mode falls back to one stream once the
+// rate recovers. QRYPT_FG_SPLIT=0 disables it for one run while triaging.
+func foregroundSplitEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("QRYPT_FG_SPLIT"))) {
+	case "0", "false", "no", "off":
+		return false
+	}
+	return true
+}
 
 const (
 	foregroundSplitStreams   = 4
@@ -975,8 +1141,16 @@ var (
 	fgSplitEnterBytesPerSec int64 = 350 << 10
 	fgSplitExitBytesPerSec  int64 = 900 << 10
 	// fgSplitSlowWindows is how many consecutive slow windows must be observed
-	// before the adaptive mode starts splitting; one noisy window is not enough.
-	fgSplitSlowWindows = 2
+	// before the adaptive mode starts splitting. One is enough: playback's first
+	// sequential window is megabytes wide, so waiting for a second slow sample
+	// would stall the player for that whole window. A false positive on a fast
+	// link is bounded because one split window above the exit rate reverts it.
+	fgSplitSlowWindows = 1
+	// fgSplitThrottleMemory keeps the split armed for objects that have no rate
+	// sample yet after any object recently measured a slow window: opening the
+	// next file during the same throttled session should not pay the cold-start
+	// single-stream window again. It expires on its own.
+	fgSplitThrottleMemory = 5 * time.Minute
 )
 
 // fgSplitState is one object's adaptive split decision and last measured rate.
@@ -1001,6 +1175,9 @@ func (r *Reader) observeForegroundRate(objectID string, bytes int64, elapsed tim
 		r.fgSplit[objectID] = state
 	}
 	state.rate = rate
+	if rate < fgSplitEnterBytesPerSec {
+		r.fgLastSlow = time.Now()
+	}
 	if state.splitting {
 		if rate >= fgSplitExitBytesPerSec {
 			state.splitting = false
@@ -1023,7 +1200,14 @@ func (r *Reader) observeForegroundRate(objectID string, bytes int64, elapsed tim
 func (r *Reader) foregroundSplitRequested(objectID string) int {
 	r.fgMu.Lock()
 	defer r.fgMu.Unlock()
-	if state := r.fgSplit[objectID]; state != nil && state.splitting {
+	state := r.fgSplit[objectID]
+	if state != nil && state.splitting {
+		return foregroundSplitStreams
+	}
+	if (state == nil || state.rate == 0) && !r.fgLastSlow.IsZero() && time.Since(r.fgLastSlow) < fgSplitThrottleMemory {
+		// No sample for this object yet and the provider was recently slow for
+		// another one: hedge the first window instead of paying a cold-start
+		// single-stream window during the same throttled session.
 		return foregroundSplitStreams
 	}
 	return 0

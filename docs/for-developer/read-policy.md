@@ -19,20 +19,33 @@ preallocate tasks for the complete file.
 
 `ReadSource.Fetch` shares strict-range checks, timeout handling, truncated-body
 validation, status backoff and replay with `ReadSource.Read`. Replay happens
-before a successful window is delivered. Interactive/probe windows stay single
-stream; probe disables prefetch. FUSE sequential eligibility never rewrites the
-original intent or cache admission. Stream refill re-evaluates the access stage.
+before a successful window is delivered. Interactive windows stay single
+stream; lookahead size is fixed by the resolved W×D horizon. FUSE sequential
+eligibility never rewrites the original intent or cache admission. Stream
+refill re-evaluates the access stage.
+
+Sequential playback reads are small FUSE reads, so a caller window pins one
+single connection and only reaches the provider's per-stream rate. Quark
+therefore recommends a fixed 2 MiB sequential window (initial and seek keep the
+caller window): interleaved 32 MiB playback-shaped reads over the same CDN
+sustained about 4.5–5.7 MB/s with that window versus 2.2–3.4 MB/s with the
+caller window, while a 4 MiB window was slower. Lookahead follows the resolved
+adaptive depth, i.e. four 2 MiB lookahead windows.
 
 The scheduler atomically acquires global and object capacity. Stable provider
 IDs identify objects inside one source; unknown IDs fail. Speculation uses
 `TryFetch`, which reserves complete admission without opening a connection.
 Call `Run`, `RunChunks` or `Close` on the returned pending read. `Run` retains
-whole-window validation. VFS lookahead uses `RunChunks`: each complete 512 KiB
-plaintext block becomes immutable and independently ready, while the same Range
-request continues through the tail. The final block waits for EOF, response
-length and successful Close. Encryption authenticates its own blocks before
-returning plaintext. An incomplete block is never published; already published
-prefix blocks remain valid if a later block fails. Idle/truncation retries resume
+whole-window validation. `ReadSource.FetchStream` and `RunChunks` publish each
+complete 512 KiB plaintext block as immutable and independently ready while the
+same Range request continues through the tail; VFS lookahead and foreground
+window fetches both use it. A foreground read therefore returns its target block
+as soon as that block arrives, while the rest of the window keeps filling in the
+background for later reads; merging or joining the window later is unaffected.
+The final block waits for EOF, response length and successful Close. Encryption
+authenticates its own blocks before returning plaintext. An incomplete block is
+never published; already published prefix blocks remain valid if a later block
+fails. Idle/truncation retries resume
 at the first unpublished block, under the original total deadline and retry
 limits, without replaying delivered bytes. Unknown-size objects retain buffered
 whole-window validation. Closing a running job cancels it; admission is released
@@ -50,6 +63,21 @@ connection checks, open and seek together to 15 seconds, then reads under the
 caller's context. Shared reads retain their idle and total budgets; raw
 `Driver.Read` callers own cancellation, deadlines and closing the returned body.
 Closing a body stops its cancellation watcher without canceling its caller.
+
+Throttled single connections: the adaptive foreground split is on by
+default. A foreground window whose provider transfer rate (measured over the
+body, so a slow request open does not arm it) falls below 350 KiB/s makes the
+next window four 128 KiB Range requests over parallel streams, bounded by the
+same admission and pausing speculative lookahead; one window at 900 KiB/s or
+more reverts to a single stream. For five minutes after such a sample, a file
+with no measurements of its own starts split as well, so opening the next file
+during the same throttled session does not pay the cold-start window again.
+Measured on the quark CDN with each connection paced at 150 KiB/s, a
+playback-shaped read sustained about 0.11 MB/s single-stream versus about
+0.33 MB/s split, a 2 MiB cold read dropped from 18.8 s to 9.2 s, and the first
+byte of a newly opened file dropped from 4.2 s to 1.5 s. On a healthy link the
+split does not arm, so the default stays neutral. `QRYPT_FG_SPLIT=0` disables
+it for one run when triaging.
 
 With debug logging enabled, `[READ]` lines retain initial/seek completion,
 window fetches, prefetches and foreground wait transitions even after the
