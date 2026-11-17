@@ -87,6 +87,7 @@ Suggested Android mapping:
 filesDir/qrypt/
   config/qrypt.toml
   upload/
+  run/
   state/
     driver/
   logs/
@@ -103,6 +104,7 @@ Example:
 {
   "config_dir": "<filesDir>/qrypt/config",
   "storage": {
+    "run_dir": "<filesDir>/qrypt/run",
     "read_cache_dir": "<cacheDir>/qrypt/read",
     "thumbnail_cache_dir": "<cacheDir>/qrypt/thumbnail",
     "upload_dir": "<filesDir>/qrypt/upload",
@@ -120,6 +122,10 @@ qrypt stores mount-specific data under the provided roots:
 <upload_dir>/<mount>
 <state_dir>/driver/<mount>
 ```
+
+`run_dir` holds local endpoint files (sockets, pids). Mobile processes have no
+writable home directory, so when it is omitted qrypt falls back to
+`<state_dir>/run` rather than the desktop `~/.qrypt/run`.
 
 On Android, driver state and upload sessions should stay under app-private
 `filesDir`, while read cache, thumbnails, and temp data can live under

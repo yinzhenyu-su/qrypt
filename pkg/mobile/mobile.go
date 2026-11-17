@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -143,6 +144,7 @@ type taskEventHandle struct {
 type runtimeJSON struct {
 	ConfigDir string `json:"config_dir"`
 	Storage   struct {
+		RunDir       string `json:"run_dir"`
 		ReadCacheDir string `json:"read_cache_dir"`
 		ThumbnailDir string `json:"thumbnail_cache_dir"`
 		UploadDir    string `json:"upload_dir"`
@@ -260,6 +262,7 @@ func parseRuntimeJSON(raw string) (core.RuntimeLayout, error) {
 	}
 	runtime := core.RuntimeLayout{
 		ConfigDir:    in.ConfigDir,
+		RunDir:       in.Storage.RunDir,
 		ReadCacheDir: in.Storage.ReadCacheDir,
 		ThumbnailDir: in.Storage.ThumbnailDir,
 		UploadDir:    in.Storage.UploadDir,
@@ -281,6 +284,13 @@ func parseRuntimeJSON(raw string) (core.RuntimeLayout, error) {
 	}
 	if runtime.StateDir == "" {
 		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.state_dir required")
+	}
+	// Mobile processes have no writable home directory on Android and iOS, so
+	// the desktop default (~/.qrypt/run) would be a relative path under the
+	// process root. Keep the built-in endpoint directory inside the app-owned
+	// state root unless the embedder supplies one explicitly.
+	if runtime.RunDir == "" {
+		runtime.RunDir = filepath.Join(runtime.StateDir, "run")
 	}
 	if runtime.LogDir == "" {
 		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.log_dir required")
