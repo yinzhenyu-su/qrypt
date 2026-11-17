@@ -244,8 +244,8 @@ and consuming a body; provider-private requests and unstarted reservations are
 excluded. Calls without a trace sink contribute to the count but emit no pair.
 `prefetch_plan` reports consumed `cursor_chunk`, exclusive `horizon_end_chunk`,
 contiguous in-memory `ready_end_chunk`, `pending_windows`, `fill_stop`, source
-and object admitted counts, plus the fixed plan `prefetch_window_chunks`,
-`prefetch_depth` and the diagnostic `prefetch_mode`. These are independently
+and object admitted counts, plus the fixed plan `prefetch_window_chunks` and
+`prefetch_depth`. These are independently
 sampled, not an atomic snapshot. Completed-but-evicted markers are
 not ready bytes. Inspect whether a slow target coincides with full active depth
 and body progress, or with no requests and delayed refill. A full paused horizon

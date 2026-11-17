@@ -15,17 +15,17 @@ func (d policyTestDriver) ReadPolicy() ReadPolicy { return d.policy }
 func (d policyTestDriver) ReadLimits() ReadLimits { return d.limits }
 func TestPolicyResolutionSeparatesOverrideFromLimits(t *testing.T) {
 	d := policyTestDriver{NewFakeDriver(FakeWithCapabilities(CapabilityParallelRange)), DefaultReadPolicy(), ReadLimits{MaxInFlight: 2, Parallel: true}}
-	d.policy.Bulk.Split.PartBytes = 8 << 20
+	d.policy.Bulk.PartBytes = 8 << 20
 	zero := int64(0)
 	want := 8
 	p, err := ResolveReadPolicy(d, &ReadOverride{MaxInFlight: &want, PartBytes: &zero})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Effective.MaxInFlight != 2 || p.Effective.Bulk.Streams != 2 || p.Effective.Bulk.Split.PartBytes != 0 {
+	if p.Effective.MaxInFlight != 2 || p.Effective.Bulk.Streams != 2 || p.Effective.Bulk.PartBytes != 0 {
 		t.Fatalf("effective = %+v", p.Effective)
 	}
-	if p.Recommended.Bulk.Split.PartBytes != 8<<20 || p.Origins["max_in_flight"] != "driver_limit" || p.Origins["bulk.streams"] != "driver_limit" {
+	if p.Recommended.Bulk.PartBytes != 8<<20 || p.Origins["max_in_flight"] != "driver_limit" || p.Origins["bulk.streams"] != "driver_limit" {
 		t.Fatalf("lost origin: %+v", p)
 	}
 }
@@ -34,9 +34,9 @@ func TestCompletePolicyRejectsZeroAndMalformedModes(t *testing.T) {
 		t.Fatal("incomplete profile accepted")
 	}
 	p := DefaultReadPolicy()
-	p.Interactive.Seek.Prefetch = PrefetchPolicy{Mode: PrefetchDisabled, Depth: 1}
+	p.Interactive.PrefetchDepth = 5
 	if err := ValidateReadPolicy(p); err == nil {
-		t.Fatal("disabled prefetch with depth accepted")
+		t.Fatal("prefetch depth above four accepted")
 	}
 	p = DefaultReadPolicy()
 	zero := 0
@@ -59,25 +59,20 @@ func TestSingleStreamRecommendationCanPipeline(t *testing.T) {
 
 func TestPolicyValidationBoundaries(t *testing.T) {
 	for name, change := range map[string]func(*ReadPolicy){
-		"window mode":        func(p *ReadPolicy) { p.Interactive.Seek.Window.Mode = "unknown" },
-		"caller size":        func(p *ReadPolicy) { p.Interactive.Seek.Window.Bytes = 1 },
-		"empty fixed window": func(p *ReadPolicy) { p.Interactive.Initial.Window.Mode = WindowFixed },
-		"oversized fixed window": func(p *ReadPolicy) {
-			p.Interactive.Initial.Window = WindowPolicy{Mode: WindowFixed, Bytes: MaxReadWindowBytes + 1}
+		"negative window": func(p *ReadPolicy) { p.Interactive.WindowBytes = -1 },
+		"oversized window": func(p *ReadPolicy) {
+			p.Interactive.WindowBytes = MaxReadWindowBytes + 1
 		},
-		"prefetch mode":  func(p *ReadPolicy) { p.Interactive.Seek.Prefetch.Mode = "unknown" },
-		"adaptive depth": func(p *ReadPolicy) { p.Interactive.Seek.Prefetch.Depth = 1 },
-		"prefetch depth": func(p *ReadPolicy) {
-			p.Interactive.Sequential.Prefetch = PrefetchPolicy{Mode: PrefetchFixed, WindowBytes: 1, Depth: 5}
-		},
+		"prefetch depth": func(p *ReadPolicy) { p.Interactive.PrefetchDepth = 5 },
 		"prefetch size": func(p *ReadPolicy) {
-			p.Interactive.Sequential.Prefetch = PrefetchPolicy{Mode: PrefetchFixed, WindowBytes: MaxReadWindowBytes + 1, Depth: 1}
+			p.Interactive.PrefetchWindowBytes = MaxReadWindowBytes + 1
+			p.Interactive.PrefetchDepth = 1
 		},
 		"empty bulk window":   func(p *ReadPolicy) { p.Bulk.WindowBytes = 0 },
 		"bulk streams":        func(p *ReadPolicy) { p.Bulk.Streams = 33 },
 		"file budget":         func(p *ReadPolicy) { p.MaxInFlight = 0 },
-		"negative part":       func(p *ReadPolicy) { p.Bulk.Split.PartBytes = -1 },
-		"oversized threshold": func(p *ReadPolicy) { p.Bulk.Split.MinParallelBytes = MaxReadWindowBytes + 1 },
+		"negative part":       func(p *ReadPolicy) { p.Bulk.PartBytes = -1 },
+		"oversized threshold": func(p *ReadPolicy) { p.Bulk.MinParallelBytes = MaxReadWindowBytes + 1 },
 		"idle over total":     func(p *ReadPolicy) { p.Fetch.Idle = p.Fetch.Total + 1 },
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -25,7 +25,8 @@ func quarkLikeProfile() drive.ReadPolicy {
 // foreground's chunk, which these tests hold open.
 func wideLookaheadProfile() drive.ReadPolicy {
 	profile := quarkLikeProfile()
-	profile.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 2 * ChunkSize, Depth: 1}
+	profile.Interactive.PrefetchWindowBytes = 2 * ChunkSize
+	profile.Interactive.PrefetchDepth = 1
 	return profile
 }
 
@@ -85,7 +86,8 @@ func TestFastPrefetchWindowIsStillJoined(t *testing.T) {
 func TestFuseSequentialUpgradeKeepsExplicitPrefetchDepth(t *testing.T) {
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 3
-	profile.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 2 * PrefetchChunks * ChunkSize, Depth: 1}
+	profile.Interactive.PrefetchWindowBytes = 2 * PrefetchChunks * ChunkSize
+	profile.Interactive.PrefetchDepth = 1
 	r := newStagedReaderWithProfile(t, 64<<20, profile)
 
 	release := make(chan struct{})

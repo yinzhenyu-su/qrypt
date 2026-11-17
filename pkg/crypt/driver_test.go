@@ -522,8 +522,9 @@ func TestDriverForwardsReadPolicyAndLimits(t *testing.T) {
 	p := drive.DefaultReadPolicy()
 	p.Bulk.Streams = 6
 	p.MaxInFlight = 8
-	p.Bulk.Split.PartBytes = 4 << 20
-	p.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 8 << 20, Depth: 2}
+	p.Bulk.PartBytes = 4 << 20
+	p.Interactive.PrefetchWindowBytes = 8 << 20
+	p.Interactive.PrefetchDepth = 2
 	raw := &profiledRawDriver{profile: p, capabilities: []drive.Capability{drive.CapabilityParallelRange}, maxParallel: 2}
 	d := NewDriver(raw, cp, DriverOptions{})
 	if d.ReadPolicy() != p {

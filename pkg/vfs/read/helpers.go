@@ -75,11 +75,10 @@ func ReadPlanExtra(ctx context.Context, windowChunks int) map[string]any {
 		if plan.PrefetchChunks > 0 {
 			extra["prefetch_chunks"] = plan.PrefetchChunks
 		}
-		extra["prefetch_mode"] = string(plan.PrefetchMode)
 		extra["prefetch_depth"] = plan.PrefetchDepth
 		extra["planned_streams"] = plan.MaxStreams
-		extra["part_bytes"] = plan.Split.PartBytes
-		extra["min_parallel_bytes"] = plan.Split.MinParallelBytes
+		extra["part_bytes"] = plan.PartBytes
+		extra["min_parallel_bytes"] = plan.MinParallelBytes
 		extra["cache_writes"] = plan.cacheWrites()
 		bounds := fetchTimeoutsFromContext(ctx)
 		extra["fetch_idle_timeout_ms"] = bounds.Idle.Milliseconds()
@@ -103,7 +102,6 @@ func readPlanWindowExtra(ctx context.Context) map[string]any {
 		"read_stage":     plan.Stage.String(),
 		"read_streams":   grantedStreams(ctx, plan.MaxStreams),
 		"prefetch_depth": plan.PrefetchDepth,
-		"prefetch_mode":  string(plan.PrefetchMode),
 	}
 	if plan.PrefetchChunks > 0 {
 		extra["prefetch_chunks"] = plan.PrefetchChunks

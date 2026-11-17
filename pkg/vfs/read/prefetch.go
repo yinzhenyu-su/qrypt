@@ -110,7 +110,6 @@ func (r *Reader) recordPrefetchPlan(ctx context.Context, entry drive.Entry, curs
 		"cursor_chunk": cursor, "horizon_end_chunk": end, "ready_end_chunk": readyEnd,
 		"pending_windows": pending, "fill_stop": reason,
 		"prefetch_window_chunks": max(1, plan.PrefetchChunks), "prefetch_depth": max(1, plan.PrefetchDepth),
-		"prefetch_mode":   string(plan.PrefetchMode),
 		"source_id":       r.source.Policy().SourceID,
 		"source_admitted": stats.NormalInUse + stats.HighInUse,
 		"object_admitted": r.state.scheduler.PerFileInUse(entry.ID),

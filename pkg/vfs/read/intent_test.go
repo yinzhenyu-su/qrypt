@@ -75,7 +75,7 @@ func TestReadCarriesReadPlan(t *testing.T) {
 	host := &planCaptureHost{entry: drive.Entry{ID: "id", Size: 1, ModTime: time.Now()}, data: []byte("x")}
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 4
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	reader := newTestReader(testReaderDeps{Host: host, State: NewState(nil), Profile: profile})
 
 	rc, err := reader.Read(WithReadIntent(context.Background(), ReadIntentBulk), "/file", 0, 1)
@@ -124,7 +124,7 @@ func TestReadBulkUsesParallelStreams(t *testing.T) {
 	}
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 2
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	reader := newTestReader(testReaderDeps{Host: host, State: NewState(nil), Profile: profile})
 
 	rc, err := reader.Read(WithReadIntent(context.Background(), ReadIntentBulk), "/file", 0, int64(len(data)))
@@ -173,7 +173,7 @@ func TestHintedSequentialLargeReadUpgradesToBulk(t *testing.T) {
 	}
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 4
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	reader := newTestReader(testReaderDeps{Host: host, State: NewState(nil), Profile: profile})
 
 	first := WithAccessHint(WithoutReadPrefetch(context.Background()), AccessHint{SessionID: 1, RequestID: 1})
@@ -193,8 +193,8 @@ func TestHintedSequentialLargeReadUpgradesToBulk(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from driver read context")
 	}
-	if host.plan.Intent != ReadIntentUnspecified || host.plan.MaxStreams != 4 || !host.plan.cacheWrites() {
-		t.Fatalf("adaptive plan = %+v, want unchanged intent/4/cache", host.plan)
+	if host.plan.Intent != ReadIntentUnspecified || host.plan.MaxStreams != 1 || !host.plan.cacheWrites() {
+		t.Fatalf("streaming plan = %+v, want unchanged intent/single-window/cache", host.plan)
 	}
 	if host.plan.WindowChunks != 1 {
 		t.Fatalf("adaptive window = %d, want the FUSE window 1", host.plan.WindowChunks)
@@ -214,7 +214,7 @@ func TestReadStreamPrefetchesNextWindow(t *testing.T) {
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 1
 	profile.Bulk.WindowBytes = 1 * ChunkSize
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	reader := newTestReader(testReaderDeps{Host: host, State: NewState(nil), Profile: profile})
 
 	rc, err := reader.ReadStream(WithReadIntent(context.Background(), ReadIntentBulk), "/file")

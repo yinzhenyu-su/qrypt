@@ -49,13 +49,11 @@ const downloadTotalTimeout = 90 * time.Second
 // foreground's entire allowance.
 func (d *Driver) ReadPolicy() drive.ReadPolicy {
 	p := drive.DefaultReadPolicy()
-	p.Interactive.Sequential = drive.AccessPolicy{
-		Window:   drive.WindowPolicy{Mode: drive.WindowFixed, Bytes: 2 << 20},
-		Prefetch: drive.PrefetchPolicy{Mode: drive.PrefetchAdaptive},
-	}
+	p.Interactive.WindowBytes = 2 << 20
 	p.Bulk.WindowBytes = 4 << 20
 	p.Bulk.Streams = 3
-	p.Bulk.Split = drive.SplitPolicy{PartBytes: 8 << 20, MinParallelBytes: 4 << 20}
+	p.Bulk.PartBytes = 8 << 20
+	p.Bulk.MinParallelBytes = 4 << 20
 	p.MaxInFlight = 7
 	p.Fetch.Total = downloadTotalTimeout
 	return p

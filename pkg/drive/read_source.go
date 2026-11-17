@@ -62,12 +62,12 @@ func explicitRangeLayout(offset, size int64, workers int, part int64) rangeLayou
 // layout the source executes. Below MinParallelBytes the window stays on one
 // stream; PartBytes (or an even split when zero) sizes each part. The read layer
 // and the direct sourceStream both use this so policy is interpreted once.
-func WindowPartLayout(size int64, streams int, split SplitPolicy) (workers int, part int64) {
+func WindowPartLayout(size int64, streams int, partBytes, minParallelBytes int64) (workers int, part int64) {
 	workers = max(1, streams)
-	if split.MinParallelBytes > 0 && size < split.MinParallelBytes {
+	if minParallelBytes > 0 && size < minParallelBytes {
 		return 1, 0
 	}
-	return workers, split.PartBytes
+	return workers, partBytes
 }
 
 func (l rangeLayout) count() int64 { return (l.size + l.part - 1) / l.part }
@@ -586,7 +586,7 @@ func (r *sourceStream) Read(p []byte) (int, error) {
 		if r.known {
 			n = min(n, r.remaining)
 		}
-		workers, part := WindowPartLayout(n, policy.Bulk.Streams, policy.Bulk.Split)
+		workers, part := WindowPartLayout(n, policy.Bulk.Streams, policy.Bulk.PartBytes, policy.Bulk.MinParallelBytes)
 		data, err := r.source.Fetch(r.ctx, r.entry, RangePlan{Offset: r.offset, Size: n, Workers: workers, Part: part, Timeouts: policy.Fetch, Priority: readbudget.PriorityLow})
 		if err != nil {
 			return 0, err

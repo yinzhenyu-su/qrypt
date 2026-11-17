@@ -47,10 +47,7 @@ func TestForegroundWindowServesHeadBlockBeforeTail(t *testing.T) {
 
 	h := &gatedWindowHost{stagedHost: r.host, head: head, tail: tail, opened: make(chan struct{})}
 	profile := drive.DefaultReadPolicy()
-	profile.Interactive.Sequential = drive.AccessPolicy{
-		Window:   drive.WindowPolicy{Mode: drive.WindowFixed, Bytes: 2 * ChunkSize},
-		Prefetch: profile.Interactive.Sequential.Prefetch,
-	}
+	profile.Interactive.WindowBytes = 2 * ChunkSize
 	source, err := drive.NewReadSource(hostReadDriver{host: h, policy: profile}, nil)
 	if err != nil {
 		t.Fatal(err)

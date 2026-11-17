@@ -224,8 +224,8 @@ jq '[.[0].metrics[] | select(.phase == "fetch_window" or .phase == "prefetch_win
 Read the diagnostic `read_policy` object's `recommended`, `effective`, `limits`,
 `origins` and `source_id`. Three layers stay separate: `recommended` is what the
 driver asked for, `effective` is what resolution allowed, and the session's
-`prefetch_plan` events show the shape it executes (`prefetch_mode`,
-`prefetch_window_chunks`, `prefetch_depth`, `horizon_end_chunk`,
+`prefetch_plan` events show the shape it executes
+(`prefetch_window_chunks`, `prefetch_depth`, `horizon_end_chunk`,
 `ready_end_chunk`, `fill_stop`, `pending_windows`). In fetch-event extras
 distinguish:
 

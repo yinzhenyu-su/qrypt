@@ -1,9 +1,10 @@
 package read
 
-// ReadPlan must keep the prefetch mode and the stage's allowed ceilings, so a
-// later stage never has to guess the rule from a number's provenance. Two
-// stages that resolve the same effective values behave identically no matter
-// whether the values came from a default, a driver recommendation, or a mount
+// ReadPlan resolves two shapes only: streaming and bulk. A streaming plan takes
+// its window from the caller unless the confirmed sequential stage widens it,
+// and its lookahead is one window (W) times a depth (D). There is no mode left
+// to infer from a number's provenance: the same effective values behave the
+// same whether they came from a default, a driver recommendation, or a mount
 // override.
 
 import (
@@ -55,87 +56,81 @@ func resolvedPolicy(t *testing.T, d drive.Driver, override *drive.ReadOverride) 
 	return resolved
 }
 
-// fixedPolicy is a stage-by-stage fixed plan: no consumption credit applies.
-func fixedPolicy() drive.ReadPolicy {
+// shapePolicy widens the sequential window and asks for a wide lookahead.
+func shapePolicy() drive.ReadPolicy {
 	p := drive.DefaultReadPolicy()
-	p.Interactive.Initial = drive.AccessPolicy{
-		Window:   drive.WindowPolicy{Mode: drive.WindowFixed, Bytes: 4 * ChunkSize},
-		Prefetch: drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 4 * ChunkSize, Depth: 2},
-	}
-	p.Interactive.Seek = p.Interactive.Initial
-	p.Interactive.Sequential = drive.AccessPolicy{
-		Window:   drive.WindowPolicy{Mode: drive.WindowFixed, Bytes: 4 * ChunkSize},
-		Prefetch: drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 8 << 20, Depth: 4},
-	}
+	p.Interactive.WindowBytes = 4 * ChunkSize
+	p.Interactive.PrefetchWindowBytes = 8 << 20
+	p.Interactive.PrefetchDepth = 4
 	return p
 }
 
-// disabledPolicy prefetches nothing anywhere.
+// disabledPolicy prefetches nothing.
 func disabledPolicy() drive.ReadPolicy {
 	p := drive.DefaultReadPolicy()
-	off := drive.AccessPolicy{
-		Window:   drive.WindowPolicy{Mode: drive.WindowCaller},
-		Prefetch: drive.PrefetchPolicy{Mode: drive.PrefetchDisabled},
-	}
-	p.Interactive.Initial, p.Interactive.Seek, p.Interactive.Sequential = off, off, off
+	p.Interactive.PrefetchDepth = 0
 	return p
 }
 
-func TestPlanModesTableDriven(t *testing.T) {
+func TestPlanShapesTableDriven(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		policy drive.ReadPolicy
-		stage  ReadStage
-		caller int
-		mode   drive.PrefetchMode
-		chunks int
-		depth  int
+		name     string
+		policy   drive.ReadPolicy
+		stage    ReadStage
+		caller   int
+		depthCap int
+		window   int
+		chunks   int
+		depth    int
 	}{
 		{
-			name: "adaptive initial single chunk", policy: drive.DefaultReadPolicy(), stage: StageInitial, caller: 1,
-			mode: drive.PrefetchAdaptive, chunks: 1, depth: 4,
+			name: "default initial single chunk", policy: drive.DefaultReadPolicy(), stage: StageInitial, caller: 1, depthCap: 4,
+			window: 1, chunks: 1, depth: 4,
 		},
 		{
-			// The adaptive rule executes one foreground window per active
-			// slot; a sequential FUSE read keeps the same single-chunk window.
-			name: "adaptive sequential single chunk", policy: drive.DefaultReadPolicy(), stage: StageSequential, caller: 1,
-			mode: drive.PrefetchAdaptive, chunks: 1, depth: 4,
+			name: "default sequential single chunk", policy: drive.DefaultReadPolicy(), stage: StageSequential, caller: 1, depthCap: 4,
+			window: 1, chunks: 1, depth: 4,
 		},
 		{
-			name: "adaptive seek two chunks", policy: drive.DefaultReadPolicy(), stage: StageSeek, caller: 2,
-			mode: drive.PrefetchAdaptive, chunks: 2, depth: 4,
+			name: "default seek two chunks", policy: drive.DefaultReadPolicy(), stage: StageSeek, caller: 2, depthCap: 4,
+			window: 2, chunks: 2, depth: 4,
 		},
 		{
-			name: "adaptive wide caller window", policy: drive.DefaultReadPolicy(), stage: StageInitial, caller: 4,
-			mode: drive.PrefetchAdaptive, chunks: 4, depth: 4,
+			name: "default wide caller window", policy: drive.DefaultReadPolicy(), stage: StageInitial, caller: 4, depthCap: 4,
+			window: 4, chunks: 4, depth: 4,
 		},
 		{
-			name: "fixed initial", policy: fixedPolicy(), stage: StageInitial, caller: 1,
-			mode: drive.PrefetchFixed, chunks: 4, depth: 2,
+			// Initial access never takes the sequential window.
+			name: "shape initial keeps caller window", policy: shapePolicy(), stage: StageInitial, caller: 1, depthCap: 4,
+			window: 1, chunks: 16, depth: 4,
 		},
 		{
-			name: "fixed sequential", policy: fixedPolicy(), stage: StageSequential, caller: 1,
-			mode: drive.PrefetchFixed, chunks: 16, depth: 4,
+			name: "shape sequential widens window", policy: shapePolicy(), stage: StageSequential, caller: 1, depthCap: 4,
+			window: 4, chunks: 16, depth: 4,
 		},
 		{
-			name: "disabled", policy: disabledPolicy(), stage: StageSequential, caller: 1,
-			mode: drive.PrefetchDisabled, chunks: 0, depth: 0,
+			name: "depth capped by capacity", policy: shapePolicy(), stage: StageSequential, caller: 1, depthCap: 2,
+			window: 4, chunks: 16, depth: 2,
+		},
+		{
+			name: "disabled", policy: disabledPolicy(), stage: StageSequential, caller: 1, depthCap: 4,
+			window: 1, chunks: 0, depth: 0,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved := resolvedPolicy(t, recommendingDriver{policy: tc.policy}, nil)
-			plan := (PlanResolver{Profile: resolved.Effective, AdaptiveDepth: 4}).ResolveStage(tc.stage, ReadIntentUnspecified, tc.caller)
-			if plan.PrefetchMode != tc.mode {
-				t.Fatalf("mode = %q, want %q", plan.PrefetchMode, tc.mode)
+			plan := (PlanResolver{Profile: resolved.Effective, AdaptiveDepth: tc.depthCap}).ResolveStage(tc.stage, ReadIntentUnspecified, tc.caller)
+			if plan.WindowChunks != tc.window || plan.PrefetchChunks != tc.chunks || plan.PrefetchDepth != tc.depth {
+				t.Fatalf("plan = %+v, want window %d chunks %d depth %d", plan, tc.window, tc.chunks, tc.depth)
 			}
-			if plan.PrefetchChunks != tc.chunks || plan.PrefetchDepth != tc.depth {
-				t.Fatalf("window/depth = %d x %d, want %d x %d", plan.PrefetchChunks, plan.PrefetchDepth, tc.chunks, tc.depth)
+			if tc.chunks == 0 {
+				if plan.prefetchHorizonChunks() != 0 {
+					t.Fatalf("disabled plan has horizon %d", plan.prefetchHorizonChunks())
+				}
+				return
 			}
-			if got, want := plan.prefetchHorizonChunks(), int64(max(1, tc.chunks)*max(1, tc.depth)); got != want && tc.chunks > 0 {
+			if got, want := plan.prefetchHorizonChunks(), int64(tc.chunks)*int64(tc.depth); got != want {
 				t.Fatalf("horizon = %d chunks, want %d", got, want)
-			}
-			if tc.chunks == 0 && plan.prefetchHorizonChunks() != 0 {
-				t.Fatalf("disabled plan has horizon %d", plan.prefetchHorizonChunks())
 			}
 		})
 	}
@@ -175,24 +170,23 @@ func TestPlanIgnoresPolicyProvenance(t *testing.T) {
 	}
 }
 
-// TestPlanStageUpgradeKeepsMode pins that a later stage keeps the same prefetch
-// rule; the stage may change W×D but never the mechanism.
-func TestPlanStageUpgradeKeepsMode(t *testing.T) {
+// TestPlanStageUpgradeKeepsLookahead pins that a later stage keeps the same
+// lookahead shape; the stage may change W but never the mechanism.
+func TestPlanStageUpgradeKeepsLookahead(t *testing.T) {
 	resolver := PlanResolver{Profile: drive.DefaultReadPolicy(), AdaptiveDepth: 4}
 	initial := resolver.ResolveStage(StageInitial, ReadIntentUnspecified, 1)
 	sequential := resolver.ResolveStage(StageSequential, ReadIntentUnspecified, 1)
-	if initial.PrefetchMode != drive.PrefetchAdaptive || sequential.PrefetchMode != drive.PrefetchAdaptive {
-		t.Fatalf("mode changed across stages: %q -> %q", initial.PrefetchMode, sequential.PrefetchMode)
+	if initial.PrefetchDepth != sequential.PrefetchDepth || initial.PrefetchChunks != sequential.PrefetchChunks {
+		t.Fatalf("lookahead changed across stages: %+v -> %+v", initial, sequential)
 	}
 	if initial.prefetchHorizonChunks() != sequential.prefetchHorizonChunks() {
 		t.Fatalf("stage upgrade changed the fixed horizon: %d -> %d", initial.prefetchHorizonChunks(), sequential.prefetchHorizonChunks())
 	}
 }
 
-// TestPlanWithoutModeKeepsLiteralNumbers pins the non-adaptive fallback: a plan
-// built outside ResolveStage (bulk bursts, ReadStream, probe overrides) has no
-// adaptive mode and executes its numbers literally.
-func TestPlanWithoutModeKeepsLiteralNumbers(t *testing.T) {
+// TestPlanExecutesLiteralNumbers pins that a plan built outside ResolveStage
+// executes its numbers literally.
+func TestPlanExecutesLiteralNumbers(t *testing.T) {
 	plan := ReadPlan{Stage: StageSequential, PrefetchChunks: 2, PrefetchDepth: 3}
 	if plan.prefetchHorizonChunks() != 6 {
 		t.Fatalf("literal horizon = %d chunks, want 6", plan.prefetchHorizonChunks())

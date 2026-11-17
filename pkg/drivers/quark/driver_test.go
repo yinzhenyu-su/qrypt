@@ -330,15 +330,11 @@ func TestDriverReadPolicyPreservesLegacyReadShape(t *testing.T) {
 	if !drive.HasCapability(d, drive.CapabilityParallelRange) || drive.HasCapability(d, drive.CapabilityInternalParallelRead) {
 		t.Fatal("invalid read capability")
 	}
-	if p.Bulk.WindowBytes != 4<<20 || p.Bulk.Streams != 3 || p.Bulk.Split.PartBytes != 8<<20 || p.Bulk.Split.MinParallelBytes != 4<<20 {
+	if p.Bulk.WindowBytes != 4<<20 || p.Bulk.Streams != 3 || p.Bulk.PartBytes != 8<<20 || p.Bulk.MinParallelBytes != 4<<20 {
 		t.Fatalf("bulk=%+v", p.Bulk)
 	}
-	if p.Interactive.Sequential.Window.Mode != drive.WindowFixed || p.Interactive.Sequential.Window.Bytes != 2<<20 ||
-		p.Interactive.Sequential.Prefetch != (drive.PrefetchPolicy{Mode: drive.PrefetchAdaptive}) {
+	if p.Interactive.WindowBytes != 2<<20 || p.Interactive.PrefetchDepth != 4 {
 		t.Fatalf("interactive=%+v", p.Interactive)
-	}
-	if p.Interactive.Initial.Window.Mode != drive.WindowCaller || p.Interactive.Seek.Window.Mode != drive.WindowCaller {
-		t.Fatalf("initial/seek must keep the caller window: %+v", p.Interactive)
 	}
 	if p.MaxInFlight != 7 {
 		t.Fatalf("file budget=%d, want room for four lookaheads plus three workers", p.MaxInFlight)

@@ -15,8 +15,8 @@ import (
 func slidingProfile(budget int) drive.ReadPolicy {
 	p := drive.DefaultReadPolicy()
 	p.MaxInFlight = budget
-	p.Interactive.Initial.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchDisabled}
-	p.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 2 * ChunkSize, Depth: 3}
+	p.Interactive.PrefetchWindowBytes = 2 * ChunkSize
+	p.Interactive.PrefetchDepth = 3
 	return p
 }
 

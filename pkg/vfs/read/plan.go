@@ -37,18 +37,19 @@ func (s ReadStage) String() string {
 // the shared executor receives byte ranges.
 //
 // PrefetchChunks (W) and PrefetchDepth (D) are executed literally: a session
-// keeps W×D chunks of lookahead ahead of its cursor. PrefetchMode records which
-// rule produced those numbers for diagnostics; there is no growth state left to
-// infer from it. A disabled plan keeps W and D at zero and prefetches nothing.
+// keeps W×D chunks of lookahead ahead of its cursor. A plan with either at zero
+// prefetches nothing. Bulk plans also carry the part layout: PartBytes is a
+// strict part ceiling (zero means an even split) and MinParallelBytes is the
+// smallest window worth splitting at all.
 type ReadPlan struct {
-	Intent         ReadIntent
-	Stage          ReadStage
-	MaxStreams     int
-	WindowChunks   int
-	PrefetchChunks int
-	PrefetchDepth  int
-	PrefetchMode   drive.PrefetchMode
-	Split          drive.SplitPolicy
+	Intent           ReadIntent
+	Stage            ReadStage
+	MaxStreams       int
+	WindowChunks     int
+	PrefetchChunks   int
+	PrefetchDepth    int
+	PartBytes        int64
+	MinParallelBytes int64
 }
 
 // cacheWrites reports whether this read may write durable cache chunks. Bulk
@@ -78,9 +79,9 @@ type PlanOverride struct {
 }
 
 type PlanResolver struct {
-	Profile            drive.ReadPolicy
-	AdaptiveDepth      int
-	ParallelSequential bool
+	Profile drive.ReadPolicy
+	// AdaptiveDepth caps the lookahead depth by the shared prefetch capacity.
+	AdaptiveDepth int
 }
 
 func (r PlanResolver) ResolveStage(stage ReadStage, intent ReadIntent, callerChunks int) ReadPlan {
@@ -89,38 +90,25 @@ func (r PlanResolver) ResolveStage(stage ReadStage, intent ReadIntent, callerChu
 	if intent == ReadIntentBulk {
 		plan.WindowChunks = byteChunks(p.Bulk.WindowBytes)
 		plan.MaxStreams = p.Bulk.Streams
-		plan.Split = p.Bulk.Split
+		plan.PartBytes = p.Bulk.PartBytes
+		plan.MinParallelBytes = p.Bulk.MinParallelBytes
 		plan.PrefetchChunks = plan.WindowChunks
 		plan.PrefetchDepth = 1
 		return plan
 	}
-	access := p.Interactive.Initial
-	if stage == StageSeek {
-		access = p.Interactive.Seek
+	// Streaming: initial and seek keep the caller's bounded window; only a
+	// confirmed forward run may widen it. Lookahead is one window per slot:
+	// W is the window and D is the driver's recommended depth.
+	if stage == StageSequential && p.Interactive.WindowBytes > 0 {
+		plan.WindowChunks = byteChunks(p.Interactive.WindowBytes)
 	}
-	if stage == StageSequential {
-		access = p.Interactive.Sequential
-	}
-	if access.Window.Mode == drive.WindowFixed {
-		plan.WindowChunks = byteChunks(access.Window.Bytes)
-	}
-	plan.PrefetchMode = access.Prefetch.Mode
-	switch access.Prefetch.Mode {
-	case drive.PrefetchFixed:
-		plan.PrefetchChunks = byteChunks(access.Prefetch.WindowBytes)
-		plan.PrefetchDepth = access.Prefetch.Depth
-	case drive.PrefetchAdaptive:
-		// The adaptive rule executes a fixed pipeline rather than growing a
-		// budget: one foreground window per active window slot, W×D chunks of
-		// lookahead in total. A FUSE foreground window is one chunk, so the
-		// permit depth decides how many single-chunk lookahead windows stay
-		// ahead of the cursor.
-		plan.PrefetchChunks = plan.WindowChunks
-		plan.PrefetchDepth = max(1, min(4, r.AdaptiveDepth))
-	}
-	if r.ParallelSequential && intent == ReadIntentUnspecified && stage == StageSequential {
-		plan.MaxStreams = p.Bulk.Streams
-		plan.Split = p.Bulk.Split
+	if depth := p.Interactive.PrefetchDepth; depth > 0 {
+		w := plan.WindowChunks
+		if p.Interactive.PrefetchWindowBytes > 0 {
+			w = byteChunks(p.Interactive.PrefetchWindowBytes)
+		}
+		plan.PrefetchChunks = w
+		plan.PrefetchDepth = max(1, min(depth, r.AdaptiveDepth))
 	}
 	plan.WindowChunks = min(plan.WindowChunks, int(drive.MaxReadWindowBytes/ChunkSize))
 	return plan

@@ -8,8 +8,9 @@ import (
 
 func TestPlanResolvesEveryStageAndIntent(t *testing.T) {
 	p := drive.DefaultReadPolicy()
-	p.Interactive.Seek = drive.AccessPolicy{Window: drive.WindowPolicy{Mode: drive.WindowFixed, Bytes: ChunkSize}, Prefetch: drive.PrefetchPolicy{Mode: drive.PrefetchDisabled}}
-	p.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 8 << 20, Depth: 1}
+	p.Interactive.WindowBytes = 2 << 20
+	p.Interactive.PrefetchWindowBytes = 8 << 20
+	p.Interactive.PrefetchDepth = 1
 	for _, stage := range []ReadStage{StageInitial, StageSeek, StageSequential} {
 		for _, intent := range []ReadIntent{ReadIntentUnspecified, ReadIntentInteractive, ReadIntentBulk} {
 			plan := (PlanResolver{Profile: p, AdaptiveDepth: 4}).ResolveStage(stage, intent, 2)
@@ -28,11 +29,15 @@ func TestPlanResolvesEveryStageAndIntent(t *testing.T) {
 			if !plan.cacheWrites() {
 				t.Fatal("lost cache admission")
 			}
-			if stage == StageSeek && (plan.WindowChunks != 1 || plan.PrefetchDepth != 0) {
-				t.Fatalf("seek: %+v", plan)
+			wantWindow := 2
+			if stage == StageSequential {
+				wantWindow = byteChunks(2 << 20)
 			}
-			if stage == StageSequential && (plan.PrefetchChunks != 16 || plan.PrefetchDepth != 1) {
-				t.Fatalf("sequential: %+v", plan)
+			if plan.WindowChunks != wantWindow {
+				t.Fatalf("%v window: %+v", stage, plan)
+			}
+			if plan.PrefetchChunks != 16 || plan.PrefetchDepth != 1 {
+				t.Fatalf("%v lookahead: %+v", stage, plan)
 			}
 		}
 	}

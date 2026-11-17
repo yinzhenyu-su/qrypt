@@ -50,7 +50,7 @@ func TestParallelCacheAdmissionKeepsHotOnly(t *testing.T) {
 	}
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 2
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	reader := newTestReader(testReaderDeps{Host: host, State: NewState(cache), Profile: profile})
 
 	ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentBulk))

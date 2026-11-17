@@ -312,7 +312,7 @@ func TestDirectReadParallelPartsTimeOutStalledBody(t *testing.T) {
 	profile := func() ReadPolicy {
 		p := DefaultReadPolicy()
 		p.Bulk.Streams = 2
-		p.Bulk.Split.MinParallelBytes = 1
+		p.Bulk.MinParallelBytes = 1
 		p.Fetch.Idle = 50 * time.Millisecond
 		p.Fetch.Total = 5 * time.Second
 		return p
@@ -425,9 +425,9 @@ func TestSourceReadHonorsPartSizeAndInFlightBudget(t *testing.T) {
 	profile := func() ReadPolicy {
 		p := DefaultReadPolicy()
 		p.Bulk.Streams = 3
-		p.Bulk.Split.MinParallelBytes = 1
+		p.Bulk.MinParallelBytes = 1
 		p.MaxInFlight = 1
-		p.Bulk.Split.PartBytes = int64(1) * ReadChunkSize
+		p.Bulk.PartBytes = int64(1) * ReadChunkSize
 		return p
 	}()
 	entry := Entry{ID: "0/file.bin", Size: total}
@@ -477,8 +477,8 @@ func TestSourceReadMinSplitKeepsSmallRequestSingleStream(t *testing.T) {
 	profile := func() ReadPolicy {
 		p := DefaultReadPolicy()
 		p.Bulk.Streams = 3
-		p.Bulk.Split.MinParallelBytes = 1
-		p.Bulk.Split.MinParallelBytes = int64(16) * ReadChunkSize
+		p.Bulk.MinParallelBytes = 1
+		p.Bulk.MinParallelBytes = int64(16) * ReadChunkSize
 		return p
 	}()
 	entry := Entry{ID: "0/file.bin", Size: int64(len(data))}
@@ -694,7 +694,7 @@ func TestDirectPartAbandonPropagatesStallCause(t *testing.T) {
 	profile := func() ReadPolicy {
 		p := DefaultReadPolicy()
 		p.Bulk.Streams = 2
-		p.Bulk.Split.MinParallelBytes = 1
+		p.Bulk.MinParallelBytes = 1
 		p.Fetch.Idle = 50 * time.Millisecond
 		p.Fetch.Total = 5 * time.Second
 		return p

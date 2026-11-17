@@ -4,49 +4,30 @@ import (
 	"fmt"
 )
 
-// WindowMode selects the caller's bounded window or a fixed byte window.
-type WindowMode string
-
-const (
-	WindowCaller WindowMode = "caller"
-	WindowFixed  WindowMode = "fixed"
-)
-
-type WindowPolicy struct {
-	Mode  WindowMode `json:"mode"`
-	Bytes int64      `json:"bytes,omitempty"`
-}
-type PrefetchMode string
-
-const (
-	PrefetchDisabled PrefetchMode = "disabled"
-	PrefetchFixed    PrefetchMode = "fixed"
-	PrefetchAdaptive PrefetchMode = "adaptive"
-)
-
-type PrefetchPolicy struct {
-	Mode        PrefetchMode `json:"mode"`
-	WindowBytes int64        `json:"window_bytes,omitempty"`
-	Depth       int          `json:"depth,omitempty"`
-}
-type AccessPolicy struct {
-	Window   WindowPolicy   `json:"window"`
-	Prefetch PrefetchPolicy `json:"prefetch"`
-}
+// InteractivePolicy is the streaming shape. There are only two knobs: how
+// large the confirmed sequential window is, and how far ahead of the cursor
+// the lookahead runs. Initial and seek reads always keep the caller's bounded
+// window: a larger window only pays off once forward progress is confirmed.
 type InteractivePolicy struct {
-	Initial    AccessPolicy `json:"initial"`
-	Seek       AccessPolicy `json:"seek"`
-	Sequential AccessPolicy `json:"sequential"`
-}
-type SplitPolicy struct {
-	// PartBytes is a strict logical part ceiling. Zero means even division.
-	PartBytes        int64 `json:"part_bytes"`
-	MinParallelBytes int64 `json:"min_parallel_bytes"`
+	// WindowBytes is the sequential read-ahead window. Zero keeps the caller's
+	// bounded window, which is one chunk for a FUSE read and the caller's
+	// request for a streaming reader.
+	WindowBytes int64 `json:"window_bytes,omitempty"`
+	// PrefetchWindowBytes is the lookahead window W. Zero keeps it equal to the
+	// read window, which is the common case; a driver only sets it when its
+	// lookahead should differ from the window it reads with. PrefetchDepth is
+	// the depth D: the horizon is W×D chunks, and zero disables lookahead.
+	PrefetchWindowBytes int64 `json:"prefetch_window_bytes,omitempty"`
+	PrefetchDepth       int   `json:"prefetch_depth,omitempty"`
 }
 type BulkPolicy struct {
-	WindowBytes int64       `json:"window_bytes"`
-	Streams     int         `json:"streams"`
-	Split       SplitPolicy `json:"split"`
+	WindowBytes int64 `json:"window_bytes"`
+	Streams     int   `json:"streams"`
+	// PartBytes is a strict logical part ceiling. Zero means even division.
+	PartBytes int64 `json:"part_bytes,omitempty"`
+	// MinParallelBytes is the smallest window worth splitting. Zero always
+	// splits when more than one worker is admitted.
+	MinParallelBytes int64 `json:"min_parallel_bytes,omitempty"`
 }
 
 // ReadPolicy contains complete driver recommendations. Unlike ReadOverride,
@@ -87,11 +68,9 @@ type ResolvedReadPolicy struct {
 const MaxReadWindowBytes int64 = 32 << 20
 
 func DefaultReadPolicy() ReadPolicy {
-	adaptive := PrefetchPolicy{Mode: PrefetchAdaptive}
-	caller := AccessPolicy{Window: WindowPolicy{Mode: WindowCaller}, Prefetch: adaptive}
 	return ReadPolicy{
-		Interactive: InteractivePolicy{Initial: caller, Seek: caller, Sequential: caller},
-		Bulk:        BulkPolicy{WindowBytes: 8 << 20, Streams: 4, Split: SplitPolicy{MinParallelBytes: 8 << 20}},
+		Interactive: InteractivePolicy{PrefetchDepth: 4},
+		Bulk:        BulkPolicy{WindowBytes: 8 << 20, Streams: 4, MinParallelBytes: 8 << 20},
 		MaxInFlight: 4, Fetch: FetchTimeouts{Idle: DefaultFetchIdleTimeout, Total: DefaultFetchTotalTimeout},
 	}
 }
@@ -102,34 +81,14 @@ func ValidateReadPolicy(p ReadPolicy) error {
 		}
 		return nil
 	}
-	for name, a := range map[string]AccessPolicy{"initial": p.Interactive.Initial, "seek": p.Interactive.Seek, "sequential": p.Interactive.Sequential} {
-		switch a.Window.Mode {
-		case WindowCaller:
-			if a.Window.Bytes != 0 {
-				return fmt.Errorf("read.%s: caller window must not specify bytes", name)
-			}
-		case WindowFixed:
-			if err := size(name+".window", a.Window.Bytes, false); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("read.%s: invalid window mode %q", name, a.Window.Mode)
-		}
-		switch a.Prefetch.Mode {
-		case PrefetchDisabled, PrefetchAdaptive:
-			if a.Prefetch.Depth != 0 || a.Prefetch.WindowBytes != 0 {
-				return fmt.Errorf("read.%s: %s prefetch must not specify depth or size", name, a.Prefetch.Mode)
-			}
-		case PrefetchFixed:
-			if a.Prefetch.Depth < 1 || a.Prefetch.Depth > 4 {
-				return fmt.Errorf("read.%s: prefetch depth must be 1..4", name)
-			}
-			if err := size(name+".prefetch", a.Prefetch.WindowBytes, false); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("read.%s: invalid prefetch mode %q", name, a.Prefetch.Mode)
-		}
+	if err := size("interactive.window", p.Interactive.WindowBytes, true); err != nil {
+		return err
+	}
+	if p.Interactive.PrefetchDepth < 0 || p.Interactive.PrefetchDepth > 4 {
+		return fmt.Errorf("read.interactive.prefetch_depth: must be 0..4")
+	}
+	if err := size("interactive.prefetch_window", p.Interactive.PrefetchWindowBytes, true); err != nil {
+		return err
 	}
 	if p.Bulk.Streams < 1 || p.Bulk.Streams > 32 {
 		return fmt.Errorf("read.bulk.streams: must be 1..32")
@@ -140,10 +99,10 @@ func ValidateReadPolicy(p ReadPolicy) error {
 	if err := size("bulk.window", p.Bulk.WindowBytes, false); err != nil {
 		return err
 	}
-	if err := size("bulk.part_size", p.Bulk.Split.PartBytes, true); err != nil {
+	if err := size("bulk.part_size", p.Bulk.PartBytes, true); err != nil {
 		return err
 	}
-	if err := size("bulk.min_parallel_size", p.Bulk.Split.MinParallelBytes, true); err != nil {
+	if err := size("bulk.min_parallel_size", p.Bulk.MinParallelBytes, true); err != nil {
 		return err
 	}
 	if p.Fetch.Idle <= 0 || p.Fetch.Total <= 0 || p.Fetch.Idle > p.Fetch.Total {
@@ -162,7 +121,7 @@ func ResolveReadPolicy(d Driver, o *ReadOverride) (ResolvedReadPolicy, error) {
 		return ResolvedReadPolicy{}, fmt.Errorf("%T: %w", d, err)
 	}
 	out := ResolvedReadPolicy{Recommended: p, Effective: p, Origins: map[string]string{}}
-	for _, k := range []string{"interactive", "bulk.streams", "bulk.window", "bulk.part_size", "bulk.min_parallel_size", "max_in_flight", "fetch"} {
+	for _, k := range []string{"interactive.window", "interactive.prefetch_window", "interactive.prefetch_depth", "bulk.streams", "bulk.window", "bulk.part_size", "bulk.min_parallel_size", "max_in_flight", "fetch"} {
 		out.Origins[k] = origin
 	}
 	limits := ReadLimits{MaxInFlight: 32, Parallel: HasCapability(d, CapabilityParallelRange) && !HasCapability(d, CapabilityInternalParallelRead)}
@@ -192,11 +151,11 @@ func ResolveReadPolicy(d Driver, o *ReadOverride) (ResolvedReadPolicy, error) {
 			out.Origins["bulk.window"] = "mount"
 		}
 		if o.PartBytes != nil {
-			p.Bulk.Split.PartBytes = *o.PartBytes
+			p.Bulk.PartBytes = *o.PartBytes
 			out.Origins["bulk.part_size"] = "mount"
 		}
 		if o.MinParallelBytes != nil {
-			p.Bulk.Split.MinParallelBytes = *o.MinParallelBytes
+			p.Bulk.MinParallelBytes = *o.MinParallelBytes
 			out.Origins["bulk.min_parallel_size"] = "mount"
 		}
 	}

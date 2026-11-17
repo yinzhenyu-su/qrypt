@@ -197,7 +197,7 @@ func TestPrefetchUsesAdmissionPermits(t *testing.T) {
 func TestFileBudgetBoundsParallelSubRanges(t *testing.T) {
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 4
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	profile.MaxInFlight = 2
 	r := newStagedReaderWithProfile(t, 16<<20, profile)
 	ctx := WithoutReadPrefetch(WithReadIntent(sessionContext(1, 1), ReadIntentBulk))

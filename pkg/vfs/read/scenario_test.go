@@ -56,7 +56,7 @@ func newScenarioReader(t *testing.T, size int, behavior drive.ReadBehavior) (*Re
 	}
 	state := NewState(nil)
 	profile := drive.DefaultReadPolicy()
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	profile.Bulk.WindowBytes = 4 * ChunkSize
 	reader := newTestReader(testReaderDeps{
 		Host:    &scenarioHost{driver: driver, entry: entry, cacheKey: "cache"},

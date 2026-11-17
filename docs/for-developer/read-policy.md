@@ -29,8 +29,9 @@ single connection and only reaches the provider's per-stream rate. Quark
 therefore recommends a fixed 2 MiB sequential window (initial and seek keep the
 caller window): interleaved 32 MiB playback-shaped reads over the same CDN
 sustained about 4.5–5.7 MB/s with that window versus 2.2–3.4 MB/s with the
-caller window, while a 4 MiB window was slower. Lookahead follows the resolved
-adaptive depth, i.e. four 2 MiB lookahead windows.
+caller window, while a 4 MiB window was slower. Lookahead follows the resolved depth (the
+driver's recommendation capped by the shared prefetch capacity), i.e. four
+2 MiB lookahead windows.
 
 The scheduler atomically acquires global and object capacity. Stable provider
 IDs identify objects inside one source; unknown IDs fail. Speculation uses
@@ -118,8 +119,8 @@ code never keys a map to report what it did.
 Debug-only `prefetch_plan` snapshots report the consumed `cursor_chunk`, the
 exclusive `horizon_end_chunk` and the contiguous memory-resident
 `ready_end_chunk`. They also record the fixed plan numbers
-`prefetch_window_chunks` (`W`) and `prefetch_depth` (`D`), the diagnostic
-`prefetch_mode`, and `fill_stop`, which distinguishes a full horizon, the depth
+`prefetch_window_chunks` (`W`) and `prefetch_depth` (`D`), and `fill_stop`,
+which distinguishes a full horizon, the depth
 gate, an EOF tail, a failure, a cancellation and unsuccessful admission;
 `not_admitted` can also mean another request filled the hole during selection.
 `source_admitted`, `object_admitted`, `prefetch_in_use` and `pending_windows`
@@ -153,11 +154,14 @@ lookahead window for its head block or an already published block: a stalled
 lookahead from an unrelated handle must not delay this caller. Unknown-size loads keep whole-window
 validation.
 
-`ReadPlan` records the stage's prefetch shape. Adaptive stages resolve
-`W = WindowChunks` and `D = max(1, min(4, AdaptiveDepth))`; fixed stages execute
-their configured window and depth literally. `PrefetchMode` is diagnostic: the
-resolved numbers are the whole rule, with no forward byte budget or credit
-controller between them and the scheduler.
+`ReadPlan` records the two shapes a read can take. Streaming plans resolve the
+confirmed sequential window from `Interactive.WindowBytes` (initial and seek
+reads keep the caller window), and the lookahead as `W = PrefetchWindowBytes`
+(or the read window when unset) times `D = max(1, min(PrefetchDepth,
+AdaptiveDepth))`; bulk plans execute their window, worker, part and threshold
+numbers literally. The resolved numbers are the whole rule: there is no mode to
+decode and no forward byte budget or credit controller between them and the
+scheduler.
 
 Lookahead is scheduled by reads, not by a per-handle worker: after a foreground
 read, `pkg/vfs/read/prefetch.go` refreshes a fixed `W × D` horizon ahead of the

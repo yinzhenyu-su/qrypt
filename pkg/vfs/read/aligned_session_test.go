@@ -50,7 +50,7 @@ func TestTailOverlapDoesNotHideSeeksOrUnidentifiedReaders(t *testing.T) {
 }
 
 func TestSessionTailPageRereadPreservesLivePrefetch(t *testing.T) {
-	r := newStagedReaderWithProfile(t, 16*ChunkSize, slidingProfile(1))
+	r := newStagedReaderWithProfile(t, 16*ChunkSize, slidingProfile(2))
 	gate := make(chan struct{})
 	defer close(gate)
 	// Warm foreground data without starting lookahead, then hold the first
@@ -58,10 +58,11 @@ func TestSessionTailPageRereadPreservesLivePrefetch(t *testing.T) {
 	r.host.gateFn = func(offset, _ int64) (<-chan struct{}, bool) {
 		return gate, offset >= 2*ChunkSize
 	}
-	r.read(t, sessionContext(1, 1), 0, ChunkSize)
-	r.read(t, sessionContext(1, 2), ChunkSize, ChunkSize)
-	r.host.waitCall(t, 3)
+	r.read(t, WithoutReadPrefetch(sessionContext(1, 1)), 0, ChunkSize)
+	r.read(t, WithoutReadPrefetch(sessionContext(1, 2)), ChunkSize, ChunkSize)
+	r.host.waitCall(t, 2)
 	got := r.read(t, sessionContext(1, 3), 2*ChunkSize-16<<10, 16<<10)
+	r.host.waitCall(t, 3)
 	if !bytes.Equal(got, r.host.data[2*ChunkSize-16<<10:2*ChunkSize]) {
 		t.Fatal("tail page changed bytes")
 	}

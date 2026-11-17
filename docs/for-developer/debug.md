@@ -773,8 +773,8 @@ field set each.
 
 The summary `phase=read` event describes the whole read: `read_intent`,
 `read_stage`, `read_streams` (granted workers), `planned_streams`, the window
-(`window_chunks`), the prefetch shape (`prefetch_chunks`, `prefetch_depth`,
-`prefetch_mode`), the split thresholds (`part_bytes`, `min_parallel_bytes`),
+(`window_chunks`), the prefetch shape (`prefetch_chunks`, `prefetch_depth`),
+the split thresholds (`part_bytes`, `min_parallel_bytes`),
 `cache_writes`, and both fetch bounds (`fetch_idle_timeout_ms`,
 `fetch_total_timeout_ms`). These are plan-level facts; they do not repeat on
 every window of the same read.
@@ -783,8 +783,8 @@ A `phase=fetch_window` / `phase=prefetch_window` detail event carries only what
 explains that window: identity (`session_id`, `request_id`, `chunk_index`), shape
 (`window_chunks`, `window_bytes`, `part_bytes`, `read_streams` /
 `granted_streams`, `range_tasks`, `actual_in_flight`), the two shape flags
-(`read_intent`, `read_stage`) plus `prefetch_chunks`/`prefetch_depth`/
-`prefetch_mode` while an adaptive lookahead is armed, and timing (`queue_us`,
+(`read_intent`, `read_stage`) plus `prefetch_chunks`/`prefetch_depth` while a
+lookahead is armed, and timing (`queue_us`,
 `open_us`, `body_us`, `close_us`, `local_wait_us`, `validate_us`,
 `first_body_us`, `fetch_us`) with progress (`body_bytes`, `progress_end`).
 The window bounds are not repeated: `chunk_index` and `window_chunks` imply them.

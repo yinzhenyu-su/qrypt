@@ -104,8 +104,7 @@ func (r *Reader) resolve(ctx context.Context, path string) (drive.Entry, error) 
 // resolvePlan resolves the caller's intent, access stage, and the driver
 // profile into the concrete plan carried by this read's context.
 func (r *Reader) resolvePlan(ctx context.Context, defaultWindowChunks int, stage ReadStage) ReadPlan {
-	hint, hinted := AccessHintFromContext(ctx)
-	plan := PlanResolver{Profile: r.profile, AdaptiveDepth: r.state.adaptivePrefetchLimit(stage == StageSequential), ParallelSequential: hinted && !hint.Concurrent}.ResolveStage(stage, ReadIntentFromContext(ctx), defaultWindowChunks)
+	plan := PlanResolver{Profile: r.profile, AdaptiveDepth: r.state.adaptivePrefetchLimit(stage == StageSequential)}.ResolveStage(stage, ReadIntentFromContext(ctx), defaultWindowChunks)
 	r.applyPlanOverride(&plan)
 	return plan
 }
@@ -949,7 +948,7 @@ func (r *Reader) prepareWindowFetch(ctx context.Context, entry drive.Entry, star
 		// Streaming and bulk windows take their part layout from the driver's
 		// split policy, translated here so the source executes an explicit
 		// shape and never interprets policy itself.
-		streams, partBytes = drive.WindowPartLayout(windowBytes, streams, plan.Split)
+		streams, partBytes = drive.WindowPartLayout(windowBytes, streams, plan.PartBytes, plan.MinParallelBytes)
 		if streams > 1 && partBytes <= 0 {
 			partBytes = (windowBytes + int64(streams) - 1) / int64(streams)
 		}
@@ -1285,6 +1284,9 @@ func (r *Reader) foregroundSplitting(objectID string) bool {
 // prefetchWindowChunks is the speculative window size for a planned read: the
 // driver's stage suggestion when it made one, otherwise the foreground window.
 func prefetchWindowChunks(plan ReadPlan, windowChunks int) int {
+	if plan.PrefetchDepth <= 0 {
+		return 0
+	}
 	if plan.PrefetchChunks > 0 {
 		return plan.PrefetchChunks
 	}

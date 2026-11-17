@@ -17,7 +17,8 @@ func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
 	// A fixed sequential stage suggestion makes the speculative lookahead one
 	// wide window, which is the in-flight range this test gates.
 	profile := drive.DefaultReadPolicy()
-	profile.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 8 << 20, Depth: 1}
+	profile.Interactive.PrefetchWindowBytes = 8 << 20
+	profile.Interactive.PrefetchDepth = 1
 	// Isolate window ownership from budget saturation: four lookaheads leave
 	// capacity for the other session's foreground request.
 	profile.MaxInFlight = 8
