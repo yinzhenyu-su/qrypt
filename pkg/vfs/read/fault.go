@@ -19,19 +19,6 @@ type ReadFaultInjector interface {
 	ConsumeReadFault(id string)
 }
 
-type prefetchReadContextKey struct{}
-
-// WithPrefetchRead marks a background prefetch read so foreground-only fault
-// rules skip it.
-func WithPrefetchRead(ctx context.Context) context.Context {
-	return context.WithValue(ctx, prefetchReadContextKey{}, true)
-}
-
-func isPrefetchRead(ctx context.Context) bool {
-	value, _ := ctx.Value(prefetchReadContextKey{}).(bool)
-	return value
-}
-
 // applyReadFault injects the matched fault into a driver range read. It runs
 // below the shared window fetch, so the injected stall/truncate/status is
 // handled by the same timeout, replay, and backoff paths as a real provider.

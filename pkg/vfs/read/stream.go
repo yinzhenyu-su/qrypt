@@ -210,8 +210,8 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 	r.buf = data
 	if readPrefetchEnabled(r.ctx) {
 		// A ReadStream owns its own scope and never enters the session
-		// controller, so it reports no consumption credit.
-		r.reader.schedulePrefetch(ctx, r.entry, chunkIndex+int64(windowChunks)-1, windowChunks, stage == StageSequential, plan, deliveredRange{})
+		// controller; schedulePrefetch then issues one bounded burst.
+		r.reader.schedulePrefetch(ctx, r.entry, chunkIndex+int64(windowChunks)-1, windowChunks, stage == StageSequential, plan)
 	}
 	return nil
 }

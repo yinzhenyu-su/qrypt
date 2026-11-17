@@ -64,28 +64,6 @@ type fetchTiming struct {
 	deliver time.Duration
 }
 
-type fetchTimingContextKey struct{}
-
-// withFetchTiming attaches a per-call timing accumulator to ctx.
-func withFetchTiming(ctx context.Context) (context.Context, *fetchTiming) {
-	timing := &fetchTiming{}
-	return context.WithValue(ctx, fetchTimingContextKey{}, timing), timing
-}
-
-func fetchTimingFromContext(ctx context.Context) *fetchTiming {
-	timing, _ := ctx.Value(fetchTimingContextKey{}).(*fetchTiming)
-	return timing
-}
-
-// ensureFetchTiming re-attaches timing to a context supplied by a caller that
-// does not carry it (ReadContext during a stream refill).
-func ensureFetchTiming(ctx context.Context, timing *fetchTiming) context.Context {
-	if timing == nil || fetchTimingFromContext(ctx) != nil {
-		return ctx
-	}
-	return context.WithValue(ctx, fetchTimingContextKey{}, timing)
-}
-
 func (t *fetchTiming) recordWait(d time.Duration) {
 	if t == nil || d <= 0 {
 		return

@@ -282,7 +282,7 @@ func TestMountedSeekWarmupOffsetsAvoidTargetAndEachOther(t *testing.T) {
 		warmupChunks = 2
 	)
 	cold, warm := mountedSeekWarmupOffsets(fileSize, targetOffset, targetSize, warmupChunks)
-	loadSpan := int64(warmupChunks+vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks) * vfsread.ChunkSize
+	loadSpan := int64(warmupChunks+vfsread.PrefetchLimit*2*vfsread.PrefetchChunks) * vfsread.ChunkSize
 	if cold == warm {
 		t.Fatalf("warmup offsets = (%d, %d), want distinct ranges", cold, warm)
 	}

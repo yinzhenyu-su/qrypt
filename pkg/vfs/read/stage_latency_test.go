@@ -310,34 +310,30 @@ func TestStageUnalignedWindowNeverReadsPastRequest(t *testing.T) {
 	}
 }
 
-func TestStageSequentialReadPrefetchesOneLargeWindow(t *testing.T) {
+// A confirmed sequential pass uses the adaptive plan's fixed pipeline: one
+// foreground-sized window per active slot, all within W×D chunks of the cursor.
+// The old credit controller widened one window toward 8 MiB instead; that rule
+// is gone, so continuous reads must never issue a window wider than one chunk.
+func TestStageSequentialReadPipelinesLookahead(t *testing.T) {
 	size := 64 << 20
 	r := newStagedReader(t, size)
-	// An adaptive pass starts from a small seed and widens only as the caller
-	// consumes bytes. Reaching the stage's 8 MiB window and 32 MiB horizon
-	// takes 1/2/4/8/16 MiB of successive consumption (§ design 2), so this
-	// continuous pass reads until a wide window must appear: the ramp length,
-	// not a policy constant, decides how many reads it needs. A recorded call
-	// stays visible once issued, so a short poll per read catches the wide
-	// window; the final waitRangeSize is the fallback if the ramp outruns it.
-	want := int64(SequentialPrefetchChunks) * ChunkSize
-	for chunk := int64(0); chunk < 128; chunk++ {
+	var prefetched int
+	for chunk := int64(0); chunk < 64; chunk++ {
 		r.read(t, sessionContext(1, uint64(chunk+1)), chunk*ChunkSize, ChunkSize)
-		for deadline := time.Now().Add(2 * time.Millisecond); ; {
-			for _, call := range r.host.recorded() {
-				if call.Prefetch && call.Size == want {
-					return
-				}
+		for _, call := range r.host.recorded() {
+			if !call.Prefetch {
+				continue
 			}
-			if time.Now().After(deadline) {
-				break
+			prefetched++
+			if call.Size > ChunkSize {
+				t.Fatalf("sequential lookahead widened past one chunk: %+v", call)
 			}
-			time.Sleep(time.Millisecond)
 		}
 	}
-	r.host.waitRangeSize(t, want)
+	if prefetched == 0 {
+		t.Fatal("confirmed sequential reads issued no lookahead")
+	}
 }
-
 func TestStagePrefetchDisabledIssuesOnlyTheTarget(t *testing.T) {
 	r := newStagedReader(t, 8<<20)
 	ctx := WithoutReadPrefetch(sessionContext(1, 1))

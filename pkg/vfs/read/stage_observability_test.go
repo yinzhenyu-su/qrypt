@@ -100,8 +100,8 @@ func TestPrefetchSnapshotDoesNotPromoteOrInventReadyData(t *testing.T) {
 	before := append([]string(nil), r.state.fastPath.hot.lru...)
 	r.state.fastPath.hot.mu.Unlock()
 	ctx := drive.WithDebugOperation(sessionContext(7, 9), drive.DebugOperation{OpID: "op"})
-	p := &prefetchSession{ctx: ctx, entry: r.host.entry, cursor: 1, completed: map[int64]bool{3: true}}
-	r.reader.recordSessionPrefetch(p, 4, "batch")
+	ctx = WithReadPlan(ctx, sequentialLookaheadPlan(2, 2))
+	r.reader.recordPrefetchPlan(ctx, r.host.entry, 1, 4, "depth")
 	events := recorder.snapshot()
 	if len(events) != 1 || events[0].Phase != "prefetch_plan" {
 		t.Fatalf("snapshot events: %+v", events)

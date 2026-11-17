@@ -83,87 +83,59 @@ func disabledPolicy() drive.ReadPolicy {
 
 func TestPlanModesTableDriven(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		profile    drive.ReadPolicy
-		stage      ReadStage
-		caller     int
-		mode       drive.PrefetchMode
-		chunks     int
-		depth      int
-		credit     bool
-		windowCap  int64
-		horizonCap int64
-		initial    int64
+		name   string
+		policy drive.ReadPolicy
+		stage  ReadStage
+		caller int
+		mode   drive.PrefetchMode
+		chunks int
+		depth  int
 	}{
 		{
-			name: "adaptive initial single chunk", profile: drive.DefaultReadPolicy(), stage: StageInitial, caller: 1,
-			mode: drive.PrefetchAdaptive, chunks: 1, depth: 4, credit: true,
-			windowCap: ChunkSize, horizonCap: 4 * ChunkSize, initial: ChunkSize,
+			name: "adaptive initial single chunk", policy: drive.DefaultReadPolicy(), stage: StageInitial, caller: 1,
+			mode: drive.PrefetchAdaptive, chunks: 1, depth: 4,
 		},
 		{
-			name: "adaptive sequential single chunk", profile: drive.DefaultReadPolicy(), stage: StageSequential, caller: 1,
-			mode: drive.PrefetchAdaptive, chunks: SequentialPrefetchChunks, depth: 4, credit: true,
-			windowCap: int64(SequentialPrefetchChunks) * ChunkSize, horizonCap: int64(SequentialPrefetchChunks) * ChunkSize * 4, initial: 1 << 20,
+			// The adaptive rule executes one foreground window per active
+			// slot; a sequential FUSE read keeps the same single-chunk window.
+			name: "adaptive sequential single chunk", policy: drive.DefaultReadPolicy(), stage: StageSequential, caller: 1,
+			mode: drive.PrefetchAdaptive, chunks: 1, depth: 4,
 		},
 		{
-			name: "adaptive seek single chunk", profile: drive.DefaultReadPolicy(), stage: StageSeek, caller: 2,
-			mode: drive.PrefetchAdaptive, chunks: 2, depth: 1, credit: true,
-			windowCap: 2 * ChunkSize, horizonCap: 2 * ChunkSize, initial: 1 << 20,
+			name: "adaptive seek two chunks", policy: drive.DefaultReadPolicy(), stage: StageSeek, caller: 2,
+			mode: drive.PrefetchAdaptive, chunks: 2, depth: 4,
 		},
 		{
-			// A wide caller window still starts from the 1 MiB seed, capped by
-			// the single window the stage allows.
-			name: "adaptive wide caller window", profile: drive.DefaultReadPolicy(), stage: StageInitial, caller: 4,
-			mode: drive.PrefetchAdaptive, chunks: 4, depth: 1, credit: true,
-			windowCap: 4 * ChunkSize, horizonCap: 4 * ChunkSize, initial: 1 << 20,
+			name: "adaptive wide caller window", policy: drive.DefaultReadPolicy(), stage: StageInitial, caller: 4,
+			mode: drive.PrefetchAdaptive, chunks: 4, depth: 4,
 		},
 		{
-			name: "fixed initial", profile: fixedPolicy(), stage: StageInitial, caller: 1,
-			mode: drive.PrefetchFixed, chunks: 4, depth: 2, credit: false,
-			windowCap: 4 * ChunkSize, horizonCap: 8 * ChunkSize, initial: 8 * ChunkSize,
+			name: "fixed initial", policy: fixedPolicy(), stage: StageInitial, caller: 1,
+			mode: drive.PrefetchFixed, chunks: 4, depth: 2,
 		},
 		{
-			name: "fixed sequential", profile: fixedPolicy(), stage: StageSequential, caller: 1,
-			mode: drive.PrefetchFixed, chunks: 16, depth: 4, credit: false,
-			windowCap: 8 << 20, horizonCap: 32 << 20, initial: 32 << 20,
+			name: "fixed sequential", policy: fixedPolicy(), stage: StageSequential, caller: 1,
+			mode: drive.PrefetchFixed, chunks: 16, depth: 4,
 		},
 		{
-			name: "disabled", profile: disabledPolicy(), stage: StageSequential, caller: 1,
-			mode: drive.PrefetchDisabled, chunks: 0, depth: 0, credit: false,
+			name: "disabled", policy: disabledPolicy(), stage: StageSequential, caller: 1,
+			mode: drive.PrefetchDisabled, chunks: 0, depth: 0,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resolved := resolvedPolicy(t, recommendingDriver{policy: tc.profile}, nil)
+			resolved := resolvedPolicy(t, recommendingDriver{policy: tc.policy}, nil)
 			plan := (PlanResolver{Profile: resolved.Effective, AdaptiveDepth: 4}).ResolveStage(tc.stage, ReadIntentUnspecified, tc.caller)
 			if plan.PrefetchMode != tc.mode {
 				t.Fatalf("mode = %q, want %q", plan.PrefetchMode, tc.mode)
 			}
 			if plan.PrefetchChunks != tc.chunks || plan.PrefetchDepth != tc.depth {
-				t.Fatalf("ceilings = %d x %d, want %d x %d", plan.PrefetchChunks, plan.PrefetchDepth, tc.chunks, tc.depth)
+				t.Fatalf("window/depth = %d x %d, want %d x %d", plan.PrefetchChunks, plan.PrefetchDepth, tc.chunks, tc.depth)
 			}
-			if got := plan.usesConsumptionCredit(); got != tc.credit {
-				t.Fatalf("consumption credit = %v, want %v", got, tc.credit)
+			if got, want := plan.prefetchHorizonChunks(), int64(max(1, tc.chunks)*max(1, tc.depth)); got != want && tc.chunks > 0 {
+				t.Fatalf("horizon = %d chunks, want %d", got, want)
 			}
-			if tc.chunks == 0 {
-				return
-			}
-			if got := plan.windowCapBytes(); got != tc.windowCap {
-				t.Fatalf("Wcap = %d, want %d", got, tc.windowCap)
-			}
-			if got := plan.horizonCapBytes(); got != tc.horizonCap {
-				t.Fatalf("Hcap = %d, want %d", got, tc.horizonCap)
-			}
-			if got := plan.initialHorizonBytes(); got != tc.initial {
-				t.Fatalf("initial forward budget = %d, want %d", got, tc.initial)
-			}
-			if plan.initialHorizonBytes() > plan.horizonCapBytes() {
-				t.Fatalf("initial budget %d exceeds Hcap %d", plan.initialHorizonBytes(), plan.horizonCapBytes())
-			}
-			if tc.credit && plan.initialHorizonBytes() > plan.windowCapBytes() {
-				t.Fatalf("adaptive seed %d exceeds Wcap %d", plan.initialHorizonBytes(), plan.windowCapBytes())
-			}
-			if plan.initialHorizonBytes()%ChunkSize != 0 {
-				t.Fatalf("initial budget %d is not chunk aligned", plan.initialHorizonBytes())
+			if tc.chunks == 0 && plan.prefetchHorizonChunks() != 0 {
+				t.Fatalf("disabled plan has horizon %d", plan.prefetchHorizonChunks())
 			}
 		})
 	}
@@ -172,8 +144,7 @@ func TestPlanModesTableDriven(t *testing.T) {
 // TestPlanIgnoresPolicyProvenance pins the provenance/value separation: the
 // same effective values reached through a default, a driver recommendation, or
 // a mount override must produce the identical plan. Recommended and effective
-// stay distinct inputs, and the session's dynamic budget stays a third layer
-// resolved per read.
+// stay distinct inputs.
 func TestPlanIgnoresPolicyProvenance(t *testing.T) {
 	fromDefault := resolvedPolicy(t, defaultPolicyDriver{}, nil)
 	fromDriver := resolvedPolicy(t, recommendingDriver{policy: drive.DefaultReadPolicy()}, nil)
@@ -204,22 +175,17 @@ func TestPlanIgnoresPolicyProvenance(t *testing.T) {
 	}
 }
 
-// TestPlanStageUpgradeKeepsModeAndRaisesCaps pins the boundary between the
-// stage (a larger allowed ceiling) and the session (the dynamic budget): the
-// upgrade must not silently become a different rule, and it must not change
-// the numbers already in flight on its own.
-func TestPlanStageUpgradeKeepsModeAndRaisesCaps(t *testing.T) {
+// TestPlanStageUpgradeKeepsMode pins that a later stage keeps the same prefetch
+// rule; the stage may change W×D but never the mechanism.
+func TestPlanStageUpgradeKeepsMode(t *testing.T) {
 	resolver := PlanResolver{Profile: drive.DefaultReadPolicy(), AdaptiveDepth: 4}
 	initial := resolver.ResolveStage(StageInitial, ReadIntentUnspecified, 1)
 	sequential := resolver.ResolveStage(StageSequential, ReadIntentUnspecified, 1)
 	if initial.PrefetchMode != drive.PrefetchAdaptive || sequential.PrefetchMode != drive.PrefetchAdaptive {
 		t.Fatalf("mode changed across stages: %q -> %q", initial.PrefetchMode, sequential.PrefetchMode)
 	}
-	if sequential.horizonCapBytes() <= initial.horizonCapBytes() {
-		t.Fatalf("sequential ceiling %d does not exceed initial %d", sequential.horizonCapBytes(), initial.horizonCapBytes())
-	}
-	if initial.usesConsumptionCredit() != sequential.usesConsumptionCredit() {
-		t.Fatal("the upgrade changed the prefetch rule")
+	if initial.prefetchHorizonChunks() != sequential.prefetchHorizonChunks() {
+		t.Fatalf("stage upgrade changed the fixed horizon: %d -> %d", initial.prefetchHorizonChunks(), sequential.prefetchHorizonChunks())
 	}
 }
 
@@ -228,10 +194,7 @@ func TestPlanStageUpgradeKeepsModeAndRaisesCaps(t *testing.T) {
 // adaptive mode and executes its numbers literally.
 func TestPlanWithoutModeKeepsLiteralNumbers(t *testing.T) {
 	plan := ReadPlan{Stage: StageSequential, PrefetchChunks: 2, PrefetchDepth: 3}
-	if plan.usesConsumptionCredit() {
-		t.Fatal("a plan without an adaptive mode must not consume credit")
-	}
-	if plan.windowCapBytes() != 2*ChunkSize || plan.horizonCapBytes() != 6*ChunkSize {
-		t.Fatalf("literal caps changed: %d/%d", plan.windowCapBytes(), plan.horizonCapBytes())
+	if plan.prefetchHorizonChunks() != 6 {
+		t.Fatalf("literal horizon = %d chunks, want 6", plan.prefetchHorizonChunks())
 	}
 }

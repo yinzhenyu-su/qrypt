@@ -179,8 +179,8 @@ def summarize_windows(socket_path, mount, since):
             "state": event.get("state"),
             "bytes": event.get("requested_bytes") or 0,
             "ms": event.get("duration_ms") or 0,
-            "open_ms": extra.get("driver_open_ms") or 0,
-            "body_ms": extra.get("driver_body_ms") or 0,
+            "open_ms": (extra.get("open_us") or 0) / 1000.0,
+            "body_ms": (extra.get("body_us") or 0) / 1000.0,
             "timeouts": extra.get("fetch_timeouts") or 0,
             "error": event.get("error") or "",
         })

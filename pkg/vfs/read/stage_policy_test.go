@@ -67,27 +67,6 @@ func TestStageSeekSuggestionAppliesToInteractive(t *testing.T) {
 	}
 }
 
-func TestStageProbeIgnoresStageSuggestion(t *testing.T) {
-	profile := stageProfile()
-
-	r := newStagedReaderWithProfile(t, 8<<20, profile)
-	ctx := WithReadIntent(sessionContext(1, 2), ReadIntentProbe)
-	r.read(t, ctx, 4<<20, 64<<10)
-	plan := r.host.lastPlan()
-	if plan.Stage != StageInitial && plan.Stage != StageSeek {
-		t.Fatalf("probe stage = %v", plan.Stage)
-	}
-	if plan.WindowChunks != 1 {
-		t.Fatalf("probe window = %d, want %d", plan.WindowChunks, 1)
-	}
-	if plan.PrefetchDepth != 0 || plan.PrefetchChunks != 0 {
-		t.Fatalf("probe prefetch = depth %d chunks %d, want none", plan.PrefetchDepth, plan.PrefetchChunks)
-	}
-	if plan.MaxStreams != 1 {
-		t.Fatalf("probe streams = %d, want 1", plan.MaxStreams)
-	}
-}
-
 func TestStageBulkIgnoresStageSuggestion(t *testing.T) {
 	profile := stageProfile()
 	profile.Bulk.Streams = 2
@@ -109,8 +88,8 @@ func TestStageSequentialSuggestionDrivesLookahead(t *testing.T) {
 	// the legacy 16-chunk lookahead.
 	lookahead := r.host.waitRangeSize(t, 2*ChunkSize)
 	for _, call := range r.host.recorded() {
-		if call.Size == int64(SequentialPrefetchChunks)*ChunkSize {
-			t.Fatalf("legacy %d-chunk lookahead used despite the stage suggestion", SequentialPrefetchChunks)
+		if call.Size == int64(2*PrefetchChunks)*ChunkSize {
+			t.Fatalf("legacy %d-chunk lookahead used despite the stage suggestion", 2*PrefetchChunks)
 		}
 	}
 	// Assert on the lookahead call itself: other (earlier-plan) Ranges may be
@@ -158,7 +137,7 @@ func TestStageDepthOnlySuggestionBoundsLegacyLookahead(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			profile := drive.DefaultReadPolicy()
 			profile.Bulk.Streams = 1
-			profile.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: int64(map[bool]int{true: SequentialPrefetchChunks, false: tc.windowChunks}[tc.windowChunks == 1]) * ChunkSize, Depth: tc.depth}
+			profile.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: int64(map[bool]int{true: 2 * PrefetchChunks, false: tc.windowChunks}[tc.windowChunks == 1]) * ChunkSize, Depth: tc.depth}
 			r := newStagedReaderWithProfile(t, 64<<20, profile)
 
 			release := make(chan struct{})
@@ -166,7 +145,7 @@ func TestStageDepthOnlySuggestionBoundsLegacyLookahead(t *testing.T) {
 			r.host.gateFn = blockEveryRange(release)
 
 			plan := PlanResolver{Profile: profile}.ResolveStage(StageInitial, ReadIntentUnspecified, tc.windowChunks)
-			r.reader.schedulePrefetch(context.Background(), r.host.entry, 0, tc.windowChunks, true, plan, deliveredRange{})
+			r.reader.schedulePrefetch(context.Background(), r.host.entry, 0, tc.windowChunks, true, plan)
 
 			// Window registration happens before the fetch starts, so the count
 			// is exact even while every window is blocked on the provider.
@@ -179,7 +158,7 @@ func TestStageDepthOnlySuggestionBoundsLegacyLookahead(t *testing.T) {
 			// decides how many of them exist.
 			window := int64(tc.windowChunks) * ChunkSize
 			if tc.windowChunks == 1 {
-				window = int64(SequentialPrefetchChunks) * ChunkSize
+				window = int64(2*PrefetchChunks) * ChunkSize
 			}
 			deadline := time.Now().Add(2 * time.Second)
 			for {

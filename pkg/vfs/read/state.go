@@ -36,8 +36,6 @@ const (
 	RangePromoteHits = min(2, RangeHitLimit)
 	// SequentialLimit 是单个文件访问序列跟踪允许保留的最大记录数量。
 	SequentialLimit = 1024
-	// SequentialPrefetchChunks 根据普通预取块数自动计算，确认顺序读取后每次预取的块数量。
-	SequentialPrefetchChunks = max(1, PrefetchChunks*2)
 	// SummaryHistoryLimit 是"每次读取一条"的汇总事件保留量。它保证最近
 	// SummaryHistoryLimit 次读取的汇总始终可见。
 	SummaryHistoryLimit = 128
@@ -559,6 +557,16 @@ func (s *State) hotChunk(cacheKey string, index int64) ([]byte, bool) {
 		}
 	}
 	return data, true
+}
+
+// peekHotChunk reports residency without touching recency; diagnostics use it
+// so a snapshot cannot change eviction order.
+func (s *State) peekHotChunk(cacheKey string, index int64) bool {
+	key := ChunkKey(cacheKey, index)
+	s.fastPath.hot.mu.Lock()
+	defer s.fastPath.hot.mu.Unlock()
+	_, ok := s.fastPath.hot.chunks[key]
+	return ok
 }
 
 func (s *State) putHotChunk(cacheKey string, index int64, data []byte) {

@@ -416,9 +416,9 @@ with a deadline.
   (`drive.ReadSource`), and drivers bound the response-header
   phase through their HTTP transport.
 - Read events carry `cancel_reason=timeout`, `wait_us`, and `fetch_us`; a
-  replayed range reports `fetch_status_retries`, `fetch_status_reason`
-  (`status_5xx`, `rate_limited`, `request_timeout`), and `fetch_backoff_ms`
-  next to the existing `fetch_attempts`/`fetch_retried`. The mount debug
+  replayed range reports `fetch_attempts` and the last `fetch_retry_reason`
+  (`timeout`, `truncated_body`, `status_5xx`, `rate_limited`,
+  `request_timeout`). The mount debug
   snapshot exposes `read_timeouts`, `prefetch_timeouts`, and `last_timeout`.
 
 ## Upload State Flow

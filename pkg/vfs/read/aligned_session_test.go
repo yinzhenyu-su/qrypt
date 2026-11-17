@@ -61,12 +61,13 @@ func TestSessionTailPageRereadPreservesLivePrefetch(t *testing.T) {
 	r.read(t, sessionContext(1, 1), 0, ChunkSize)
 	r.read(t, sessionContext(1, 2), ChunkSize, ChunkSize)
 	r.host.waitCall(t, 3)
-	p := sessionWorker(t, r, 1)
 	got := r.read(t, sessionContext(1, 3), 2*ChunkSize-16<<10, 16<<10)
 	if !bytes.Equal(got, r.host.data[2*ChunkSize-16<<10:2*ChunkSize]) {
 		t.Fatal("tail page changed bytes")
 	}
-	if sessionWorker(t, r, 1) != p {
-		t.Fatal("tail page retired the playback controller")
+	// A repeated terminal page is not progress, so the live lookahead must
+	// survive it instead of being canceled and re-scheduled.
+	if got := r.reader.prefetchInFlight("cache"); got == 0 {
+		t.Fatal("tail page canceled the live lookahead")
 	}
 }

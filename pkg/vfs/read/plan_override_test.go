@@ -39,12 +39,12 @@ func TestPlanOverrideAdjustsPlanAndPerFileLimit(t *testing.T) {
 	}
 }
 
-func TestStreamMeasurementOverrideRespectsProbeGate(t *testing.T) {
+func TestStreamMeasurementOverrideAppliesToStreamingReads(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		intent ReadIntent
 		chunks int
-	}{{"ordinary", ReadIntentUnspecified, 4}, {"probe", ReadIntentProbe, 1}} {
+	}{{"ordinary", ReadIntentUnspecified, 4}, {"interactive", ReadIntentInteractive, 4}} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newStagedReader(t, 8<<20)
 			r.reader.SetPlanOverride(PlanOverride{WindowChunks: 4, MaxStreams: 1})

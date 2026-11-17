@@ -39,27 +39,27 @@ inferring defaults from historical benchmarks.
 - `Interactive.Initial`, `Seek` and `Sequential` each contain a window policy
   (`caller` or `fixed`) and prefetch policy (`disabled`, `fixed`, `adaptive`).
   Fixed prefetch specifies both byte size and depth (1–4) and executes them
-  literally; it has no consumption-credit ramp. Adaptive decisions resolve
-  before execution and at every sequential-stream refill.
-- An adaptive mount session starts from a seed of `min(Hcap, Wcap, 1 MiB)` and
-  doubles its forward byte budget only after the caller consumed a full budget
-  of new bytes. Credit counts delivered bytes rather than admitted requests, so
-  the same range split into smaller reads earns the same budget. `Wcap × Dcap` is a ceiling, not the current range, so a short
-  seek or a brief play is not padded with a full lookahead. Deleted, duplicate,
-  failed and background bytes earn no credit, and a seek, idle retirement, mode
-  switch or lowered ceiling resets it. Raising a ceiling alone does not grow the
-  budget. Unidentified callers, unknown-size objects, probe, disabled prefetch
-  and `ReadStream` keep their original bounded batch scheduling.
+  literally; adaptive resolves to `W = WindowChunks` and
+  `D = max(1, min(4, AdaptiveDepth))` before execution and at every
+  sequential-stream refill.
+- A mount session keeps a fixed horizon of `W × D` chunks ahead of the consumed
+  cursor and refills it with contiguous windows as the cursor advances, stopping
+  at the depth gate, EOF, a failed revision or a plan change. Ready prefix data
+  and prior completions do not move the cursor, so a paused file never downloads
+  its tail. There is no adaptive ramp and no foreground give-up
+  budget: a seek, stage change, handle release or invalidation retires the
+  matching work, and workers expire after 30 seconds without consumption.
+  Unidentified callers, unknown-size objects, bulk, disabled prefetch and
+  `ReadStream` keep bounded batch scheduling.
 - `Bulk.WindowBytes` bounds a logical window, at most 32 MiB.
   `Bulk.Streams` limits workers. `Bulk.Split.PartBytes` is a strict part ceiling;
   zero divides the current window among granted workers. Task count and
   worker count are independent: 24 MiB / 4 MiB / 3 workers yields six tasks.
 - `Bulk.Split.MinParallelBytes` gates on the actual window, not file size.
   A large video can still issue a single small seek request.
-- Explicit interactive reads remain single-stream per window. Probe intent is
-  single-block, single-stream and has no prefetch. The CLI command named
-  `probe test read` measures mounted workload reads; its name does not force
-  every measured read into probe intent. Eligible FUSE sequential reads may
+- Explicit interactive reads remain single-stream per window. The CLI command
+  named `probe test read` measures the same mounted workload reads a player
+  issues; there is no separate probe read intent to keep in sync. Eligible FUSE sequential reads may
   borrow bulk parallelism while retaining their original intent and cache rule.
 - `MaxInFlight` limits simultaneous shared-layer requests to one object across
   foreground, prefetch, copy and share-fetch. Consumers reuse one mount-owned
@@ -224,9 +224,10 @@ jq '[.[0].metrics[] | select(.phase == "fetch_window" or .phase == "prefetch_win
 Read the diagnostic `read_policy` object's `recommended`, `effective`, `limits`,
 `origins` and `source_id`. Three layers stay separate: `recommended` is what the
 driver asked for, `effective` is what resolution allowed, and the session's
-`prefetch_plan` / `prefetch_credit` events show the dynamic budget it executes
-(`prefetch_mode`, `budget_bytes`, `credit_bytes`, `delivered_end`,
-`window_cap_bytes`, `depth_cap`). In fetch-event extras distinguish:
+`prefetch_plan` events show the shape it executes (`prefetch_mode`,
+`prefetch_window_chunks`, `prefetch_depth`, `horizon_end_chunk`,
+`ready_end_chunk`, `fill_stop`, `pending_windows`). In fetch-event extras
+distinguish:
 
 - `planned_streams` / `read_streams`: planning context; not proof of concurrency.
 - `granted_streams`, `range_tasks`, `window_bytes`, `part_bytes`: executed shape.
@@ -251,11 +252,11 @@ Driver open time is not CDN TTFB or player first-frame latency.
 | Observation | Next experiment or fix |
 | --- | --- |
 | High `queue_us`, normal remote times | Inspect shared global/object usage and foreground demand; change budget only within hard limits and measure again. |
-| Fast first block, long target wait | Correlate target readiness and `wait_window_*`; investigate publication/coalescing/takeover before enlarging a window or shortening timeouts. |
+| Fast first block, long target wait | Correlate target readiness and `wait_window_*`; investigate publication/coalescing before enlarging a window or shortening timeouts. |
 | Bulk workers configured but one task executed | Check actual window, part ceiling, split threshold, intent and capability. Test `part_size = "auto"` or a smaller ceiling in the config copy if parallelism is eligible. |
 | Sequential throughput low with gaps in useful lookahead | Verify completion and consumption refill, capacity notifications, session hints, cursor holes and buffering. Bulk stream overrides alone do not alter interactive prefetch. |
 | Many short speculative Range requests | Inspect sliding tail fragmentation and batch distant fills while preserving the horizon, cursor urgency and EOF handling; this is a planner change, not a new TOML knob. |
-| Short play or seek downloads far past the consumed bytes | Check the session's `budget_change` sequence: it should start at `seed` and grow only on delivery. A `fixed` stage policy, a hintless caller or an unknown-size object never ramps, and a trace without session/request IDs cannot attribute the tail. |
+| Short play or seek downloads far past the consumed bytes | Check the session's `prefetch_plan` horizon: it should end at `cursor + W × D`. A `fixed` stage policy, a hintless caller or an unknown-size object never grows it, and a trace without session/request IDs cannot attribute the tail. |
 | Body makes no progress vs. progresses slowly | Separate idle, total, truncation and local limiter wait. A progressing body or bare total expiry does not establish a bad CDN connection. |
 
 Use a small single-variable sweep, confirm that the executed shape changed,

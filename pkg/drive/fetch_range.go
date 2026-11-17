@@ -59,28 +59,19 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 	timeoutCount := 0
 	timeoutKind := FetchTimeoutIdle
 	statusRetries := 0
-	statusReason := ""
 	bodyRetries := 0
-	var backoffTotal time.Duration
+	retryReason := ""
 	recordRetries := func() {
 		if extra == nil {
 			return
 		}
 		if attempts > 1 {
 			extra["fetch_attempts"] = attempts
-			extra["fetch_retried"] = true
+			extra["fetch_retry_reason"] = retryReason
 		}
 		if timeoutCount > 0 {
 			extra["fetch_timeouts"] = timeoutCount
 			extra["fetch_timeout_kind"] = string(timeoutKind)
-		}
-		if statusRetries > 0 {
-			extra["fetch_status_retries"] = statusRetries
-			extra["fetch_status_reason"] = statusReason
-			extra["fetch_backoff_ms"] = durationMillis(backoffTotal)
-		}
-		if bodyRetries > 0 {
-			extra["fetch_body_retries"] = bodyRetries
 		}
 	}
 	for {
@@ -111,6 +102,7 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 			// Only an idle stall is worth replaying: a total deadline has no
 			// budget left, and other failures are not the timeout case.
 			if timeout.Kind == FetchTimeoutIdle && timeoutCount < fetchTimeoutAttempts && ctx.Err() == nil {
+				retryReason = "timeout"
 				continue
 			}
 			recordRetries()
@@ -126,6 +118,7 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 				return nil, extra, err
 			}
 			bodyRetries++
+			retryReason = "truncated_body"
 			continue
 		}
 		reason := readRetryReason(err)
@@ -134,7 +127,7 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 			return nil, extra, err
 		}
 		statusRetries++
-		statusReason = reason
+		retryReason = reason
 		backoff := fetchStatusBackoff(statusRetries)
 		if backoff >= time.Until(deadline) {
 			// The wait would outlive the range's budget: reporting the provider
@@ -146,7 +139,6 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 			recordRetries()
 			return nil, extra, sleepErr
 		}
-		backoffTotal += backoff
 	}
 	recordRetries()
 	if extra == nil {
@@ -248,13 +240,12 @@ func readWindowRangeAttempt(ctx context.Context, entry Entry, offset, size int64
 		data, err = readBodyChunks(attemptCtx, cancelAttempt, rc, size, idle, delivery)
 	}
 	bodyFinished := time.Now()
-	extra["driver_body_ms"] = durationMillis(bodyFinished.Sub(bodyStarted))
 	extra["body_us"] = bodyFinished.Sub(bodyStarted).Microseconds()
 	extra["local_wait_us"] = localWaitWatchFrom(attemptCtx).duration().Microseconds()
 	closeStarted := time.Now()
 	closeErr := rc.Close()
 	closeFinished := time.Now()
-	extra["driver_close_ms"] = durationMillis(closeFinished.Sub(closeStarted))
+	extra["close_us"] = closeFinished.Sub(closeStarted).Microseconds()
 	if err != nil {
 		return nil, extra, classifyTimeoutError(ctx, deadlineCtx, err, total)
 	}

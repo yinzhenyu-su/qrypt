@@ -74,17 +74,11 @@ func TestReadWindowRangeReplaysTransientStatus(t *testing.T) {
 	if backend.calls != 2 {
 		t.Fatalf("driver calls = %d, want the failed attempt plus one replay", backend.calls)
 	}
-	if got := extra["fetch_status_retries"]; got != 1 {
-		t.Fatalf("fetch_status_retries = %v, want 1", got)
-	}
-	if got := extra["fetch_status_reason"]; got != "status_5xx" {
-		t.Fatalf("fetch_status_reason = %v, want status_5xx", got)
-	}
 	if got := extra["fetch_attempts"]; got != 2 {
 		t.Fatalf("fetch_attempts = %v, want 2", got)
 	}
-	if got := extra["fetch_retried"]; got != true {
-		t.Fatalf("fetch_retried = %v, want true", got)
+	if got := extra["fetch_retry_reason"]; got != "status_5xx" {
+		t.Fatalf("fetch_retry_reason = %v, want status_5xx", got)
 	}
 	// The replay must wait, not hammer the provider that just failed.
 	if elapsed := time.Since(started); elapsed < (200*time.Millisecond)*3/4 {
@@ -126,8 +120,11 @@ func TestReadWindowRangeReplaysTruncatedBody(t *testing.T) {
 	if backend.calls != 2 {
 		t.Fatalf("driver calls = %d, want the truncated attempt plus one replay", backend.calls)
 	}
-	if got := extra["fetch_body_retries"]; got != 1 {
-		t.Fatalf("fetch_body_retries = %v, want 1", got)
+	if got := extra["fetch_attempts"]; got != 2 {
+		t.Fatalf("fetch_attempts = %v, want 2", got)
+	}
+	if got := extra["fetch_retry_reason"]; got != "truncated_body" {
+		t.Fatalf("fetch_retry_reason = %v, want truncated_body", got)
 	}
 }
 
@@ -182,8 +179,11 @@ func TestReadWindowRangeReplaysClosedBody(t *testing.T) {
 	if backend.calls != 2 {
 		t.Fatalf("driver calls = %d, want the closed attempt plus one replay", backend.calls)
 	}
-	if got := extra["fetch_body_retries"]; got != 1 {
-		t.Fatalf("fetch_body_retries = %v, want 1", got)
+	if got := extra["fetch_attempts"]; got != 2 {
+		t.Fatalf("fetch_attempts = %v, want 2", got)
+	}
+	if got := extra["fetch_retry_reason"]; got != "truncated_body" {
+		t.Fatalf("fetch_retry_reason = %v, want truncated_body", got)
 	}
 }
 
@@ -206,8 +206,8 @@ func TestReadWindowRangeStopsAfterStatusBudget(t *testing.T) {
 	if backend.calls != 3 {
 		t.Fatalf("driver calls = %d, want %d", backend.calls, 3)
 	}
-	if got := extra["fetch_status_retries"]; got != 3-1 {
-		t.Fatalf("fetch_status_retries = %v, want %d", got, 3-1)
+	if got := extra["fetch_attempts"]; got != 3 {
+		t.Fatalf("fetch_attempts = %v, want 3", got)
 	}
 }
 
@@ -219,8 +219,8 @@ func TestReadWindowRangeReplaysRateLimit(t *testing.T) {
 	}}
 	if _, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err != nil {
 		t.Fatalf("read failed despite a transient 429: %v", err)
-	} else if got := extra["fetch_status_reason"]; got != "rate_limited" {
-		t.Fatalf("fetch_status_reason = %v, want rate_limited", got)
+	} else if got := extra["fetch_retry_reason"]; got != "rate_limited" {
+		t.Fatalf("fetch_retry_reason = %v, want rate_limited", got)
 	}
 	if backend.calls != 2 {
 		t.Fatalf("driver calls = %d, want the failed attempt plus one replay", backend.calls)

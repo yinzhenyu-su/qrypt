@@ -1,9 +1,6 @@
 package read
 
-import (
-	"context"
-	"testing"
-)
+import "testing"
 
 func TestWindowTakeoverPreservesOtherSessionsAndDependents(t *testing.T) {
 	state := NewState(nil)
@@ -40,11 +37,5 @@ func TestWindowTakeoverPreservesOtherSessionsAndDependents(t *testing.T) {
 	state.endWindowLoad(load)
 	if state.windows.loads["key"] != fresh {
 		t.Fatal("late old cleanup deleted the replacement")
-	}
-	ctx := withWindowBypass(context.Background())
-	r := &Reader{state: state}
-	r.bypassPrefetch(ctx, load)
-	if !windowBypassed(ctx, load) || windowBypassed(ctx, fresh) {
-		t.Fatal("bypass did not preserve load identity")
 	}
 }

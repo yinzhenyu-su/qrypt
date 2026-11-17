@@ -50,7 +50,7 @@ func TestFetchChunkWindowUsesBackendAndStoresChunks(t *testing.T) {
 	if len(backend.storedKeys) != 1 || backend.storedKeys[0] != 0 || backend.storedData[0] != "abcdefghijkl" {
 		t.Fatalf("stored keys=%v data=%v", backend.storedKeys, backend.storedData)
 	}
-	if extra["driver_open_ms"] == nil || extra["driver_body_ms"] == nil || extra["driver_close_ms"] == nil {
+	if extra["open_us"] == nil || extra["body_us"] == nil || extra["close_us"] == nil {
 		t.Fatalf("missing timing extra: %+v", extra)
 	}
 }

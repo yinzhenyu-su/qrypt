@@ -246,10 +246,15 @@ CloseFileJSON(handleID)
 `optionsJSON` may be empty. Supported fields are:
 
 ```json
-{"deadline_ms": 5000, "priority": "high"}
+{"deadline_ms": 5000, "priority": "high", "intent": "interactive"}
 ```
 
-`priority` accepts `normal` or `high`.
+`priority` accepts `normal` or `high`. `intent` accepts `interactive` (the
+default, latency-sensitive playback and preview reads) or `bulk` (transfer
+reads that opt into parallel range reads and skip durable cache writes); an
+absent value means `interactive`, and any other value is rejected before file
+work. The pre-release `probe` intent is gone: probing now measures the same
+streaming path the user sees.
 
 Use `deadlineMS` for seek-heavy playback so the app can stop waiting on stale
 reads. Do not use JSON APIs for media bytes.

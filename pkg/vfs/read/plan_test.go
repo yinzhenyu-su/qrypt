@@ -11,13 +11,13 @@ func TestPlanResolvesEveryStageAndIntent(t *testing.T) {
 	p.Interactive.Seek = drive.AccessPolicy{Window: drive.WindowPolicy{Mode: drive.WindowFixed, Bytes: ChunkSize}, Prefetch: drive.PrefetchPolicy{Mode: drive.PrefetchDisabled}}
 	p.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 8 << 20, Depth: 1}
 	for _, stage := range []ReadStage{StageInitial, StageSeek, StageSequential} {
-		for _, intent := range []ReadIntent{ReadIntentUnspecified, ReadIntentInteractive, ReadIntentProbe, ReadIntentBulk} {
+		for _, intent := range []ReadIntent{ReadIntentUnspecified, ReadIntentInteractive, ReadIntentBulk} {
 			plan := (PlanResolver{Profile: p, AdaptiveDepth: 4}).ResolveStage(stage, intent, 2)
 			if plan.Intent != intent || plan.Stage != stage {
 				t.Fatalf("identity changed: %+v", plan)
 			}
 			if intent == ReadIntentBulk {
-				if plan.MaxStreams != p.Bulk.Streams || plan.CacheWrites {
+				if plan.MaxStreams != p.Bulk.Streams || plan.cacheWrites() {
 					t.Fatalf("bulk: %+v", plan)
 				}
 				continue
@@ -25,13 +25,7 @@ func TestPlanResolvesEveryStageAndIntent(t *testing.T) {
 			if plan.MaxStreams != 1 {
 				t.Fatalf("interactive/probe: %+v", plan)
 			}
-			if intent == ReadIntentProbe {
-				if plan.WindowChunks != 1 || plan.PrefetchDepth != 0 || plan.PrefetchChunks != 0 || plan.CacheWrites {
-					t.Fatalf("probe: %+v", plan)
-				}
-				continue
-			}
-			if !plan.CacheWrites {
+			if !plan.cacheWrites() {
 				t.Fatal("lost cache admission")
 			}
 			if stage == StageSeek && (plan.WindowChunks != 1 || plan.PrefetchDepth != 0) {
@@ -48,7 +42,7 @@ func TestAdaptivePrefetchResolvesAtPlanningBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		stage               ReadStage
 		caller, size, depth int
-	}{{StageInitial, 1, 1, 3}, {StageSequential, 1, 16, 3}, {StageSeek, 2, 2, 1}} {
+	}{{StageInitial, 1, 1, 3}, {StageSequential, 1, 1, 3}, {StageSeek, 2, 2, 3}} {
 		p := r.ResolveStage(tc.stage, ReadIntentInteractive, tc.caller)
 		if p.PrefetchChunks != tc.size || p.PrefetchDepth != tc.depth {
 			t.Fatalf("plan=%+v want %+v", p, tc)

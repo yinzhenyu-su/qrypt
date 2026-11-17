@@ -9,118 +9,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 )
-
-type readPrefetchContextKey struct{}
-
-func WithoutReadPrefetch(ctx context.Context) context.Context {
-	return context.WithValue(ctx, readPrefetchContextKey{}, true)
-}
-
-func readPrefetchEnabled(ctx context.Context) bool {
-	disabled, _ := ctx.Value(readPrefetchContextKey{}).(bool)
-	return !disabled
-}
-
-// AccessHint identifies one open-file read stream. It is optional: callers
-// without a stable handle keep the legacy per-file access tracking.
-type AccessHint struct {
-	SessionID  uint64
-	RequestID  uint64
-	Concurrent bool
-}
-
-type accessHintContextKey struct{}
-
-// WithAccessHint attaches an open-file read hint to ctx.
-func WithAccessHint(ctx context.Context, hint AccessHint) context.Context {
-	return context.WithValue(ctx, accessHintContextKey{}, hint)
-}
-
-// AccessHintFromContext returns the open-file read hint attached to ctx.
-func AccessHintFromContext(ctx context.Context) (AccessHint, bool) {
-	hint, ok := ctx.Value(accessHintContextKey{}).(AccessHint)
-	return hint, ok && hint.SessionID != 0 && hint.RequestID != 0
-}
-
-// ReadIntent classifies why a caller is reading. The zero value is
-// unspecified: existing callers keep the pre-intent single-stream behavior.
-type ReadIntent int
-
-const (
-	ReadIntentUnspecified ReadIntent = iota
-	ReadIntentInteractive
-	ReadIntentBulk
-	ReadIntentProbe
-)
-
-func (i ReadIntent) String() string {
-	switch i {
-	case ReadIntentInteractive:
-		return "interactive"
-	case ReadIntentBulk:
-		return "bulk"
-	case ReadIntentProbe:
-		return "probe"
-	default:
-		return ""
-	}
-}
-
-type readIntentContextKey struct{}
-
-// WithReadIntent attaches a read intent to ctx. The read domain resolves it
-// into a ReadPlan; the intent itself is not user configuration.
-func WithReadIntent(ctx context.Context, intent ReadIntent) context.Context {
-	return context.WithValue(ctx, readIntentContextKey{}, intent)
-}
-
-// ReadIntentFromContext returns the attached intent, or
-// ReadIntentUnspecified when none was set.
-func ReadIntentFromContext(ctx context.Context) ReadIntent {
-	intent, _ := ctx.Value(readIntentContextKey{}).(ReadIntent)
-	return intent
-}
-
-type cacheAccessContextKey struct{}
-
-// WithCacheAccess attaches the read run this context's reads belong to. The read
-// cache uses it to tell a chunk consumed by the pass that admitted it apart from
-// one that a later pass came back for, so a sequential stream reading its own
-// read-ahead does not promote its chunks as if they were reused.
-func WithCacheAccess(ctx context.Context, access readcache.Access) context.Context {
-	return context.WithValue(ctx, cacheAccessContextKey{}, access)
-}
-
-// cacheAccess returns the read run attached to ctx, or the zero Access when
-// none was set. A zero Access is treated by the cache as an unknown run, which
-// counts as reuse.
-func cacheAccess(ctx context.Context) readcache.Access {
-	access, _ := ctx.Value(cacheAccessContextKey{}).(readcache.Access)
-	return access
-}
-
-type priorityKey struct{}
-
-type priorityValue struct {
-	value Priority
-	set   bool
-}
-
-func WithPriority(ctx context.Context, p Priority) context.Context {
-	return context.WithValue(ctx, priorityKey{}, priorityValue{value: p, set: true})
-}
-
-func priority(ctx context.Context) Priority {
-	value, _ := ctx.Value(priorityKey{}).(priorityValue)
-	return value.value
-}
-
-func prioritySet(ctx context.Context) bool {
-	value, ok := ctx.Value(priorityKey{}).(priorityValue)
-	return ok && value.set
-}
 
 // --- keys ---
 
@@ -191,10 +80,33 @@ func ReadPlanExtra(ctx context.Context, windowChunks int) map[string]any {
 		extra["planned_streams"] = plan.MaxStreams
 		extra["part_bytes"] = plan.Split.PartBytes
 		extra["min_parallel_bytes"] = plan.Split.MinParallelBytes
-		extra["cache_writes"] = plan.CacheWrites
+		extra["cache_writes"] = plan.cacheWrites()
 		bounds := fetchTimeoutsFromContext(ctx)
 		extra["fetch_idle_timeout_ms"] = bounds.Idle.Milliseconds()
 		extra["fetch_total_timeout_ms"] = bounds.Total.Milliseconds()
+	}
+	return extra
+}
+
+// readPlanWindowExtra is the plan slice a per-window detail event carries. The
+// full plan (window bytes, split thresholds, timeouts, cache writes) is on the
+// summary read event, so a window event only repeats what explains its shape.
+func readPlanWindowExtra(ctx context.Context) map[string]any {
+	plan, ok := readPlanFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	extra := map[string]any{
+		"read_intent": plan.Intent.String(),
+		// The stage explains why this window was chosen: a slow seek and a slow
+		// sequential refill look identical without it.
+		"read_stage":     plan.Stage.String(),
+		"read_streams":   grantedStreams(ctx, plan.MaxStreams),
+		"prefetch_depth": plan.PrefetchDepth,
+		"prefetch_mode":  string(plan.PrefetchMode),
+	}
+	if plan.PrefetchChunks > 0 {
+		extra["prefetch_chunks"] = plan.PrefetchChunks
 	}
 	return extra
 }
@@ -234,13 +146,14 @@ func (r *Reader) newReadTrace(ctx context.Context, entry drive.Entry) *drive.Rea
 	}}
 }
 
-func ExtraWithWindow(extra map[string]any, start, end int64) map[string]any {
+// ExtraWithWindow returns a copy of a window's trace extra. The window bounds
+// are already reported by the event's chunk_index/window_chunks fields, so the
+// copy does not repeat them.
+func ExtraWithWindow(extra map[string]any) map[string]any {
 	merged := CloneExtra(extra)
 	if merged == nil {
 		merged = map[string]any{}
 	}
-	merged["window_start"] = start
-	merged["window_end"] = end
 	return merged
 }
 
@@ -289,41 +202,12 @@ func RecordChunkDetail(observer ReadObserver, ctx context.Context, entry drive.E
 	if hint, ok := AccessHintFromContext(ctx); ok {
 		extra["session_id"], extra["request_id"] = hint.SessionID, hint.RequestID
 	}
-	if plan, ok := readPlanFromContext(ctx); ok {
-		if _, exists := extra["read_intent"]; !exists {
-			extra["read_intent"] = plan.Intent.String()
-		}
-		// Every chunk event names the stage that chose its window, so a slow
-		// seek and a slow sequential refill are distinguishable in the trace.
-		if _, exists := extra["read_stage"]; !exists {
-			extra["read_stage"] = plan.Stage.String()
-		}
-		if _, exists := extra["read_streams"]; !exists {
-			extra["read_streams"] = grantedStreams(ctx, plan.MaxStreams)
-		}
-		if _, exists := extra["prefetch_depth"]; !exists {
-			extra["prefetch_depth"] = plan.PrefetchDepth
-			extra["planned_streams"] = plan.MaxStreams
-			extra["part_bytes"] = plan.Split.PartBytes
-			extra["min_parallel_bytes"] = plan.Split.MinParallelBytes
-			extra["cache_writes"] = plan.CacheWrites
-			bounds := fetchTimeoutsFromContext(ctx)
-			extra["fetch_idle_timeout_ms"] = bounds.Idle.Milliseconds()
-			extra["fetch_total_timeout_ms"] = bounds.Total.Milliseconds()
-		}
-		if plan.PrefetchChunks > 0 {
-			if _, exists := extra["prefetch_chunks"]; !exists {
-				extra["prefetch_chunks"] = plan.PrefetchChunks
-			}
-		}
-		if _, exists := extra["prefetch_mode"]; !exists {
-			extra["prefetch_mode"] = string(plan.PrefetchMode)
+	for key, value := range readPlanWindowExtra(ctx) {
+		if _, exists := extra[key]; !exists {
+			extra[key] = value
 		}
 	}
 	extra["chunk_index"] = index
-	extra["chunk_offset"] = index * ChunkSize
-	extra["chunk_range_start"] = start
-	extra["chunk_range_size"] = size
 	observer.DebugRecordReadDetail(ctx, op.Name, entry.ID, phase, index*ChunkSize+start, size, bytes, started, extra, err)
 }
 

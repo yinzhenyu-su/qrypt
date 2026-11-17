@@ -47,7 +47,8 @@ func TestOpenFilePriorityMapping(t *testing.T) {
 
 // TestOpenFileIntentMapping pins the optional intent contract: an absent or
 // "interactive" value keeps the latency-sensitive default, "bulk" opts into
-// parallel range reads, and unknown values are rejected before any file work.
+// parallel range reads, and unknown values (including the removed "probe") are
+// rejected before any file work.
 func TestOpenFileIntentMapping(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -58,7 +59,7 @@ func TestOpenFileIntentMapping(t *testing.T) {
 		{name: "empty defaults to interactive", raw: "", want: vfs.ReadIntentInteractive},
 		{name: "explicit interactive", raw: "interactive", want: vfs.ReadIntentInteractive},
 		{name: "bulk", raw: "bulk", want: vfs.ReadIntentBulk},
-		{name: "probe", raw: "probe", want: vfs.ReadIntentProbe},
+		{name: "probe rejected", raw: "probe", wantErr: true},
 		{name: "unknown rejected", raw: "fast", wantErr: true},
 	}
 	for _, tt := range tests {

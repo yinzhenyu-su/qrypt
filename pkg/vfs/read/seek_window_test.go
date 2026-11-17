@@ -14,9 +14,10 @@ import (
 )
 
 func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
-	// The legacy profile has no stage suggestions, so a confirmed sequential
-	// run issues the full lookahead this test gates.
+	// A fixed sequential stage suggestion makes the speculative lookahead one
+	// wide window, which is the in-flight range this test gates.
 	profile := drive.DefaultReadPolicy()
+	profile.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 8 << 20, Depth: 1}
 	// Isolate window ownership from budget saturation: four lookaheads leave
 	// capacity for the other session's foreground request.
 	profile.MaxInFlight = 8
@@ -32,25 +33,15 @@ func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
 		return nil, false
 	}
 
-	// Session 2 confirms a sequential run and keeps consuming, so its adaptive
-	// budget widens into a gated lookahead. Only consumption grows it; the
-	// stage's ceiling alone does not. The controller starts the lookahead
-	// asynchronously after delivery, so poll briefly between reads instead of
-	// waiting out the whole adaptive ramp on every step.
+	// Session 2 confirms a sequential run, which admits the wide lookahead.
 	var big stagedCall
-	for chunk := int64(0); chunk < 128 && big.Size == 0; chunk++ {
+	for chunk := int64(0); chunk < 8 && big.Size == 0; chunk++ {
 		r.read(t, sessionContext(2, uint64(chunk+1)), chunk*ChunkSize, ChunkSize)
-		for deadline := time.Now().Add(20 * time.Millisecond); big.Size == 0; {
-			for _, call := range r.host.recorded() {
-				if call.Size > 2*ChunkSize {
-					big = call
-					break
-				}
-			}
-			if big.Size > 0 || time.Now().After(deadline) {
+		for _, call := range r.host.recorded() {
+			if call.Size > 2*ChunkSize {
+				big = call
 				break
 			}
-			time.Sleep(time.Millisecond)
 		}
 	}
 	if big.Size == 0 {

@@ -235,9 +235,9 @@ func TestVFSReadDebugIncludesWindowAndDriverTiming(t *testing.T) {
 				sawWindow = true
 			}
 		case "fetch_window":
-			_, hasOpen := event.Extra["driver_open_ms"]
-			_, hasBody := event.Extra["driver_body_ms"]
-			_, hasClose := event.Extra["driver_close_ms"]
+			_, hasOpen := event.Extra["open_us"]
+			_, hasBody := event.Extra["body_us"]
+			_, hasClose := event.Extra["close_us"]
 			if hasOpen && hasBody && hasClose {
 				sawDriverTiming = true
 			}
@@ -650,19 +650,20 @@ func TestVFSReadPrefetchesAdjacentChunksConcurrently(t *testing.T) {
 				prefetches++
 			}
 		}
-		return prefetches == 2
+		return prefetches >= 2
 	})
 }
 
-func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
+// A confirmed sequential run keeps the foreground's single-chunk window per
+// active slot, so the lookahead pipelines several one-chunk Ranges from the
+// cursor instead of widening one merged window.
+func TestVFSSequentialReadPipelinesPrefetchWindows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	firstPrefetchChunk := int64(2)
-	secondPrefetchChunk := firstPrefetchChunk + int64(vfsread.SequentialPrefetchChunks)
-	data := bytes.Repeat([]byte("s"), int((secondPrefetchChunk+int64(vfsread.SequentialPrefetchChunks))*testReadChunkSize))
+	data := bytes.Repeat([]byte("s"), int(8*testReadChunkSize))
 	drv := newCountingReadDriver(data)
-	firstEntered, releaseFirst := drv.blockRead(firstPrefetchChunk * testReadChunkSize)
-	secondEntered, releaseSecond := drv.blockRead(secondPrefetchChunk * testReadChunkSize)
+	firstEntered, releaseFirst := drv.blockRead(2 * testReadChunkSize)
+	secondEntered, releaseSecond := drv.blockRead(3 * testReadChunkSize)
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -683,19 +684,17 @@ func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
 	select {
 	case <-firstEntered:
 	case <-time.After(3 * time.Second):
-		t.Fatal("first merged prefetch did not start")
+		t.Fatal("first pipelined prefetch did not start")
 	}
 	select {
 	case <-secondEntered:
 	case <-time.After(3 * time.Second):
-		t.Fatal("second merged prefetch did not start concurrently")
+		t.Fatal("second pipelined prefetch did not start concurrently")
 	}
-	prefetchSize := int64(vfsread.SequentialPrefetchChunks) * testReadChunkSize
-	if got := drv.readSize(firstPrefetchChunk * testReadChunkSize); got != prefetchSize {
-		t.Fatalf("first sequential prefetch size = %d, want %d", got, prefetchSize)
-	}
-	if got := drv.readSize(secondPrefetchChunk * testReadChunkSize); got != prefetchSize {
-		t.Fatalf("second sequential prefetch size = %d, want %d", got, prefetchSize)
+	for _, offset := range []int64{2 * testReadChunkSize, 3 * testReadChunkSize} {
+		if got := drv.readSize(offset); got != testReadChunkSize {
+			t.Fatalf("prefetch at %d fetched %d bytes, want one %d-byte chunk", offset, got, testReadChunkSize)
+		}
 	}
 	releaseFirst()
 	releaseSecond()
@@ -706,14 +705,16 @@ func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
 				prefetches++
 			}
 		}
-		return prefetches == 2
+		return prefetches >= 2
 	})
 }
 
-func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
+// The adaptive session executes a fixed W×D pipeline: the foreground window
+// width per active slot, never a merged wider Range.
+func TestVFSHandleSequentialReadPipelinesBoundedWindows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	data := bytes.Repeat([]byte("a"), int((2+int64(vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks))*testReadChunkSize))
+	data := bytes.Repeat([]byte("a"), int((2+int64(vfsread.PrefetchLimit))*testReadChunkSize))
 	drv := newCountingReadDriver(data)
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 16 << 20})
 	if err != nil {
@@ -734,21 +735,14 @@ func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
 	}
 	_ = rc.Close()
 
-	// The confirming read starts the adaptive session: one Range must already
-	// cover more than the caller's 16 bytes, because a consumed block becomes
-	// one merged speculative window rather than one Range per read. It starts
-	// at the adaptive seed, not at the stage's full window.
+	// The confirming read starts the adaptive session at chunk 2, one
+	// foreground-sized window per active slot.
 	waitForCondition(t, func() bool { return drv.readCount(2*testReadChunkSize) == 1 })
-	stageWindow := int64(vfsread.SequentialPrefetchChunks) * testReadChunkSize
-	seed := int64(1 << 20)
-	if got := drv.readSize(2 * testReadChunkSize); got <= 16 || got > seed {
-		t.Fatalf("first sequential prefetch = %d bytes, want a merged window no larger than the %d-byte seed", got, seed)
+	if got := drv.readSize(2 * testReadChunkSize); got != testReadChunkSize {
+		t.Fatalf("first sequential prefetch = %d bytes, want one %d-byte chunk", got, testReadChunkSize)
 	}
 
-	// Keep consuming the same run: the window widens past the seed as bytes are
-	// delivered, and never exceeds the stage ceiling. The exact width depends on
-	// which chunks are already covered, so assert the bound and the growth
-	// rather than one fixed size; the read-domain test pins the full shape.
+	// Keep consuming the same run: every speculative window stays one chunk.
 	chunks := int64(len(data)) / testReadChunkSize
 	for index := int64(2); index < chunks; index++ {
 		rc, err := fs.Read(vfsread.WithAccessHint(ctx, vfsread.AccessHint{SessionID: 1, RequestID: uint64(index + 2)}), "/data.bin", index*testReadChunkSize, testReadChunkSize)
@@ -757,29 +751,22 @@ func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
 		}
 		_ = rc.Close()
 	}
-	var widest int64
 	for index := int64(2); index < chunks; index++ {
-		if got := drv.readSize(index * testReadChunkSize); got > widest {
-			widest = got
+		if got := drv.readSize(index * testReadChunkSize); got > testReadChunkSize {
+			t.Fatalf("prefetch at chunk %d widened to %d bytes, want at most one chunk", index, got)
 		}
-	}
-	if widest <= seed {
-		t.Fatalf("adaptive prefetch never widened past the %d-byte seed: widest %d", seed, widest)
-	}
-	if widest > stageWindow {
-		t.Fatalf("adaptive prefetch exceeded the %d-byte stage ceiling: widest %d", stageWindow, widest)
 	}
 }
 
-func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {
+// A cached head shifts the pipelined lookahead: the session skips covered
+// chunks and opens its one-chunk windows right after the cursor.
+func TestVFSSequentialReadShiftsPipelinedLookahead(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	firstPrefetchChunk := int64(3)
-	secondPrefetchChunk := firstPrefetchChunk + int64(vfsread.SequentialPrefetchChunks)
-	data := bytes.Repeat([]byte("h"), int((secondPrefetchChunk+int64(vfsread.SequentialPrefetchChunks))*testReadChunkSize))
+	data := bytes.Repeat([]byte("h"), int(8*testReadChunkSize))
 	drv := newCountingReadDriver(data)
-	firstEntered, releaseFirst := drv.blockRead(firstPrefetchChunk * testReadChunkSize)
-	secondEntered, releaseSecond := drv.blockRead(secondPrefetchChunk * testReadChunkSize)
+	firstEntered, releaseFirst := drv.blockRead(3 * testReadChunkSize)
+	secondEntered, releaseSecond := drv.blockRead(4 * testReadChunkSize)
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -802,19 +789,17 @@ func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {
 	select {
 	case <-firstEntered:
 	case <-time.After(3 * time.Second):
-		t.Fatal("shifted merged prefetch did not start")
+		t.Fatal("shifted pipelined prefetch did not start")
 	}
 	select {
 	case <-secondEntered:
 	case <-time.After(3 * time.Second):
 		t.Fatal("second shifted prefetch did not start concurrently")
 	}
-	prefetchSize := int64(vfsread.SequentialPrefetchChunks) * testReadChunkSize
-	if got := drv.readSize(firstPrefetchChunk * testReadChunkSize); got != prefetchSize {
-		t.Fatalf("shifted sequential prefetch size = %d, want %d", got, prefetchSize)
-	}
-	if got := drv.readSize(secondPrefetchChunk * testReadChunkSize); got != prefetchSize {
-		t.Fatalf("second shifted prefetch size = %d, want %d", got, prefetchSize)
+	for _, offset := range []int64{3 * testReadChunkSize, 4 * testReadChunkSize} {
+		if got := drv.readSize(offset); got != testReadChunkSize {
+			t.Fatalf("shifted prefetch at %d fetched %d bytes, want one chunk", offset, got)
+		}
 	}
 	releaseFirst()
 	releaseSecond()
@@ -825,7 +810,7 @@ func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {
 				prefetches++
 			}
 		}
-		return prefetches == 2
+		return prefetches >= 2
 	})
 }
 

@@ -196,7 +196,7 @@ func (s *ReadSource) OpenRange(ctx context.Context, e Entry, offset, size int64,
 	}
 	openStarted := time.Now()
 	body, err := s.driver.Read(readCtx, e, offset, size)
-	trace.record(map[string]any{"open_us": time.Since(openStarted).Microseconds(), "driver_open_ms": durationMillis(time.Since(openStarted))})
+	trace.record(map[string]any{"open_us": time.Since(openStarted).Microseconds()})
 	if err != nil {
 		release()
 		finish()
@@ -307,6 +307,10 @@ func (s *ReadSource) TryFetch(e Entry, plan RangePlan) *PendingRead {
 	if !ok {
 		return nil
 	}
+	// Speculative work always uses one admitted stream and no split policy:
+	// its purpose is to have bytes ready, not to compete with the foreground
+	// for the provider's parallelism. Foreground windows are the only place a
+	// fan-out observes the caller's throughput and window shape.
 	plan.Streams = 1
 	plan.Split = SplitPolicy{}
 	plan.Speculative = true
@@ -424,7 +428,8 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		trace.record(map[string]any{"granted_streams": workers, "range_tasks": int(count), "window_bytes": plan.Size, "part_bytes": layout.part})
 	}
 	if delivery != nil && e.Size > 0 {
-		// Pending reads always have one admitted stream and no split policy.
+		// Pending reads have one admitted stream and no split policy: publish
+		// the window as one contiguous range, chunk by chunk as it arrives.
 		_, err := s.fetchPart(ctx, e, readRange{plan.Offset, plan.Size}, plan, delivery)
 		if err != nil {
 			if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {

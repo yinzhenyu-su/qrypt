@@ -13,13 +13,12 @@ type readScopeKey struct {
 // ReadScope owns the lifetime of speculative prefetch for one file/session.
 // Foreground reads never use it; they keep their caller context.
 type ReadScope struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	refs     int
-	jobs     sync.WaitGroup
-	mu       sync.Mutex
-	reason   string
-	prefetch *prefetchSession
+	ctx    context.Context
+	cancel context.CancelFunc
+	refs   int
+	jobs   sync.WaitGroup
+	mu     sync.Mutex
+	reason string
 }
 
 func (s *ReadScope) setReason(reason string) {
@@ -166,22 +165,18 @@ func (r *ScopeRegistry) Cancel(ctx context.Context, cacheKey, reason string) {
 	}
 }
 
-// cancelController applies a per-read gate to autonomous session scheduling.
-// A one-shot caller disabling new prefetch can still consume an existing load.
+// cancelController stops speculative work for the read's file/session when the
+// caller disables lookahead or asks for a concurrent pass. Scopes exist only
+// for speculative windows, so an existing scope is always cancelable here.
 func (r *ScopeRegistry) cancelController(ctx context.Context, cacheKey string) {
 	hint, _ := AccessHintFromContext(ctx)
 	key := readScopeKey{cacheKey: cacheKey, sessionID: hint.SessionID}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if scope := r.scopes[key]; scope != nil {
-		scope.mu.Lock()
-		active := scope.prefetch != nil
-		scope.mu.Unlock()
-		if active {
-			scope.setReason("prefetch_disabled")
-			scope.cancel()
-			r.removeLocked(key)
-		}
+		scope.setReason("prefetch_disabled")
+		scope.cancel()
+		r.removeLocked(key)
 	}
 }
 

@@ -221,7 +221,6 @@ const (
 	ReadIntentUnspecified = read.ReadIntentUnspecified
 	ReadIntentInteractive = read.ReadIntentInteractive
 	ReadIntentBulk        = read.ReadIntentBulk
-	ReadIntentProbe       = read.ReadIntentProbe
 )
 
 var WithReadIntent = read.WithReadIntent

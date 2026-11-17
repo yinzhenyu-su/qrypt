@@ -332,7 +332,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		optionErr = fmt.Errorf("read test seek scenario must be isolated, prefetch, or concurrent")
 	}
 	if seekScenario != "isolated" {
-		minimumSize := int64(2*(seekWarmup+vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks))*vfsread.ChunkSize + seekSize
+		minimumSize := int64(2*(seekWarmup+vfsread.PrefetchLimit*2*vfsread.PrefetchChunks))*vfsread.ChunkSize + seekSize
 		if size < minimumSize {
 			optionErr = fmt.Errorf("read test file size must be at least %d bytes for %s seek scenario", minimumSize, seekScenario)
 		}
@@ -803,7 +803,7 @@ func mountedSeekOffsets(fileSize, probeSize int64, count int) []int64 {
 }
 
 func mountedSeekWarmupOffsets(fileSize, targetOffset, targetSize int64, chunks int) (int64, int64) {
-	loadSpan := int64(chunks+vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks) * vfsread.ChunkSize
+	loadSpan := int64(chunks+vfsread.PrefetchLimit*2*vfsread.PrefetchChunks) * vfsread.ChunkSize
 	maxStart := fileSize - loadSpan
 	if maxStart <= 0 {
 		return 0, 0

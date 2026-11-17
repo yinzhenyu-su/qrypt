@@ -17,13 +17,13 @@ func TestReadIntentRoundTrip(t *testing.T) {
 	if got := ReadIntentFromContext(ctx); got != ReadIntentUnspecified {
 		t.Fatalf("missing intent = %v, want unspecified", got)
 	}
-	for _, intent := range []ReadIntent{ReadIntentInteractive, ReadIntentBulk, ReadIntentProbe} {
+	for _, intent := range []ReadIntent{ReadIntentInteractive, ReadIntentBulk} {
 		if got := ReadIntentFromContext(WithReadIntent(ctx, intent)); got != intent {
 			t.Fatalf("intent round trip = %v, want %v", got, intent)
 		}
 	}
-	if ReadIntentBulk.String() != "bulk" || ReadIntentProbe.String() != "probe" || ReadIntentInteractive.String() != "interactive" {
-		t.Fatalf("unexpected intent strings: %q %q %q", ReadIntentBulk, ReadIntentProbe, ReadIntentInteractive)
+	if ReadIntentBulk.String() != "bulk" || ReadIntentInteractive.String() != "interactive" {
+		t.Fatalf("unexpected intent strings: %q %q", ReadIntentBulk, ReadIntentInteractive)
 	}
 }
 
@@ -88,7 +88,7 @@ func TestReadCarriesReadPlan(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from driver read context")
 	}
-	if host.plan.Intent != ReadIntentBulk || host.plan.MaxStreams != 4 || host.plan.CacheWrites {
+	if host.plan.Intent != ReadIntentBulk || host.plan.MaxStreams != 4 || host.plan.cacheWrites() {
 		t.Fatalf("read plan = %+v, want bulk/4/no-cache", host.plan)
 	}
 	if !host.prioritySet || host.priority != PriorityLow {
@@ -159,7 +159,7 @@ func TestReadStreamCarriesReadPlan(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from stream read context")
 	}
-	if host.plan.Intent != ReadIntentInteractive || host.plan.MaxStreams != 1 || !host.plan.CacheWrites {
+	if host.plan.Intent != ReadIntentInteractive || host.plan.MaxStreams != 1 || !host.plan.cacheWrites() {
 		t.Fatalf("stream plan = %+v, want interactive/single/cache", host.plan)
 	}
 }
@@ -193,7 +193,7 @@ func TestHintedSequentialLargeReadUpgradesToBulk(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from driver read context")
 	}
-	if host.plan.Intent != ReadIntentUnspecified || host.plan.MaxStreams != 4 || !host.plan.CacheWrites {
+	if host.plan.Intent != ReadIntentUnspecified || host.plan.MaxStreams != 4 || !host.plan.cacheWrites() {
 		t.Fatalf("adaptive plan = %+v, want unchanged intent/4/cache", host.plan)
 	}
 	if host.plan.WindowChunks != 1 {
@@ -230,51 +230,6 @@ func TestReadStreamPrefetchesNextWindow(t *testing.T) {
 	}
 	if got := host.readCount(); got < 2 {
 		t.Fatalf("driver reads = %d, want the next-window prefetch", got)
-	}
-	if err := rc.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestProbeReadDoesNotPrefetch(t *testing.T) {
-	data := bytes.Repeat([]byte("a"), ChunkSize*8)
-	host := &planCaptureHost{
-		entry:    drive.Entry{ID: "id", Size: int64(len(data)), ModTime: time.Now()},
-		data:     data,
-		cacheKey: "cache",
-	}
-	reader := newTestReader(testReaderDeps{Host: host, State: NewState(nil), Profile: drive.DefaultReadPolicy()})
-
-	rc, err := reader.Read(WithReadIntent(context.Background(), ReadIntentProbe), "/file", 0, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = rc.Close()
-	time.Sleep(50 * time.Millisecond)
-	if got := host.readCount(); got != 1 {
-		t.Fatalf("driver reads = %d, want 1 (probe must not prefetch)", got)
-	}
-}
-
-func TestReadStreamProbeDoesNotPrefetch(t *testing.T) {
-	data := bytes.Repeat([]byte("a"), ChunkSize*8)
-	host := &planCaptureHost{
-		entry:    drive.Entry{ID: "id", Size: int64(len(data)), ModTime: time.Now()},
-		data:     data,
-		cacheKey: "cache",
-	}
-	reader := newTestReader(testReaderDeps{Host: host, State: NewState(nil), Profile: drive.DefaultReadPolicy()})
-
-	rc, err := reader.ReadStream(WithReadIntent(context.Background(), ReadIntentProbe), "/file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rc.Read(make([]byte, ChunkSize)); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(50 * time.Millisecond)
-	if got := host.readCount(); got != 1 {
-		t.Fatalf("driver reads = %d, want 1 (probe stream must not prefetch)", got)
 	}
 	if err := rc.Close(); err != nil {
 		t.Fatal(err)

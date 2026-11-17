@@ -83,8 +83,6 @@ func (o openFileOptions) intent() (core.ReadIntent, error) {
 		return core.ReadIntentInteractive, nil
 	case "bulk":
 		return core.ReadIntentBulk, nil
-	case "probe":
-		return core.ReadIntentProbe, nil
 	default:
 		return core.ReadIntentInteractive, fmt.Errorf("mobile: unknown read intent %q", o.Intent)
 	}
