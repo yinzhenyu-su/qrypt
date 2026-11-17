@@ -110,6 +110,23 @@ func setSplitThresholds(t *testing.T, enter, exit int64) {
 	})
 }
 
+// waitWindowIdle waits for the async window fetch to finish so the test's
+// threshold restoration in cleanup cannot race with a running fetch.
+func waitWindowIdle(t *testing.T, reader *Reader) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		reader.state.windows.mu.Lock()
+		active := len(reader.state.windows.loads)
+		reader.state.windows.mu.Unlock()
+		if active == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("window fetch did not finish")
+}
+
 func setSlowStreak(t *testing.T, windows int) {
 	t.Helper()
 	old := fgSplitSlowWindows
@@ -183,6 +200,47 @@ func TestAdaptiveForegroundSplit(t *testing.T) {
 		if n := callsInWindow(drv.snapshot(), 1, 1); n < 2 {
 			t.Fatalf("second window calls = %d, want the window split after one slow sample", n)
 		}
+	})
+
+	t.Run("split windows use an even part layout", func(t *testing.T) {
+		t.Setenv("QRYPT_FG_SPLIT", "1")
+		setSplitThresholds(t, 1<<40, 1<<40)
+		reader, drv := newFGSplitTestReader(t, content)
+		readChunkAt(t, reader, 0) // measure a slow window and arm the split
+		ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentInteractive))
+		rc, err := reader.Read(ctx, "/file.bin", ChunkSize, int64(len(content))-ChunkSize)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if _, err := io.ReadAll(rc); err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		_ = rc.Close()
+		// A read larger than one chunk opens the wide window, clamped to the
+		// file end here; the split must divide that window evenly.
+		windowBytes := int64(len(content)) - ChunkSize
+		wantParts := foregroundSplitStreams
+		want := (windowBytes + int64(wantParts) - 1) / int64(wantParts)
+		var parts []int64
+		for _, call := range drv.snapshot() {
+			if call[0] >= ChunkSize {
+				parts = append(parts, call[1])
+			}
+		}
+		if len(parts) != wantParts {
+			t.Fatalf("split parts = %v, want %d evenly sized ranges", parts, wantParts)
+		}
+		var total int64
+		for _, size := range parts {
+			if size != want {
+				t.Fatalf("split part sizes = %v, want %d each", parts, want)
+			}
+			total += size
+		}
+		if total != windowBytes {
+			t.Fatalf("split parts cover %d bytes, want %d", total, windowBytes)
+		}
+		waitWindowIdle(t, reader)
 	})
 
 	t.Run("QRYPT_FG_SPLIT=0 keeps one stream", func(t *testing.T) {

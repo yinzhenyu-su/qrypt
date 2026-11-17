@@ -76,9 +76,10 @@ Closing a body stops its cancellation watcher without canceling its caller.
 Throttled single connections: the adaptive foreground split is on by
 default. A foreground window whose provider transfer rate (measured over the
 body, so a slow request open does not arm it) falls below 350 KiB/s makes the
-next window four 128 KiB Range requests over parallel streams, bounded by the
-same admission and pausing speculative lookahead; one window at 900 KiB/s or
-more reverts to a single stream. For five minutes after such a sample, a file
+next window four Range requests over parallel streams, split evenly by the read
+layer (a 512 KiB window becomes four 128 KiB parts, a 2 MiB window four 512 KiB
+parts), bounded by the same admission and pausing speculative lookahead; one
+window at 900 KiB/s or more reverts to a single stream. For five minutes after such a sample, a file
 with no measurements of its own starts split as well, so opening the next file
 during the same throttled session does not pay the cold-start window again.
 Measured on the quark CDN with each connection paced at 150 KiB/s, a

@@ -900,7 +900,11 @@ func (r *Reader) prepareWindowFetch(ctx context.Context, entry drive.Entry, star
 				streams = limit
 			}
 			if streams > 1 {
-				partBytes = foregroundSplitPartBytes
+				// Split windows use an even layout: each worker takes an equal
+				// share of the window. A fixed small part would multiply Range
+				// requests without adding parallelism, and the even split keeps
+				// the Range count equal to the worker count.
+				partBytes = (windowBytes + int64(streams) - 1) / int64(streams)
 			}
 		}
 	} else if streams > 1 {
@@ -1151,10 +1155,7 @@ func foregroundSplitEnabled() bool {
 	return true
 }
 
-const (
-	foregroundSplitStreams   = 4
-	foregroundSplitPartBytes = 128 << 10
-)
+const foregroundSplitStreams = 4
 
 // Adaptive thresholds: a foreground window is split only after a measured
 // window rate falls below fgSplitEnterBytesPerSec, and the split is dropped
