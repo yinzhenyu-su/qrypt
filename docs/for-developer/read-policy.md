@@ -50,7 +50,11 @@ never published; already published prefix blocks remain valid if a later block
 fails. A split foreground window is partitioned by the read layer itself: it
 chooses the worker count and part size, hands each part to `ReadSource.FetchPart`
 as a single admitted Range, and reassembles the parts' blocks in order, so part
-scheduling and cancellation stay in one place. Idle/truncation retries resume
+scheduling and cancellation stay in one place. Bulk downloads and `ReadStream`
+windows go through the same scheduler: the read layer translates the driver's
+bulk split policy into an explicit worker count and part size
+(`drive.WindowPartLayout`), so `RangePlan` carries only offset, size, workers and
+part and the source never interprets policy. Idle/truncation retries resume
 at the first unpublished block, under the original total deadline and retry
 limits, without replaying delivered bytes. Unknown-size objects retain buffered
 whole-window validation. Closing a running job cancels it; admission is released
@@ -137,7 +141,9 @@ speculative window: a joined window that publishes the block satisfies them,
 and one that finishes without it is a miss, so the reader loads its own small
 range. There is no separate foreground give-up budget and no cancel-and-reGET of
 in-flight work; the fetch's own idle and total deadlines remain the only bounds,
-together with caller cancellation. Unknown-size loads keep whole-window
+together with caller cancellation. A waiter only joins another session's
+lookahead window for its head block or an already published block: a stalled
+lookahead from an unrelated handle must not delay this caller. Unknown-size loads keep whole-window
 validation.
 
 `ReadPlan` records the stage's prefetch shape. Adaptive stages resolve

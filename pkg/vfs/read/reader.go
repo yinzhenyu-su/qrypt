@@ -234,6 +234,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	r.state.beginForegroundRead(cacheKey)
 	defer r.state.endForegroundRead(cacheKey)
 	hint, hinted := AccessHintFromContext(ctx)
+	readCtx = withReadSession(readCtx, hint.SessionID)
 	decision := accessDecision{}
 	// The read run must be known before the data is fetched, because that is
 	// when chunks are admitted to the cache. A hinted read already has its
@@ -636,11 +637,11 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 	}
 	key := WindowShapeKey(WindowKey(LoadKey(r.host, entry), startIndex, endIndex), streams)
 	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: streams, done: make(chan struct{})}
-	if entry.Size > 0 && plan.streaming() {
-		// Known-size streaming windows publish completed blocks: initialize the
-		// per-block channels before the load is registered so joiners can wait
-		// on them. Bulk windows keep the buffered parallel fetch, whose split
-		// policy is the driver's download shape.
+	if entry.Size > 0 {
+		// Known-size windows publish completed blocks: initialize the per-block
+		// channels before the load is registered so joiners can wait on them.
+		// Bulk windows use the same part scheduler, so downloads and playback
+		// share one execution path.
 		load.progressive = true
 		load.chunks = make([]windowChunk, int(endIndex-startIndex+1))
 		for index := range load.chunks {
@@ -872,7 +873,6 @@ type windowFetch struct {
 	plan        ReadPlan
 	windowBytes int64
 	streams     int
-	split       drive.SplitPolicy
 	partBytes   int64
 	adaptive    bool
 	started     time.Time
@@ -887,7 +887,9 @@ func (r *Reader) prepareWindowFetch(ctx context.Context, entry drive.Entry, star
 	ctx = drive.WithReadTrace(ctx, trace)
 	windowBytes := (endIndex - startIndex + 1) * ChunkSize
 	streams := grantedStreams(ctx, plan.MaxStreams)
-	split := plan.Split
+	if streams < 1 {
+		streams = 1
+	}
 	prefetch := isPrefetchRead(ctx)
 	adaptive := foregroundSplitEnabled() && !prefetch && plan.streaming() && windowBytes >= ChunkSize
 	partBytes := int64(0)
@@ -901,28 +903,31 @@ func (r *Reader) prepareWindowFetch(ctx context.Context, entry drive.Entry, star
 				partBytes = foregroundSplitPartBytes
 			}
 		}
+	} else if streams > 1 {
+		// Streaming and bulk windows take their part layout from the driver's
+		// split policy, translated here so the source executes an explicit
+		// shape and never interprets policy itself.
+		streams, partBytes = drive.WindowPartLayout(windowBytes, streams, plan.Split)
+		if streams > 1 && partBytes <= 0 {
+			partBytes = (windowBytes + int64(streams) - 1) / int64(streams)
+		}
 	}
-	return windowFetch{ctx: ctx, entry: entry, plan: plan, windowBytes: windowBytes, streams: streams, split: split, partBytes: partBytes, adaptive: adaptive, started: time.Now(), trace: trace}
+	return windowFetch{ctx: ctx, entry: entry, plan: plan, windowBytes: windowBytes, streams: streams, partBytes: partBytes, adaptive: adaptive, started: time.Now(), trace: trace}
 }
 
 func (w windowFetch) rangePlan(startIndex int64) drive.RangePlan {
-	plan := drive.RangePlan{
+	// The read layer owns the window's part layout; the drive source only
+	// executes the ranges it is given.
+	return drive.RangePlan{
 		Offset:      startIndex * ChunkSize,
 		Size:        w.windowBytes,
 		Streams:     w.streams,
-		Split:       w.split,
+		Workers:     w.streams,
+		Part:        w.partBytes,
 		Timeouts:    fetchTimeoutsFromContext(w.ctx),
 		Priority:    priority(w.ctx),
 		Speculative: isPrefetchRead(w.ctx),
 	}
-	if w.partBytes > 0 && w.streams > 1 {
-		// The read layer owns the streaming window's part layout; the drive
-		// source only executes the ranges it is given.
-		plan.Workers = w.streams
-		plan.Part = w.partBytes
-		plan.Split = drive.SplitPolicy{}
-	}
-	return plan
 }
 
 // observeWindowFetch feeds the window's transfer rate into the adaptive
@@ -1026,7 +1031,7 @@ func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byt
 	if plan.Intent != ReadIntentBulk && plan.Stage != StageSequential && plan.WindowChunks > 0 {
 		maxChunks = int64(plan.WindowChunks)
 	}
-	load := r.state.findWindow(fid, index, streams, maxChunks)
+	load := r.state.findWindow(fid, index, streams, maxChunks, readSession(ctx))
 	if load == nil {
 		return nil, false, nil
 	}
@@ -1111,7 +1116,7 @@ func (r *Reader) readChunkAvailableFor(cacheKey string, index int64, streams int
 			return true
 		}
 	}
-	return r.state.findWindow(cacheKey, index, streams, 0) != nil
+	return r.state.findWindow(cacheKey, index, streams, 0, 0) != nil
 }
 
 func (r *Reader) hotChunk(cacheKey string, index int64) ([]byte, bool) {

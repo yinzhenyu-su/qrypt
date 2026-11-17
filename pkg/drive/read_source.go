@@ -33,11 +33,11 @@ func WithReadBodyTransform(ctx context.Context, f ReadBodyTransform) context.Con
 
 type RangePlan struct {
 	Offset, Size int64
-	Streams      int
-	Split        SplitPolicy
-	// Workers and Part size the window's parts explicitly. Streaming windows
-	// let the read layer, which owns the shape policy, choose them; Workers is
-	// zero for buffered fetches that still use Split.
+	// Streams requests a worker count without a part size; the caller that
+	// knows the download shape sets Workers and Part explicitly instead. The
+	// read layer translates driver split policy into an explicit layout, so the
+	// source never interprets policy.
+	Streams     int
 	Workers     int
 	Part        int64
 	Timeouts    FetchTimeouts
@@ -59,17 +59,18 @@ func explicitRangeLayout(offset, size int64, workers int, part int64) rangeLayou
 	return rangeLayout{offset: offset, size: size, part: part, workers: min(workers, int((size+part-1)/part))}
 }
 
-func partitionRange(offset, size int64, workers int, split SplitPolicy) rangeLayout {
-	workers = max(1, workers)
-	if size < split.MinParallelBytes {
-		workers = 1
+// WindowPartLayout translates a driver's split policy into the explicit part
+// layout the source executes. Below MinParallelBytes the window stays on one
+// stream; PartBytes (or an even split when zero) sizes each part. The read layer
+// and the direct sourceStream both use this so policy is interpreted once.
+func WindowPartLayout(size int64, streams int, split SplitPolicy) (workers int, part int64) {
+	workers = max(1, streams)
+	if split.MinParallelBytes > 0 && size < split.MinParallelBytes {
+		return 1, 0
 	}
-	part := split.PartBytes
-	if part == 0 {
-		part = (size + int64(workers) - 1) / int64(workers)
-	}
-	return rangeLayout{offset: offset, size: size, part: part, workers: min(workers, int((size+part-1)/part))}
+	return workers, split.PartBytes
 }
+
 func (l rangeLayout) count() int64 { return (l.size + l.part - 1) / l.part }
 func (l rangeLayout) at(index int64) readRange {
 	start := index * l.part
@@ -325,7 +326,8 @@ func (s *ReadSource) TryFetch(e Entry, plan RangePlan) *PendingRead {
 	// for the provider's parallelism. Foreground windows are the only place a
 	// fan-out observes the caller's throughput and window shape.
 	plan.Streams = 1
-	plan.Split = SplitPolicy{}
+	plan.Workers = 1
+	plan.Part = 0
 	plan.Speculative = true
 	job := &PendingRead{source: s, entry: e, plan: plan, release: release}
 	if s.pending == nil {
@@ -428,7 +430,7 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		plan.Timeouts.Total = s.policy.Effective.Fetch.Total
 	}
 	plan.Timeouts.Idle = min(plan.Timeouts.Idle, plan.Timeouts.Total)
-	if plan.Split.PartBytes < 0 || plan.Split.PartBytes > MaxReadWindowBytes || plan.Split.MinParallelBytes < 0 || plan.Split.MinParallelBytes > MaxReadWindowBytes || plan.Streams < 0 || plan.Streams > 32 || plan.Workers < 0 || plan.Workers > 32 || plan.Part < 0 || plan.Part > MaxReadWindowBytes {
+	if plan.Streams < 0 || plan.Streams > 32 || plan.Workers < 0 || plan.Workers > 32 || plan.Part < 0 || plan.Part > MaxReadWindowBytes {
 		return nil, ErrInvalidInput
 	}
 	if plan.Offset < 0 || plan.Size <= 0 || plan.Size > MaxReadWindowBytes || plan.Offset > math.MaxInt64-plan.Size {
@@ -481,21 +483,14 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 	if !s.policy.Limits.Parallel || s.scheduler.IsNonParallel(e.ID) {
 		workers = 1
 	}
-	if plan.Workers <= 0 && plan.Size < plan.Split.MinParallelBytes {
-		workers = 1
-	}
 	// Compute tasks lazily. Even a one-byte ceiling creates at most workers
 	// goroutines and one bounded output buffer, rather than millions of tasks.
 	if e.Size <= 0 {
 		workers = 1
-		plan.Split.PartBytes = 0
 		plan.Part = 0
 	}
 	workers = s.scheduler.GrantStreams(workers, e.ID, s.policy.Effective.MaxInFlight)
-	layout := partitionRange(plan.Offset, plan.Size, workers, plan.Split)
-	if plan.Workers > 0 {
-		layout = explicitRangeLayout(plan.Offset, plan.Size, workers, plan.Part)
-	}
+	layout := explicitRangeLayout(plan.Offset, plan.Size, workers, plan.Part)
 	workers = layout.workers
 	count := layout.count()
 	strict := workers > 1
@@ -536,7 +531,8 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		if strict && errors.Is(err, ErrUnsupported) {
 			s.scheduler.MarkNonParallel(e.ID)
 			plan.Streams = 1
-			plan.Split.PartBytes = 0
+			plan.Workers = 1
+			plan.Part = 0
 			return s.Fetch(ctx, e, plan)
 		}
 		if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
@@ -630,7 +626,8 @@ func (r *sourceStream) Read(p []byte) (int, error) {
 		if r.known {
 			n = min(n, r.remaining)
 		}
-		data, err := r.source.Fetch(r.ctx, r.entry, RangePlan{Offset: r.offset, Size: n, Streams: policy.Bulk.Streams, Split: policy.Bulk.Split, Timeouts: policy.Fetch, Priority: readbudget.PriorityLow})
+		workers, part := WindowPartLayout(n, policy.Bulk.Streams, policy.Bulk.Split)
+		data, err := r.source.Fetch(r.ctx, r.entry, RangePlan{Offset: r.offset, Size: n, Workers: workers, Part: part, Timeouts: policy.Fetch, Priority: readbudget.PriorityLow})
 		if err != nil {
 			return 0, err
 		}

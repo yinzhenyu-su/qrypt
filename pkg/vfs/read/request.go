@@ -28,6 +28,7 @@ type readRequest struct {
 	cacheAccess readcache.Access
 	priority    priorityValue
 	timing      *fetchTiming
+	session     uint64
 }
 
 func readRequestFrom(ctx context.Context) readRequest {
@@ -46,6 +47,14 @@ func updateReadRequest(ctx context.Context, fn func(*readRequest)) context.Conte
 	fn(&req)
 	return withReadRequest(ctx, req)
 }
+
+// withReadSession records the open-file session this read belongs to. Window
+// joins use it to avoid waiting behind another session's lookahead.
+func withReadSession(ctx context.Context, session uint64) context.Context {
+	return updateReadRequest(ctx, func(req *readRequest) { req.session = session })
+}
+
+func readSession(ctx context.Context) uint64 { return readRequestFrom(ctx).session }
 
 // WithReadPlan attaches a resolved read plan to ctx. Later read-domain stages
 // consume it.

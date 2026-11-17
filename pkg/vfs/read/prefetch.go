@@ -91,7 +91,7 @@ func (r *Reader) prefetchResident(cacheKey string, index int64) bool {
 			return true
 		}
 	}
-	return r.state.findWindow(cacheKey, index, 0, 0) != nil
+	return r.state.findWindow(cacheKey, index, 0, 0, 0) != nil
 }
 
 // recordPrefetchPlan snapshots the planned horizon for diagnostics only. It

@@ -134,6 +134,12 @@ func (r *Reader) streamWindowParts(ctx context.Context, entry drive.Entry, w win
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	partCtx := workerCtx
+	if parts.workers > 1 {
+		// Parallel parts keep the strict-range contract: a driver that cannot
+		// serve exact ranges must fail here, not silently return the wrong bytes.
+		partCtx = drive.WithStrictRange(workerCtx)
+	}
 	var wg sync.WaitGroup
 	var errOnce sync.Once
 	var firstErr error
@@ -147,7 +153,7 @@ func (r *Reader) streamWindowParts(ctx context.Context, entry drive.Entry, w win
 					return
 				}
 				span := parts.at(index)
-				if err := r.source.FetchPart(workerCtx, entry, span.offset, span.size, plan, blocks.put); err != nil {
+				if err := r.source.FetchPart(partCtx, entry, span.offset, span.size, plan, blocks.put); err != nil {
 					errOnce.Do(func() {
 						firstErr = err
 						cancel()
@@ -186,7 +192,6 @@ func (r *Reader) streamWindowParts(ctx context.Context, entry drive.Entry, w win
 	fallback.Offset, fallback.Size = from, end-from
 	fallback.Workers, fallback.Part = 0, 0
 	fallback.Streams = 1
-	fallback.Split = drive.SplitPolicy{}
 	cont := newWindowBlocks(from, publish)
 	if err := r.source.FetchStream(ctx, entry, fallback, cont.put); err != nil {
 		return delivered, err

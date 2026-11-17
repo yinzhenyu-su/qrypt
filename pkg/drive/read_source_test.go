@@ -165,7 +165,7 @@ func TestSourceCloseClosesOutstandingBodies(t *testing.T) {
 	}
 }
 func TestFixedSplitCeilingIsIndependentOfWorkers(t *testing.T) {
-	layout := partitionRange(7, 24<<20, 3, SplitPolicy{PartBytes: 4 << 20})
+	layout := explicitRangeLayout(7, 24<<20, 3, 4<<20)
 	spans := make([]readRange, layout.count())
 	for i := range spans {
 		spans[i] = layout.at(int64(i))
@@ -360,7 +360,7 @@ func TestSourceFixedPartQueueCoversMoreTasksThanWorkers(t *testing.T) {
 	done := make(chan outcome, 1)
 	trace := &ReadTrace{}
 	go func() {
-		b, err := s.Fetch(WithReadTrace(context.Background(), trace), e, RangePlan{Size: int64(len(data)), Streams: 3, Split: SplitPolicy{PartBytes: 4 << 20}})
+		b, err := s.Fetch(WithReadTrace(context.Background(), trace), e, RangePlan{Size: int64(len(data)), Workers: 3, Part: 4 << 20})
 		done <- outcome{b, err}
 	}()
 	waitForReadActive(t, d.FakeDriver, 3)
@@ -390,7 +390,7 @@ func TestSourceFixedPartQueueCoversMoreTasksThanWorkers(t *testing.T) {
 	if active := d.ReadStats().MaxConcurrent; active > 3 {
 		t.Fatalf("active=%d want <=3", active)
 	}
-	layout := partitionRange(0, MaxReadWindowBytes, 3, SplitPolicy{PartBytes: 1})
+	layout := explicitRangeLayout(0, MaxReadWindowBytes, 3, 1)
 	if layout.count() != MaxReadWindowBytes || layout.workers != 3 {
 		t.Fatalf("lazy layout=%+v", layout)
 	}
@@ -400,8 +400,8 @@ func TestSourceRejectsInvalidPlansBeforeAdmission(t *testing.T) {
 	s := newPolicySource(t, []byte("data"), 1)
 	e := Entry{ID: "0/file.bin", Size: 4}
 	for _, plan := range []RangePlan{
-		{Size: 1, Split: SplitPolicy{PartBytes: 1<<63 - 1}},
-		{Size: 1, Split: SplitPolicy{MinParallelBytes: MaxReadWindowBytes + 1}},
+		{Size: 1, Part: 1<<63 - 1},
+		{Size: 1, Part: -1},
 		{Size: 1, Streams: 33},
 		{Offset: -1, Size: 1},
 		{Offset: 1<<63 - 1, Size: 1},

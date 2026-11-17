@@ -673,11 +673,20 @@ func (s *State) endWindowLoad(load *windowLoad) {
 	s.windows.mu.Unlock()
 }
 
-func (s *State) findWindow(cacheKey string, index int64, streams int, maxChunks int64) *windowLoad {
+func (s *State) findWindow(cacheKey string, index int64, streams int, maxChunks int64, session uint64) *windowLoad {
 	s.windows.mu.Lock()
 	defer s.windows.mu.Unlock()
 	for _, candidate := range s.windows.loads {
 		if candidate.fid != cacheKey || index < candidate.start || index > candidate.end {
+			continue
+		}
+		// Another session's lookahead may be stalled or pointed far from this
+		// caller, so only its head block (which every progressive window
+		// publishes first) or an already published block is worth waiting for.
+		// Its own session may wait for any covered block: that window is the
+		// one the caller's lookahead would have issued anyway.
+		if candidate.prefetch && candidate.sessionID != session &&
+			index != candidate.start && !candidate.chunkAvailable(index) {
 			continue
 		}
 		candidateStreams := candidate.streams
