@@ -345,9 +345,19 @@ func TestObserverStreamPath(t *testing.T) {
 	if err := rc.Close(); err != nil {
 		t.Fatal(err)
 	}
-	begins, finishes, reads := obs.counts()
-	if begins == 0 || begins != finishes {
-		t.Fatalf("stream lifecycle: begins=%d finishes=%d, want paired and >=1", begins, finishes)
+	// A window fetch runs in its own goroutine and may record its finish just
+	// after the stream is closed, so settle before asserting the pairing.
+	deadline := time.Now().Add(time.Second)
+	var begins, finishes, reads int
+	for {
+		begins, finishes, reads = obs.counts()
+		if begins > 0 && begins == finishes {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream lifecycle: begins=%d finishes=%d, want paired and >=1", begins, finishes)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if reads != 1 {
 		t.Fatalf("stream read records = %d, want 1", reads)

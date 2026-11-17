@@ -335,7 +335,7 @@ func (s *ReadSource) TryFetch(e Entry, plan RangePlan) *PendingRead {
 	return job
 }
 func (p *PendingRead) Run(ctx context.Context) ([]byte, error) {
-	return p.run(ctx, nil)
+	return p.run(ctx)
 }
 
 // RunChunks consumes an aligned speculative window in ReadChunkSize blocks.
@@ -348,22 +348,43 @@ func (p *PendingRead) RunChunks(ctx context.Context, emit func(int64, []byte)) e
 	if emit == nil || p.plan.Offset%ReadChunkSize != 0 {
 		return ErrInvalidInput
 	}
-	_, err := p.run(ctx, &rangeDelivery{next: p.plan.Offset, emit: emit})
-	return err
+	ctx, cancel, err := p.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { cancel(); p.finish() }()
+	return p.source.FetchStream(ctx, p.entry, p.plan, emit)
 }
 
-func (p *PendingRead) run(ctx context.Context, delivery *rangeDelivery) ([]byte, error) {
+// SpeculativeContext returns a context carrying the admission this job already
+// holds, so Range requests executed on its behalf reuse that permit instead of
+// acquiring another one. The job must stay open until those requests finish.
+func (p *PendingRead) SpeculativeContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, pendingReadKey{}, p)
+}
+
+// begin claims the job for one consumer, returning a context that carries the
+// job's admission so inner Range requests do not acquire another permit.
+func (p *PendingRead) begin(ctx context.Context) (context.Context, context.CancelFunc, error) {
 	p.mu.Lock()
 	if p.closed || p.started {
 		p.mu.Unlock()
-		return nil, ErrInvalidInput
+		return nil, nil, ErrInvalidInput
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	p.started = true
 	p.cancel = cancel
 	p.mu.Unlock()
+	return p.SpeculativeContext(ctx), cancel, nil
+}
+
+func (p *PendingRead) run(ctx context.Context) ([]byte, error) {
+	ctx, cancel, err := p.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
 	defer func() { cancel(); p.finish() }()
-	return p.source.fetch(context.WithValue(ctx, pendingReadKey{}, p), p.entry, p.plan, delivery)
+	return p.source.Fetch(ctx, p.entry, p.plan)
 }
 func (p *PendingRead) finish() {
 	p.once.Do(func() { p.release(); p.source.mu.Lock(); delete(p.source.pending, p); p.source.mu.Unlock() })
@@ -419,6 +440,38 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		}
 		plan.Size = min(plan.Size, e.Size-plan.Offset)
 	}
+	if delivery != nil {
+		// Progressive delivery is one streaming Range: the read layer owns
+		// part fan-out (FetchPart per part), so a window delivery never opens
+		// several connections of its own.
+		if e.Size <= 0 || plan.Offset%ReadChunkSize != 0 {
+			// Block boundaries are chunk aligned; an unaligned or unknown-size
+			// window keeps the buffered contract and publishes once validated.
+			data, err := s.fetch(ctx, e, plan, nil)
+			if err != nil {
+				if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
+					trace.failure(ctx, err)
+				}
+				return nil, err
+			}
+			for len(data) > 0 {
+				n := min(int64(len(data)), ReadChunkSize)
+				delivery.publish(data[:n:n])
+				data = data[n:]
+			}
+			return nil, nil
+		}
+		if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
+			trace.record(map[string]any{"granted_streams": 1, "range_tasks": 1, "window_bytes": plan.Size, "part_bytes": plan.Size})
+		}
+		_, err := s.fetchPart(ctx, e, readRange{plan.Offset, plan.Size}, plan, delivery)
+		if err != nil {
+			if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
+				trace.failure(ctx, err)
+			}
+		}
+		return nil, err
+	}
 	workers := plan.Streams
 	if plan.Workers > 0 {
 		// The read layer chose the part count for this window; keep its choice.
@@ -448,17 +501,6 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 	strict := workers > 1
 	if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
 		trace.record(map[string]any{"granted_streams": workers, "range_tasks": int(count), "window_bytes": plan.Size, "part_bytes": layout.part})
-	}
-	if delivery != nil && e.Size > 0 {
-		// Progressive reads publish complete blocks while the window is in
-		// flight, so a playback reader does not wait for the whole window.
-		_, err := s.fetchProgressively(ctx, e, plan, layout, count, strict, delivery)
-		if err != nil {
-			if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-				trace.failure(ctx, err)
-			}
-		}
-		return nil, err
 	}
 	data := make([]byte, int(plan.Size))
 	var next atomic.Int64

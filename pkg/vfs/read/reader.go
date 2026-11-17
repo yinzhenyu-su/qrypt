@@ -636,9 +636,11 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 	}
 	key := WindowShapeKey(WindowKey(LoadKey(r.host, entry), startIndex, endIndex), streams)
 	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: streams, done: make(chan struct{})}
-	if entry.Size > 0 {
-		// Known-size windows publish completed blocks: initialize the per-block
-		// channels before the load is registered so joiners can wait on them.
+	if entry.Size > 0 && plan.streaming() {
+		// Known-size streaming windows publish completed blocks: initialize the
+		// per-block channels before the load is registered so joiners can wait
+		// on them. Bulk windows keep the buffered parallel fetch, whose split
+		// policy is the driver's download shape.
 		load.progressive = true
 		load.chunks = make([]windowChunk, int(endIndex-startIndex+1))
 		for index := range load.chunks {
@@ -1382,9 +1384,19 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 		// Speculative range admission is atomic and never waits for capacity.
 		prefetchCtx = drive.WithReadTrace(prefetchCtx, trace)
 		prefetchCtx = r.withReadFaults(prefetchCtx)
+		// The window is executed through the same streaming FetchStream path
+		// the foreground single-stream window uses; the job's admission is
+		// reused by the Range inside it, so no second permit is taken.
+		prefetchCtx = job.SpeculativeContext(prefetchCtx)
 		backend := r.newBackend()
 		load.data = make(map[int64][]byte, len(load.chunks))
-		load.err = job.RunChunks(prefetchCtx, func(offset int64, data []byte) {
+		load.err = r.source.FetchStream(prefetchCtx, entry, drive.RangePlan{
+			Offset:      startIndex * ChunkSize,
+			Size:        (endIndex - startIndex + 1) * ChunkSize,
+			Timeouts:    fetchTimeoutsFromContext(ctx),
+			Priority:    PriorityLow,
+			Speculative: true,
+		}, func(offset int64, data []byte) {
 			index := offset / ChunkSize
 			backend.StoreChunk(prefetchCtx, backend.CacheKey(entry), entry, index, data)
 			load.data[index] = data

@@ -39,7 +39,9 @@ Call `Run`, `RunChunks` or `Close` on the returned pending read. `Run` retains
 whole-window validation. `ReadSource.FetchStream` and `RunChunks` publish each
 complete 512 KiB plaintext block as immutable and independently ready while the
 same Range request continues through the tail; VFS lookahead and foreground
-window fetches both use it. A foreground read therefore returns its target block
+window fetches both use it. A speculative window runs through that same
+`FetchStream` call under the admission `TryFetch` reserved, so executing it
+does not take a second permit. A foreground read therefore returns its target block
 as soon as that block arrives, while the rest of the window keeps filling in the
 background for later reads; merging or joining the window later is unaffected.
 The final block waits for EOF, response length and successful Close. Encryption
