@@ -35,6 +35,12 @@ type Reader struct {
 	fgMu       sync.Mutex
 	fgSplit    map[string]*fgSplitState
 	fgLastSlow time.Time
+	// Adaptive split knobs live on the reader so tests can tune one reader
+	// without mutating shared package state.
+	fgEnterBytesPerSec int64
+	fgExitBytesPerSec  int64
+	fgSlowWindows      int
+	fgThrottleMemory   time.Duration
 }
 
 // ReaderDeps is the explicit dependency set for a read-domain reader.
@@ -74,15 +80,19 @@ func NewReader(deps ReaderDeps) *Reader {
 	}
 	deps.State.scheduler = deps.Source.Scheduler()
 	r := &Reader{
-		host:     deps.Host,
-		state:    deps.State,
-		observer: deps.Observer,
-		health:   deps.Health,
-		counters: deps.Counters,
-		profile:  deps.Source.Policy().Effective,
-		source:   deps.Source,
-		faults:   deps.ReadFaults,
-		fgSplit:  map[string]*fgSplitState{},
+		host:               deps.Host,
+		state:              deps.State,
+		observer:           deps.Observer,
+		health:             deps.Health,
+		counters:           deps.Counters,
+		profile:            deps.Source.Policy().Effective,
+		source:             deps.Source,
+		faults:             deps.ReadFaults,
+		fgSplit:            map[string]*fgSplitState{},
+		fgEnterBytesPerSec: fgSplitEnterBytesPerSecDefault,
+		fgExitBytesPerSec:  fgSplitExitBytesPerSecDefault,
+		fgSlowWindows:      fgSplitSlowWindowsDefault,
+		fgThrottleMemory:   fgSplitThrottleMemoryDefault,
 	}
 	r.policy = newCachePolicy(deps.State)
 	return r
@@ -1188,22 +1198,24 @@ const foregroundSplitStreams = 4
 // Adaptive thresholds: a foreground window is split only after a measured
 // window rate falls below fgSplitEnterBytesPerSec, and the split is dropped
 // again once a window reaches fgSplitExitBytesPerSec. The hysteresis keeps the
-// mode stable instead of flapping on one noisy sample. They are variables so a
-// test can force either decision without waiting on real network timing.
-var (
-	fgSplitEnterBytesPerSec int64 = 350 << 10
-	fgSplitExitBytesPerSec  int64 = 900 << 10
-	// fgSplitSlowWindows is how many consecutive slow windows must be observed
-	// before the adaptive mode starts splitting. One is enough: playback's first
-	// sequential window is megabytes wide, so waiting for a second slow sample
-	// would stall the player for that whole window. A false positive on a fast
-	// link is bounded because one split window above the exit rate reverts it.
-	fgSplitSlowWindows = 1
-	// fgSplitThrottleMemory keeps the split armed for objects that have no rate
-	// sample yet after any object recently measured a slow window: opening the
-	// next file during the same throttled session should not pay the cold-start
-	// single-stream window again. It expires on its own.
-	fgSplitThrottleMemory = 5 * time.Minute
+// mode stable instead of flapping on one noisy sample. A reader copies these
+// defaults into per-reader knobs so tests can force either decision without
+// mutating shared state.
+const (
+	fgSplitEnterBytesPerSecDefault int64 = 350 << 10
+	fgSplitExitBytesPerSecDefault  int64 = 900 << 10
+	// fgSplitSlowWindowsDefault is how many consecutive slow windows must be
+	// observed before the adaptive mode starts splitting. One is enough:
+	// playback's first sequential window is megabytes wide, so waiting for a
+	// second slow sample would stall the player for that whole window. A false
+	// positive on a fast link is bounded because one split window above the
+	// exit rate reverts it.
+	fgSplitSlowWindowsDefault = 1
+	// fgSplitThrottleMemoryDefault keeps the split armed for objects that have
+	// no rate sample yet after any object recently measured a slow window:
+	// opening the next file during the same throttled session should not pay
+	// the cold-start single-stream window again. It expires on its own.
+	fgSplitThrottleMemoryDefault = 5 * time.Minute
 )
 
 // fgSplitState is one object's adaptive split decision and last measured rate.
@@ -1228,22 +1240,22 @@ func (r *Reader) observeForegroundRate(objectID string, bytes int64, elapsed tim
 		r.fgSplit[objectID] = state
 	}
 	state.rate = rate
-	if rate < fgSplitEnterBytesPerSec {
+	if rate < r.fgEnterBytesPerSec {
 		r.fgLastSlow = time.Now()
 	}
 	if state.splitting {
-		if rate >= fgSplitExitBytesPerSec {
+		if rate >= r.fgExitBytesPerSec {
 			state.splitting = false
 			state.slowStreak = 0
 		}
 		return
 	}
-	if rate >= fgSplitEnterBytesPerSec {
+	if rate >= r.fgEnterBytesPerSec {
 		state.slowStreak = 0
 		return
 	}
 	state.slowStreak++
-	if state.slowStreak >= fgSplitSlowWindows {
+	if state.slowStreak >= r.fgSlowWindows {
 		state.splitting = true
 	}
 }
@@ -1257,7 +1269,7 @@ func (r *Reader) foregroundSplitRequested(objectID string) int {
 	if state != nil && state.splitting {
 		return foregroundSplitStreams
 	}
-	if (state == nil || state.rate == 0) && !r.fgLastSlow.IsZero() && time.Since(r.fgLastSlow) < fgSplitThrottleMemory {
+	if (state == nil || state.rate == 0) && !r.fgLastSlow.IsZero() && time.Since(r.fgLastSlow) < r.fgThrottleMemory {
 		// No sample for this object yet and the provider was recently slow for
 		// another one: hedge the first window instead of paying a cold-start
 		// single-stream window during the same throttled session.

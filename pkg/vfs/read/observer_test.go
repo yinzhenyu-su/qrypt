@@ -320,7 +320,14 @@ func TestHostWithoutObserverStillObservable(t *testing.T) {
 		t.Fatal(err)
 	}
 	rc.Close()
+	// The window fetch publishes the block and may finish its active operation
+	// just after the read returns, so let the pair settle before asserting.
+	deadline := time.Now().Add(time.Second)
 	begins, finishes, _ := obs.counts()
+	for begins != finishes && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		begins, finishes, _ = obs.counts()
+	}
 	if begins == 0 || begins != finishes {
 		t.Fatalf("explicit observer counts: begins=%d finishes=%d, want paired and >=1", begins, finishes)
 	}

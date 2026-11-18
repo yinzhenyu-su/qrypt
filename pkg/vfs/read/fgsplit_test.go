@@ -86,15 +86,6 @@ func callsInWindow(calls [][2]int64, firstChunk int64, chunks int64) int {
 	return n
 }
 
-func setSplitThresholds(t *testing.T, enter, exit int64) {
-	t.Helper()
-	oldEnter, oldExit := fgSplitEnterBytesPerSec, fgSplitExitBytesPerSec
-	fgSplitEnterBytesPerSec, fgSplitExitBytesPerSec = enter, exit
-	t.Cleanup(func() {
-		fgSplitEnterBytesPerSec, fgSplitExitBytesPerSec = oldEnter, oldExit
-	})
-}
-
 // waitWindowIdle waits for the async window fetch to finish so the test's
 // threshold restoration in cleanup cannot race with a running fetch.
 func waitWindowIdle(t *testing.T, reader *Reader) {
@@ -112,11 +103,14 @@ func waitWindowIdle(t *testing.T, reader *Reader) {
 	t.Fatal("window fetch did not finish")
 }
 
-func setSlowStreak(t *testing.T, windows int) {
+func setSlowStreak(t *testing.T, reader *Reader, windows int) {
 	t.Helper()
-	old := fgSplitSlowWindows
-	fgSplitSlowWindows = windows
-	t.Cleanup(func() { fgSplitSlowWindows = old })
+	reader.fgSlowWindows = windows
+}
+
+func setSplitThresholds(t *testing.T, reader *Reader, enter, exit int64) {
+	t.Helper()
+	reader.fgEnterBytesPerSec, reader.fgExitBytesPerSec = enter, exit
 }
 
 // TestAdaptiveForegroundSplit pins the adaptive switch: a slow foreground
@@ -131,9 +125,9 @@ func TestAdaptiveForegroundSplit(t *testing.T) {
 
 	t.Run("slow window switches the next window to split", func(t *testing.T) {
 		t.Setenv("QRYPT_FG_SPLIT", "1")
-		setSlowStreak(t, 1)                 // one slow sample is enough in the test
-		setSplitThresholds(t, 1<<40, 1<<40) // any measured rate counts as slow
 		reader, drv := newFGSplitTestReader(t, content)
+		setSlowStreak(t, reader, 1)                 // one slow sample is enough in the test
+		setSplitThresholds(t, reader, 1<<40, 1<<40) // any measured rate counts as slow
 		first := readChunkAt(t, reader, 0)
 		if len(first) != int(ChunkSize) {
 			t.Fatalf("first chunk = %d bytes, want %d", len(first), ChunkSize)
@@ -157,8 +151,8 @@ func TestAdaptiveForegroundSplit(t *testing.T) {
 
 	t.Run("fast window keeps one stream", func(t *testing.T) {
 		t.Setenv("QRYPT_FG_SPLIT", "1")
-		setSplitThresholds(t, 0, 0) // rate < 0 never holds: never enter split mode
 		reader, drv := newFGSplitTestReader(t, content)
+		setSplitThresholds(t, reader, 0, 0) // rate < 0 never holds: never enter split mode
 		readChunkAt(t, reader, 0)
 		readChunkAt(t, reader, 1)
 		calls := drv.snapshot()
@@ -172,8 +166,8 @@ func TestAdaptiveForegroundSplit(t *testing.T) {
 
 	t.Run("one slow window arms the next one", func(t *testing.T) {
 		t.Setenv("QRYPT_FG_SPLIT", "1")
-		setSplitThresholds(t, 1<<40, 1<<40)
 		reader, drv := newFGSplitTestReader(t, content)
+		setSplitThresholds(t, reader, 1<<40, 1<<40)
 		readChunkAt(t, reader, 0) // no sample yet: single stream
 		calls := drv.snapshot()
 		if n := callsInWindow(calls, 0, 1); n != 1 {
@@ -189,8 +183,8 @@ func TestAdaptiveForegroundSplit(t *testing.T) {
 
 	t.Run("split windows use an even part layout", func(t *testing.T) {
 		t.Setenv("QRYPT_FG_SPLIT", "1")
-		setSplitThresholds(t, 1<<40, 1<<40)
 		reader, drv := newFGSplitTestReader(t, content)
+		setSplitThresholds(t, reader, 1<<40, 1<<40)
 		readChunkAt(t, reader, 0) // measure a slow window and arm the split
 		ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentInteractive))
 		rc, err := reader.Read(ctx, "/file.bin", ChunkSize, int64(len(content))-ChunkSize)
@@ -230,8 +224,8 @@ func TestAdaptiveForegroundSplit(t *testing.T) {
 
 	t.Run("QRYPT_FG_SPLIT=0 keeps one stream", func(t *testing.T) {
 		t.Setenv("QRYPT_FG_SPLIT", "0")
-		setSplitThresholds(t, 1<<40, 1<<40)
 		reader, drv := newFGSplitTestReader(t, content)
+		setSplitThresholds(t, reader, 1<<40, 1<<40)
 		readChunkAt(t, reader, 0)
 		readChunkAt(t, reader, 1)
 		readChunkAt(t, reader, 2)
@@ -241,11 +235,9 @@ func TestAdaptiveForegroundSplit(t *testing.T) {
 	})
 }
 
-func setThrottleMemory(t *testing.T, d time.Duration) {
+func setThrottleMemory(t *testing.T, reader *Reader, d time.Duration) {
 	t.Helper()
-	old := fgSplitThrottleMemory
-	fgSplitThrottleMemory = d
-	t.Cleanup(func() { fgSplitThrottleMemory = old })
+	reader.fgThrottleMemory = d
 }
 
 // TestAdaptiveForegroundSplitThrottleMemory pins the cross-object hedge: after
@@ -253,12 +245,11 @@ func setThrottleMemory(t *testing.T, d time.Duration) {
 // starts split instead of paying a cold-start single-stream window.
 func TestAdaptiveForegroundSplitThrottleMemory(t *testing.T) {
 	t.Setenv("QRYPT_FG_SPLIT", "1")
-	setSplitThresholds(t, 1<<40, 1<<40) // any measured rate counts as slow
-	setSlowStreak(t, 1)
-	setThrottleMemory(t, time.Minute)
-
 	content := make([]byte, 4<<20)
 	reader, _ := newFGSplitTestReader(t, content)
+	setSplitThresholds(t, reader, 1<<40, 1<<40) // any measured rate counts as slow
+	setSlowStreak(t, reader, 1)
+	setThrottleMemory(t, reader, time.Minute)
 	if got := reader.foregroundSplitRequested("other.bin"); got != 0 {
 		t.Fatalf("unknown object split before any slow sample: %d", got)
 	}
