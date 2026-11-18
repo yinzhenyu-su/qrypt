@@ -376,9 +376,14 @@ The table reports each sample's throughput and TTFB plus the candidate/control
 ratio; the summary gives the median over clean pairs, which is the number to
 decide on (individual pairs move with CDN variance). `--amplify` adds a second
 debug-logging pass that reports provider wire bytes per delivered byte for both
-sides. The script needs a client config with credentials (default: repository
-`qrypt.toml`) and Python 3.11+; `--keep` keeps the temporary binaries, logs, and
-results for inspection.
+sides, and `--min-ratio` / `--max-amplification` turn the run into a gate: the
+process exits nonzero when the clean median ratio or the candidate amplification
+misses the threshold, so a nightly or pre-merge check needs no hand-written
+comparison. For sustained playback shape, add `--length 64MiB` and one offset;
+the per-second timeline comes from `probe test read --hold-open --timeline` when
+a single read's rate drop is the question. The script needs a client config with
+credentials (default: repository `qrypt.toml`) and Python 3.11+; `--keep` keeps
+the temporary binaries, logs, and results for inspection.
 
 ### Measure Cache-Miss Load Time
 

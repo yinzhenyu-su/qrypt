@@ -319,11 +319,11 @@ def report_rows(rows: list[dict]) -> None:
         )
 
 
-def summarize(rows: list[dict]) -> None:
+def summarize(rows: list[dict]) -> float | None:
     clean = [row for row in rows if row["ratio"] > 0 and not row.get("note")]
     skipped = [row for row in rows if row.get("note")]
     if not clean:
-        return
+        return None
     ratios = [row["ratio"] for row in clean]
     print()
     if skipped:
@@ -332,11 +332,13 @@ def summarize(rows: list[dict]) -> None:
             counts[row["note"]] = counts.get(row["note"], 0) + 1
         detail = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
         print(f"excluded pairs: {detail}")
+    median = statistics.median(ratios)
     print(
         f"clean pairs: {len(clean)}/{len(rows)}  "
-        f"median cand/ctl: {statistics.median(ratios):.2f}x  "
+        f"median cand/ctl: {median:.2f}x  "
         f"min {min(ratios):.2f}x  max {max(ratios):.2f}x"
     )
+    return median
 
 
 BODY_BYTES = re.compile(r"body_bytes:(\d+)")
@@ -352,7 +354,7 @@ def wire_bytes(log_path: Path) -> int:
     return total
 
 
-def amplification_pass(args, base_cfg: dict, tmp: Path, binaries: dict[str, Path]) -> None:
+def amplification_pass(args, base_cfg: dict, tmp: Path, binaries: dict[str, Path]) -> dict[str, float]:
     print()
     print("amplification pass (debug logging, providers wire bytes per delivered byte)")
     sides = {
@@ -376,6 +378,7 @@ def amplification_pass(args, base_cfg: dict, tmp: Path, binaries: dict[str, Path
                 f"{role:>6} {format_size(wire):>10} {format_size(delivered):>10} {amp:>6.2f} "
                 f"{sample['rate_kb_s'] / 1024:>10.2f} {sample['ttfb_s']:>7.3f}"
             )
+        return {role: amp for role, _wire, _delivered, amp, _sample in rows}
     finally:
         for side in sides.values():
             side.stop()
@@ -401,6 +404,10 @@ def main() -> int:
     ap.add_argument("--warm-rate-mbps", type=float, default=30.0,
                     help="MB/s above which a sample is treated as a read-cache hit (default 30)")
     ap.add_argument("--amplify", action="store_true", help="add a debug-log amplification pass")
+    ap.add_argument("--min-ratio", type=float, default=0.0,
+                    help="fail when the clean median cand/ctl ratio is below this (0 = no gate)")
+    ap.add_argument("--max-amplification", type=float, default=0.0,
+                    help="fail when the candidate amplification pass exceeds this (0 = no gate)")
     ap.add_argument("--amplify-offset", type=int, default=1600, help="MiB offset for the amplification read")
     ap.add_argument("--amplify-bytes", type=parse_size, default=16 << 20, help="bytes per amplification read")
     ap.add_argument("--workdir", default="", help="temporary root (default: mktemp -d)")
@@ -510,7 +517,13 @@ def main() -> int:
                 )
 
         report_rows(rows)
-        summarize(rows)
+        median = summarize(rows)
+        gates: list[str] = []
+        if args.min_ratio > 0:
+            if median is None:
+                gates.append(f"min-ratio {args.min_ratio:.2f}x: no clean pairs")
+            elif median < args.min_ratio:
+                gates.append(f"min-ratio {args.min_ratio:.2f}x: median {median:.2f}x")
         if stalls["ctl"] or stalls["cand"]:
             print(
                 f"provider stalls observed: ctl {stalls['ctl']}, cand {stalls['cand']} "
@@ -528,7 +541,18 @@ def main() -> int:
         if args.amplify:
             for side in sides.values():
                 side.stop()
-            amplification_pass(args, base_cfg, tmp, binaries)
+            amps = amplification_pass(args, base_cfg, tmp, binaries)
+            if args.max_amplification > 0:
+                cand_amp = amps.get("cand", 0.0)
+                if cand_amp > args.max_amplification:
+                    gates.append(f"max-amplification {args.max_amplification:.2f}: candidate {cand_amp:.2f}")
+        if gates:
+            print()
+            for gate in gates:
+                print(f"gate failed: {gate}")
+            return 1
+        if args.min_ratio > 0 or args.max_amplification > 0:
+            print("gate passed")
     finally:
         for side in sides.values():
             try:

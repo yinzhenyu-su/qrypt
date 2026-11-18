@@ -349,7 +349,13 @@ canceled total as the waste figure, and do not pool cold and warm points.
 
 For that change, seek P95 and sustained throughput must not regress by more
 than 10%; Quark must also return within that margin of the old release.
-Download amplification must not increase by more than 10%. A speedup claim
+Download amplification must not increase by more than 10%. A standing gate
+applies to every read-path change: a 64 MiB sustained read through one handle
+(`probe test read --hold-open --timeline`, or `scripts/dev/read-ab.py --length
+64MiB --min-ratio 1.0 --amplify --max-amplification 1.1`) must keep the clean
+median candidate/control ratio at or above 1.0x, and its trace must show zero
+duplicate chunk coverage (analyzer `coverage.duplicate_visits == 0`).
+`read-ab.py` returns nonzero when a requested gate misses. A speedup claim
 needs at least 20% improvement in two repeated rounds. Keep failed, interrupted,
 slow and superseded runs; do not hide a per-round regression behind pooled
 medians. Noise beyond the margin is inconclusive. These gates belong to that
