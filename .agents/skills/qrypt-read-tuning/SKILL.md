@@ -373,7 +373,7 @@ before committing. If code changes after measurement, identify which binary
 was measured and whether the changed path requires new measurements.
 
 Historical results are examples, not defaults or acceptance. The Quark
-[comparison summaries](../../../openspec/changes/unify-read-policy-execution/validation.md)
+[comparison summaries](../../../openspec/changes/archive/2026-11-16-unify-read-policy-execution/validation.md)
 show why faster delivery, bounded scheduling and stable throughput need separate
 proof. The sliding-window comparison retained equal request counts but did not
 establish a speedup.

@@ -302,24 +302,24 @@ checks separate from actual backend performance acceptance.
 
 ## Verify the sliding window, not just the knobs
 
-For known-size mounted reads with valid session/request IDs, inspect
-[the controller](../../../../pkg/vfs/read/prefetch_session.go),
+For known-size mounted reads, inspect
+[the read-driven lookahead](../../../../pkg/vfs/read/prefetch.go) and
 [the plan resolver](../../../../pkg/vfs/read/plan.go) and actual ranges. The
-resolved `ReadPlan` is the whole rule: adaptive stages resolve `W =
-WindowChunks` and `D = max(1, min(4, AdaptiveDepth))`, fixed stages execute
-their configured window and depth literally. The session keeps a fixed horizon
-of `W × D` chunks past the consumed cursor, clamped to EOF; each fill admits
-contiguous `W`-sized windows from the cursor, skipping ready, cached and
-in-flight blocks, up to `D` active windows. Completion may fill holes but cannot
-advance the cursor; there is no budget, credit or growth state to reset.
+resolved `ReadPlan` is the whole rule: a positive `PrefetchDepth` resolves
+`W = PrefetchWindowBytes` (or the read window when zero) and `D = max(1,
+min(PrefetchDepth, AdaptiveDepth))`; there is no mode enum to decode. Each read
+schedules a fixed horizon of `W × D` chunks past its consumed cursor, clamped to
+EOF, admitting contiguous `W`-sized windows from the cursor and skipping ready,
+cached and in-flight blocks up to `D` active windows. There is no worker, no
+per-handle cursor and no budget/credit state to reset: the next read re-derives
+the horizon from its own cursor, so a paused file stops growing it.
 
-Verify completion refill without another foreground read, consumption refill,
-nearest-hole ordering, and notification after capacity is released by direct or
-other-session work. Cursor holes and EOF are filled immediately. A full paused
-horizon should stop downloading and avoid busy waits. Failures, hot-cache
-eviction and late completions must not cause endless refill. Check that a seek,
-stage change or idle retirement starts a fresh session before blaming a backend
-for a large short-load tail.
+Verify that lookahead starts from each read's own cursor, skips already
+published blocks, respects the in-flight depth gate and stays bounded at EOF.
+Cursor holes are filled immediately; a full horizon should stop admitting work
+without busy waits. A failed window must wait for the next read rather than
+retrying autonomously. Check that a seek, stage change or handle release retires
+the matching windows before blaming a backend for a large short-load tail.
 
 Many `read_access` discontinuities and `prefetch_cancel_reason=seek` events
 during nominally contiguous user reads can indicate classification failure.
