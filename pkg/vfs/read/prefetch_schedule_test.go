@@ -69,6 +69,35 @@ func TestPrefetchSchedulesFixedHorizon(t *testing.T) {
 	waitPrefetchIdle(t, r)
 }
 
+func TestPrefetchSkipsWindowsAlreadyInFlight(t *testing.T) {
+	r := newStagedReader(t, 16*ChunkSize)
+	gate := make(chan struct{})
+	r.host.gateFn = func(_, _ int64) (<-chan struct{}, bool) { return gate, true }
+	ctx := sessionContext(1, 1)
+	// A read already admitted a window covering chunks 4..6; it is still in
+	// flight when the next read advances the cursor into the same range.
+	if load := r.reader.startPrefetchWindow(ctx, r.host.entry, 4, 3, true); load == nil {
+		t.Fatal("startPrefetchWindow refused the first window")
+	}
+	r.host.waitCall(t, 1)
+	r.reader.schedulePrefetch(ctx, r.host.entry, 4, 1, true, sequentialLookaheadPlan(2, 4))
+	r.host.waitCall(t, 4)
+	windows := prefetchWindows(t, r)
+	if got := windows[4]; got != 3 {
+		t.Fatalf("in-flight window = %v chunks, want 3", got)
+	}
+	if _, duplicated := windows[5]; duplicated {
+		t.Fatalf("scheduler re-fetched the in-flight range: windows = %v", windows)
+	}
+	for _, want := range []int64{7, 9, 11} {
+		if windows[want] != 2 {
+			t.Fatalf("windows = %v, want the remaining horizon at 7, 9 and 11", windows)
+		}
+	}
+	close(gate)
+	waitPrefetchIdle(t, r)
+}
+
 func TestPrefetchSkipsResidentChunks(t *testing.T) {
 	r := newStagedReader(t, 16*ChunkSize)
 	r.state.putHotChunk("cache", 3, r.host.data[3*ChunkSize:4*ChunkSize])

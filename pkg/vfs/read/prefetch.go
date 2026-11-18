@@ -50,11 +50,25 @@ func (r *Reader) schedulePrefetch(ctx context.Context, entry drive.Entry, endChu
 		return
 	}
 	for index := cursor; index < horizonEnd; {
+		// A window already in the registry will deliver index; admitting a
+		// second window over the same range would download those bytes twice.
+		// This must look at every session's windows: the read-side join rule
+		// deliberately avoids waiting on another session's stall, which would
+		// hide the window from scheduling too.
+		covered, end, next := r.windowCoverage(cacheKey, index)
+		if covered {
+			index = end + 1
+			continue
+		}
 		if r.readChunkAvailableFor(cacheKey, index, 0) {
 			index++
 			continue
 		}
 		count := int(min(int64(window), horizonEnd-index))
+		if next > index && next < horizonEnd {
+			// Do not straddle a window another read already admitted.
+			count = int(min(int64(count), next-index))
+		}
 		load := r.startPrefetchWindow(ctx, entry, index, count, true)
 		if load == nil {
 			reason = "not_admitted"
@@ -105,6 +119,35 @@ func (r *Reader) prefetchInFlight(cacheKey string) int {
 		}
 	}
 	return owned
+}
+
+// windowCoverage reports how the windows already in the registry relate to
+// index: covered is true when one of them will deliver index (end is the last
+// chunk of the furthest such window), otherwise next is the first chunk of a
+// later window, or -1. Scheduling scans every session's windows, because the
+// read-side join rule intentionally ignores another session's stalled
+// lookahead; that rule must not hide in-flight bytes from the scheduler, or
+// two windows fetch the same range.
+func (r *Reader) windowCoverage(cacheKey string, index int64) (covered bool, end, next int64) {
+	r.state.windows.mu.Lock()
+	defer r.state.windows.mu.Unlock()
+	end, next = -1, -1
+	for _, load := range r.state.windows.loads {
+		if load.fid != cacheKey {
+			continue
+		}
+		if index >= load.start && index <= load.end {
+			covered = true
+			if load.end > end {
+				end = load.end
+			}
+			continue
+		}
+		if load.start > index && (next < 0 || load.start < next) {
+			next = load.start
+		}
+	}
+	return covered, end, next
 }
 
 // prefetchResident reports whether index is resident without touching the hot
