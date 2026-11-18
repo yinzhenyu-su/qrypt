@@ -222,7 +222,7 @@ does not prove that every window's traffic was recorded. Per-session attribution
 requires every caller delivery to match a traced read carrying a session identity; interval
 coverage of 100% is not evidence, because two sessions reading the same range
 cover it while only one of them was logged. When that evidence is missing,
-`per_session_gap` says so and the report falls back to global delivery. Never publish the raw report.
+`per_session_gap` says so and the report falls back to global delivery. Never publish the raw report. Its summary classifies window rows by stall kind (provider TTFB, slow body, local wait, retry, no body) and lists the slowest rows.
 
 For a playback session, the executed pipeline shape is the thing under test:
 `prefetch_window_chunks` (`W`) and `prefetch_depth` (`D`) must equal the resolved

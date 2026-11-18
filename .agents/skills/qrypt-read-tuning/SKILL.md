@@ -36,31 +36,36 @@ inferring defaults from historical benchmarks.
 
 - Drivers build a complete `drive.ReadPolicy` from `drive.DefaultReadPolicy()`.
   Only `ReadOverride` is sparse; zero in a complete policy is not inheritance.
-- `Interactive.Initial`, `Seek` and `Sequential` each contain a window policy
-  (`caller` or `fixed`) and prefetch policy (`disabled`, `fixed`, `adaptive`).
-  Fixed prefetch specifies both byte size and depth (1–4) and executes them
-  literally; adaptive resolves to `W = WindowChunks` and
-  `D = max(1, min(4, AdaptiveDepth))` before execution and at every
-  sequential-stream refill.
-- A mount session keeps a fixed horizon of `W × D` chunks ahead of the consumed
-  cursor and refills it with contiguous windows as the cursor advances, stopping
-  at the depth gate, EOF, a failed revision or a plan change. Ready prefix data
-  and prior completions do not move the cursor, so a paused file never downloads
-  its tail. There is no adaptive ramp and no foreground give-up
-  budget: a seek, stage change, handle release or invalidation retires the
-  matching work, and workers expire after 30 seconds without consumption.
-  Unidentified callers, unknown-size objects, bulk, disabled prefetch and
-  `ReadStream` keep bounded batch scheduling.
+- There are two shapes and no mode enums. `InteractivePolicy` has
+  `WindowBytes`, `PrefetchWindowBytes` and `PrefetchDepth`. `WindowBytes = 0`
+  keeps the caller window; only a confirmed sequential read widens it, while
+  initial and seek reads always keep the caller window. `PrefetchDepth = 0`
+  disables lookahead. A positive depth resolves to
+  `W = PrefetchWindowBytes` (or the read window when zero) and
+  `D = max(1, min(PrefetchDepth, AdaptiveDepth))`; there is no fixed/adaptive
+  mode to decode.
+- A read schedules a fixed horizon of `W × D` chunks ahead of the consumed
+  cursor: contiguous one-window lookahead requests, stopping at the depth gate,
+  EOF or a plan change. Ready prefix data and prior completions do not move the
+  cursor, so a paused file never downloads its tail. There is no adaptive ramp,
+  no foreground give-up budget and no per-handle worker: a seek, stage change,
+  handle release or invalidation retires the matching work, and the next read
+  re-derives the horizon.
 - `Bulk.WindowBytes` bounds a logical window, at most 32 MiB.
-  `Bulk.Streams` limits workers. `Bulk.Split.PartBytes` is a strict part ceiling;
-  zero divides the current window among granted workers. Task count and
-  worker count are independent: 24 MiB / 4 MiB / 3 workers yields six tasks.
-- `Bulk.Split.MinParallelBytes` gates on the actual window, not file size.
+  `Bulk.Streams` limits workers. `Bulk.PartBytes` is a strict part ceiling; zero
+  divides the current window among granted workers. Task count and worker count
+  are independent: 24 MiB / 4 MiB / 3 workers yields six tasks.
+- `Bulk.MinParallelBytes` gates on the actual window, not file size.
   A large video can still issue a single small seek request.
 - Explicit interactive reads remain single-stream per window. The CLI command
   named `probe test read` measures the same mounted workload reads a player
-  issues; there is no separate probe read intent to keep in sync. Eligible FUSE sequential reads may
-  borrow bulk parallelism while retaining their original intent and cache rule.
+  issues; there is no separate probe read intent to keep in sync.
+- Quark's shipped defaults are a 2 MiB sequential window with four lookahead
+  windows of depth, plus a default-on adaptive foreground split: two slow
+  foreground windows (body rate below 350 KiB/s) arm four even parts, one window
+  at or above 900 KiB/s reverts, and five minutes of memory makes a newly opened
+  file start split during a throttled session. `QRYPT_FG_SPLIT=0` turns the
+  split off for triage; there is no config toggle.
 - `MaxInFlight` limits simultaneous shared-layer requests to one object across
   foreground, prefetch, copy and share-fetch. Consumers reuse one mount-owned
   `ReadSource` and stable object ID. Different sources have independent budgets;
@@ -147,6 +152,22 @@ isolates the runtime and mount point but does not rewrite that config field.
 It deletes its temporary logs on exit, so use a persistent isolated mount when
 complete traces are needed.
 
+For a two-build A/B on the same file, prefer the repository harness instead of
+hand-written mount loops:
+
+```sh
+./scripts/dev/read-ab.py --config ./qrypt.toml --mount quark-encrypt \
+  --path "/videos/movie.mp4" --rounds 6 --length 64m --round-shift 128m
+```
+
+It builds the control from `--control` (default `HEAD`) in a git worktree and
+the candidate from the working tree, starts one isolated mount per side, reads
+16 KiB blocks with `F_NOCACHE` on interleaved rotating sides, discards CDN-stall
+and cache-hit rows, prints the clean candidate/control ratio, and tears
+everything down. `--amplify` restarts both sides with debug logging and prints
+wire bytes versus delivered bytes. See
+[the harness guide](../../../docs/for-developer/debug.md) for every flag.
+
 For repeated runs, start one dedicated mount with a separate `QRYPT_HOME` and
 mount directory, and address the same runtime in each probe command. Do not
 restart the user's active mount to change an experimental config.
@@ -194,6 +215,25 @@ chosen measurement overrides (for example `--streams 4 --window 8MiB`); the
 control omits them. For independent part-size/budget configs or binary versions,
 use the matching isolated runtime and preserve exact differences.
 
+With `--path`, add `--fresh-offsets` so every sample reads a region no earlier
+sample fetched (step defaults to the read length; `--offset-step` overrides it).
+Without it, repeated samples walk the cache and "cold" numbers turn warm. Each
+measurement reports `wire_bytes` and `amplification` (provider bytes per
+delivered byte); treat amplification as a first-class result next to rate and
+TTFB.
+
+Measure with quiet (`info`) logging unless the trace itself is under test: debug
+logging roughly halves mounted throughput and adds provider open latency. To
+emulate a throttled provider, mainline `probe fault read --kind rate`:
+
+```sh
+qrypt probe fault read --path "/videos/movie.mp4" --kind rate --rate 150k \
+  --include-prefetch --times 10000
+```
+
+That paces every body on that path, including lookahead, so split/throttle
+behavior can be reproduced without waiting for a real CDN slowdown.
+
 `cold` clears VFS cache before sequential samples and before each seek; inspect
 `os_cache_control`,
 `traversed_vfs` and cache counters before claiming remote cold reads. Setting
@@ -223,8 +263,8 @@ jq '[.[0].metrics[] | select(.phase == "fetch_window" or .phase == "prefetch_win
 
 Read the diagnostic `read_policy` object's `recommended`, `effective`, `limits`,
 `origins` and `source_id`. Three layers stay separate: `recommended` is what the
-driver asked for, `effective` is what resolution allowed, and the session's
-`prefetch_plan` events show the shape it executes
+driver asked for, `effective` is what resolution allowed, and the read's
+`prefetch_plan` events show the shape it schedules
 (`prefetch_window_chunks`, `prefetch_depth`, `horizon_end_chunk`,
 `ready_end_chunk`, `fill_stop`, `pending_windows`). In fetch-event extras
 distinguish:
@@ -263,7 +303,7 @@ Use a small single-variable sweep, confirm that the executed shape changed,
 then recheck both seek and sequential behavior. Larger windows, more workers,
 more lookahead and shorter timeouts can worsen contention or amplification.
 Do not change all of them in one candidate. Respect unknown-size, single-stream,
-internal-parallel, explicit interactive, probe and prefetch-disabled paths.
+internal-parallel and explicit interactive paths.
 
 ### 5. Decide and record
 
@@ -283,7 +323,10 @@ throughput or seek regression, and less traffic does not prove a faster player.
 
 Attribute traffic with
 [analyze-read-traffic.py](../../../scripts/dev/analyze-read-traffic.py) on the
-mount trace plus the runner JSON. It separates executor `body_bytes`, total and
+mount trace plus the runner JSON. Its summary classifies every window by the
+stall its timings show (provider TTFB, slow body, local wait, retry, no body)
+and lists the slowest rows, which usually identifies the slow layer before
+reading any raw event. It separates executor `body_bytes`, total and
 unique caller delivery, the delivered bytes inside each window, bytes another
 session reused, real unused tails of completed windows, and an unknown residual
 for canceled windows. A canceled window is traffic: only the prefix it received
