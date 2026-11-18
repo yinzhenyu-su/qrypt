@@ -334,7 +334,10 @@ mkdir/upload/read 的 entry id 带 `ext:<mountId>` 前缀；主存储 ↔ 外挂
 ## 本地等价命令
 
 ```bash
-./scripts/ci/check-all.sh                 # 本地 CI 全量等价（静态检查 + 全部测试层）
+# 本地 CI 全量等价（静态检查 + 全部测试层）。先把 pinned 工具目录放到 PATH
+# 最前：check-all.sh 自己也会安装并前置，但单独跑子门禁时不会，PATH 里其它
+# 版本的 shellcheck 等会触发版本不一致。
+PATH="$HOME/.cache/qrypt-tools:$PATH" ./scripts/ci/check-all.sh
 ./scripts/ci/test-layers.sh                # 分层测试（fast/changed/race/vfs-stability/smoke/all/integration）
 ./scripts/ci/check-hygiene.sh              # 仓库卫生：tidy -diff、actionlint、pinned shellcheck、空白/冲突标记
 ./scripts/ci/check-coverage.sh -print      # 覆盖率快照（不 gate）

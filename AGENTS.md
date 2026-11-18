@@ -12,6 +12,7 @@
 ## 开发检查清单
 
 - 提交前确保通过本地 CI；在 `main` 分支提交或合并前，必须使用与 `.github/workflows/ci.yaml` 相同的 Go 版本运行 `scripts/ci/check-all.sh`，退出码为 0 且输出 `== local CI check passed ==`。检查后若继续修改待提交内容，须重新运行。
+- 本地跑全量检查时把 pinned 工具目录放到 `PATH` 最前，避免 `PATH` 里其它版本的 shellcheck/actionlint 等触发版本不一致：`PATH="$HOME/.cache/qrypt-tools:$PATH" scripts/ci/check-all.sh`；单独运行 `check-hygiene.sh` 等子门禁时同样需要。
 - 下列情况可以跳过 `scripts/ci/check-all.sh`，但必须在提交信息、PR 描述或对话里写明跳过原因与最近一次全量通过的时间：
   - 只改文档、注释、示例等不改变运行时的内容（至少跑 `scripts/ci/check-docs.sh`，并保持 `git diff --check` 干净）；
   - 只做历史重写、路径/引用脱敏、tag 重指等不改动工作树代码的操作；

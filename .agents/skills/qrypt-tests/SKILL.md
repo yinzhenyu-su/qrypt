@@ -39,8 +39,9 @@ description: Run qrypt tests manually — local hygiene/unit/race/coverage/fuzz 
 
 ```bash
 # 与 CI check job 等价的本地门禁（提交 main 前默认必跑，结束时打印
-# "== local CI check passed =="；文档/历史重写等豁免情形见 AGENTS.md）
-scripts/ci/check-all.sh
+# "== local CI check passed =="；文档/历史重写等豁免情形见 AGENTS.md）。
+# 前置 pinned 工具目录，避免 PATH 里其它版本的 shellcheck 等：
+PATH="$HOME/.cache/qrypt-tools:$PATH" scripts/ci/check-all.sh
 
 # 分层跑，避免每次都全量
 scripts/ci/test-layers.sh changed        # 工作区 diff 可达的包
