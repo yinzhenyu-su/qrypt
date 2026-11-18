@@ -60,21 +60,6 @@ func newFGSplitTestReader(t *testing.T, content []byte) (*Reader, *fgSplitRecord
 	return reader, drv
 }
 
-func readFirstChunk(t *testing.T, reader *Reader) []byte {
-	t.Helper()
-	ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentInteractive))
-	rc, err := reader.Read(ctx, "/file.bin", 0, ChunkSize)
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	defer rc.Close()
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	return data
-}
-
 func readChunkAt(t *testing.T, reader *Reader, chunk int64) []byte {
 	t.Helper()
 	ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentInteractive))

@@ -1170,14 +1170,6 @@ func (r *Reader) putHotChunk(cacheKey string, index int64, data []byte) {
 
 // --- prefetch ---
 
-func envFlag(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "1", "true", "yes", "on":
-		return true
-	}
-	return false
-}
-
 // foregroundSplitEnabled reports whether the adaptive foreground-window split
 // is active. It is on by default: once a foreground window's measured rate
 // shows a per-connection throttle, later windows are fetched as several
