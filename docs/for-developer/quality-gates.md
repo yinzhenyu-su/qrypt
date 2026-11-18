@@ -361,7 +361,10 @@ pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟
 - 维护者明确允许某个版本带已知失败发布，并把修复顺延到下一个版本（例如
   v0.7.0 的已知问题留到 v0.7.1）。
 
-`pre-push` 钩子对 `main` 和 `v*` tag 会跑 `check-all.sh`；需要跳过时可使用
+`pre-push` 钩子对 `main` 和 `v*` tag 默认跑 `check-all.sh`，但会先检查这次推送
+实际改动的文件：如果整个推送范围只修改 `*.md`，就自动降级为
+`scripts/ci/check-docs.sh`（生成文档回归、相对链接、`git diff --check`），无需
+人工声明；`QRYPT_FULL_PUSH_CHECK=1` 可强制回到全量检查。需要完全跳过钩子时可使用
 `git push --no-verify` 或 `QRYPT_SKIP_HOOKS=1`，这属于上述豁免情形，跳过要在
 推送说明里记录。普通分支只跑受影响包的检查，不受此限制。
 

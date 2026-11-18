@@ -1,35 +1,57 @@
 #!/usr/bin/env bash
 # Local validation before pushing. Main and release tags run the full local CI
 # check; ordinary branches run only the packages affected since the remote tip.
-# Force the full check with QRYPT_FULL_PUSH_CHECK=1. Skip with:
+# Pushes whose whole range changes markdown only run the docs gate instead of
+# the Go gates. Force the full check with QRYPT_FULL_PUSH_CHECK=1. Skip with:
 # git push --no-verify or QRYPT_SKIP_HOOKS=1.
 set -euo pipefail
 [ -n "${QRYPT_SKIP_HOOKS:-}" ] && exit 0
+
+zero_oid="0000000000000000000000000000000000000000"
 
 # $1 = remote name, $2 = remote URL; the pushed refs arrive on stdin as
 # "<local ref> <local oid> <remote ref> <remote oid>" lines.
 full_check=false
 push_base=""
-while read -r _local_ref _local_oid remote_ref remote_oid; do
+docs_only=true
+have_base=true
+while read -r _local_ref local_oid remote_ref remote_oid; do
   case "$remote_ref" in
     refs/heads/main|refs/tags/v*)
       full_check=true
       ;;
   esac
-  if [ -z "$push_base" ] && [ "$remote_oid" != "0000000000000000000000000000000000000000" ]; then
+  if [ -z "$push_base" ] && [ "$remote_oid" != "$zero_oid" ]; then
     push_base="$remote_oid"
   fi
+  # A ref without a remote tip (new branch/tag) has no range to classify, and
+  # something that cannot be diffed locally must keep the conservative path.
+  if [ "$remote_oid" = "$zero_oid" ] || ! git cat-file -e "$remote_oid" 2>/dev/null; then
+    have_base=false
+    continue
+  fi
+  changed="$(git diff --name-only --no-renames "$remote_oid" "$local_oid" 2>/dev/null || true)"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      *.md) ;;
+      *) docs_only=false ;;
+    esac
+  done <<<"$changed"
 done
 
 if [ "${QRYPT_FULL_PUSH_CHECK:-0}" = "1" ]; then
   full_check=true
+  docs_only=false
 fi
 
-if [ "$full_check" = true ]; then
-  cd "$(git rev-parse --show-toplevel)"
+cd "$(git rev-parse --show-toplevel)"
+if [ "$docs_only" = true ] && [ "$have_base" = true ]; then
+  echo "pre-push: pushed range changes markdown only; running the docs checks" >&2
+  scripts/ci/check-docs.sh
+elif [ "$full_check" = true ]; then
   scripts/ci/check-all.sh
 elif [ -n "$push_base" ]; then
-  cd "$(git rev-parse --show-toplevel)"
   QRYPT_DIFF_BASE="$push_base" scripts/ci/test-layers.sh changed
 else
   echo "pre-push: new remote ref has no base commit; skipping local package check" >&2
