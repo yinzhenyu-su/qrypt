@@ -35,11 +35,20 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 
 // --- Init -----------------------------------------------------------------
 
-func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
+func TestReadProfileWidensWindowsAndSplitsBulk(t *testing.T) {
 	d := New(Options{})
 	policy := d.ReadPolicy()
-	if got := policy.Bulk.Streams; got != 1 {
-		t.Fatalf("BulkStreams = %d, want 1", got)
+	if got := policy.Bulk.Streams; got != 2 {
+		t.Fatalf("BulkStreams = %d, want 2", got)
+	}
+	if got := policy.Bulk.WindowBytes; got != 16<<20 {
+		t.Fatalf("Bulk.WindowBytes = %d, want %d", got, 16<<20)
+	}
+	if got := policy.Bulk.PartBytes; got != 8<<20 {
+		t.Fatalf("Bulk.PartBytes = %d, want %d", got, 8<<20)
+	}
+	if got := policy.Bulk.MinParallelBytes; got != 8<<20 {
+		t.Fatalf("Bulk.MinParallelBytes = %d, want %d", got, 8<<20)
 	}
 	if got := policy.Interactive.WindowBytes; got != 4<<20 {
 		t.Fatalf("Interactive.WindowBytes = %d, want %d", got, 4<<20)
@@ -53,7 +62,7 @@ func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
 		t.Fatalf("Interactive.PrefetchDepth = %d, want 4", got)
 	}
 	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
-		t.Fatal("parallel_range should stay declared for future tuning")
+		t.Fatal("parallel_range must stay declared for split bulk windows")
 	}
 }
 

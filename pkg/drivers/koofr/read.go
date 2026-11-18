@@ -13,16 +13,22 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// ReadPolicy widens the confirmed-sequential window to 4 MiB and keeps bulk
-// reads single-stream. Live measurements on this provider show fixed
-// per-request latency dominating per-connection throughput (~2.5-4.2 MiB/s):
-// playback-shaped 16 KiB reads improved from ~1.9 to ~3.7-4.8 MiB/s with the
-// wider window, while two-stream bulk downloads were not consistently faster
-// than one stream, so the capability stays declared but unused.
+// ReadPolicy widens the confirmed-sequential window to 4 MiB and downloads in
+// 16 MiB windows split across two 8 MiB parts. Live measurements on this
+// provider show fixed per-request latency dominating per-connection throughput
+// (~2.5-4.2 MiB/s): playback-shaped 16 KiB reads improved from ~1.9 to
+// ~3.7-4.8 MiB/s with the wider window, and 32 MiB bulk downloads of a real
+// remote file dropped from ~11.8-12.6 s to ~10.4-11.6 s (faster in 6 of 7
+// paired rounds) with the fatter, split window. Raw driver concurrency alone
+// did not raise the aggregate ceiling (~3.7-4.5 MiB/s at 1, 2 and 4 streams),
+// so the split smooths per-connection stalls rather than adding bandwidth.
 func (d *Driver) ReadPolicy() drive.ReadPolicy {
 	p := drive.DefaultReadPolicy()
-	p.Bulk.Streams = 1
 	p.Interactive.WindowBytes = 4 << 20
+	p.Bulk.Streams = 2
+	p.Bulk.WindowBytes = 16 << 20
+	p.Bulk.PartBytes = 8 << 20
+	p.Bulk.MinParallelBytes = 8 << 20
 	return p
 }
 

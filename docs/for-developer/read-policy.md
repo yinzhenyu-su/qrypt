@@ -39,9 +39,12 @@ much of its time waiting for the next request. It recommends a 4 MiB sequential
 window (initial and seek keep the caller window) with the four default lookahead
 windows: interleaved playback-shaped 16 KiB reads of a 5 GB file sustained
 ~3.7–4.8 MiB/s versus ~1.9 MiB/s with the caller window, and 32 MiB
-one-MiB-blocked reads improved from ~2.4 to ~4.3 MiB/s. Bulk stays
-single-stream because two-stream downloads were not consistently faster than
-one stream.
+one-MiB-blocked reads improved from ~2.4 to ~4.3 MiB/s. Bulk downloads use
+16 MiB windows split across two 8 MiB parts: 32 MiB downloads of a real remote
+file took ~10.4-11.6 s versus ~11.8-12.6 s with 8 MiB single-stream windows
+(faster in 6 of 7 paired rounds), while raw driver concurrency alone did not
+raise the aggregate ceiling (~3.7-4.5 MiB/s at 1, 2 and 4 streams), so the
+split smooths per-connection stalls instead of adding bandwidth.
 
 The scheduler atomically acquires global and object capacity. Stable provider
 IDs identify objects inside one source; unknown IDs fail. Speculation uses
