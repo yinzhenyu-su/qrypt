@@ -176,6 +176,7 @@ for the default same-user local workflow.
 | Clear one mount's read cache for a cold run | `probe cache clear --mount NAME` |
 | Drop one file's read cache | `probe cache invalidate --path REMOTE` |
 | Reproduce a stalled or truncated provider read | `probe fault read --path REMOTE --kind stall` |
+| Emulate a per-connection provider throttle | `probe fault read --path REMOTE --kind rate --rate 150k` |
 | Verify same-directory batch upload caching | `probe test batchupload --mount NAME` |
 | Measure same-mount batch moves | `probe test batchmove --mount NAME` |
 | Verify resumable upload recovery | `probe test resume --mount NAME` |
@@ -442,6 +443,11 @@ qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind status --st
 # Delay the body's first byte so open latency is visible.
 qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind delay --delay 2s
 
+# Pace the body at 150 KiB/s: every Range read behaves like a throttled
+# per-connection CDN link, which is how parallel fan-out and first-byte
+# latency changes are measured without a real throttled provider.
+qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind rate --rate 150k --times 10000
+
 qrypt probe fault list
 qrypt probe fault clear            # all rules
 qrypt probe fault clear --id ID    # one rule
@@ -451,8 +457,10 @@ Rules fire once by default, so the first attempt fails and the replay succeeds.
 `--times N` keeps the fault active for more attempts; `--offset` and `--length`
 scope it to a byte range. Rules skip background prefetch windows by default so
 a canceled speculative read cannot swallow the rule; add `--include-prefetch`
-when the prefetch path itself is under test. Faults live in the running mount
-and disappear on restart.
+when the prefetch path itself is under test. `--kind rate` paces the body
+instead of failing it, and needs enough `--times` to cover every read in the
+measurement (a cold playback read issues several windows). Faults live in the
+running mount and disappear on restart.
 
 Quark's driver snapshot (`/v1/driver?mount=NAME`) now includes
 `download_rotations`, `last_download_rotate_reason`, and `penalized_edges`

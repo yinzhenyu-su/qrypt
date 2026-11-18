@@ -77,6 +77,8 @@ func TestReadFaultRegistryValidatesKinds(t *testing.T) {
 		{Path: "/a", EntryID: "a", Kind: "bogus"},
 		{Path: "/a", EntryID: "a", Kind: ReadFaultStatus, Status: 99},
 		{Path: "/a", EntryID: "a", Kind: ReadFaultDelay},
+		{Path: "/a", EntryID: "a", Kind: ReadFaultRate},
+		{Path: "/a", EntryID: "a", Kind: ReadFaultRate, RateBytesPerSec: -1},
 		{Kind: ReadFaultStall},
 	}
 	for _, req := range cases {
@@ -86,5 +88,12 @@ func TestReadFaultRegistryValidatesKinds(t *testing.T) {
 	}
 	if _, err := registry.Inject(DebugReadFaultRequest{Path: "/a", EntryID: "a", Kind: ReadFaultDelay, Delay: (time.Millisecond).String()}); err != nil {
 		t.Fatalf("valid delay rejected: %v", err)
+	}
+	rate, err := registry.Inject(DebugReadFaultRequest{Path: "/a", EntryID: "a", Kind: ReadFaultRate, RateBytesPerSec: 150 << 10})
+	if err != nil {
+		t.Fatalf("valid rate rejected: %v", err)
+	}
+	if rate.RateBytesPerSec != 150<<10 {
+		t.Fatalf("rate = %d, want %d", rate.RateBytesPerSec, 150<<10)
 	}
 }

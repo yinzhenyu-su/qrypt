@@ -247,8 +247,8 @@
   "cmd.probe.fault.list.long": "列出运行中挂载上的全部读取故障规则，包括剩余次数已为 0 的规则。",
   "cmd.probe.fault.list.short": "列出已注入的读取故障",
   "cmd.probe.fault.long": "在运行中的挂载上注入、列出和清除读取故障。故障由共享读层按真实provider 失败处理，用于验证空闲超时、短 body 重放和可重试状态退避。",
-  "cmd.probe.fault.read.example": "  qrypt probe fault read --path /cloud/movie.mp4 --kind stall --after 1m\n  qrypt probe fault read --path /cloud/movie.mp4 --kind truncate --after 2m --times 1\n  qrypt probe fault read --path /cloud/movie.mp4 --kind status --status 500",
-  "cmd.probe.fault.read.long": "为单个文件注入一条读取故障。stall 在 --after 字节后停止发送；\ntruncate 在那里结束 body；status 返回指定 HTTP 状态；delay 在返回 body 前等待。\n规则触发 --times 次（默认一次），因此第一次失败后重放会成功。",
+  "cmd.probe.fault.read.example": "  qrypt probe fault read --path /cloud/movie.mp4 --kind stall --after 1m\n  qrypt probe fault read --path /cloud/movie.mp4 --kind truncate --after 2m --times 1\n  qrypt probe fault read --path /cloud/movie.mp4 --kind status --status 500\n  qrypt probe fault read --path /cloud/movie.mp4 --kind rate --rate 150k --times 100",
+  "cmd.probe.fault.read.long": "为单个文件注入一条读取故障。stall 在 --after 字节后停止发送；truncate 在那里结束 body；status 返回指定 HTTP 状态；delay 在返回 body 前等待；rate 按固定字节速率发送 body（模拟单连接网盘限速）。规则触发 --times 次（默认一次），因此第一次失败后重放会成功。",
   "cmd.probe.fault.read.short": "注入一条读取故障",
   "cmd.probe.fault.short": "注入仅用于探测的读取故障",
   "cmd.probe.example": "  qrypt probe test crud --mount cloud\n  qrypt probe bench fs --mount cloud --size 64m",
@@ -575,7 +575,7 @@
   "flag.probe.fault.read.after.usage": "stall 或 truncate 触发前已发送的字节数（默认 0）",
   "flag.probe.fault.read.delay.usage": "delay 类型的首字节等待时间，例如 2s",
   "flag.probe.fault.read.include-prefetch.usage": "允许规则命中后台预取读取",
-  "flag.probe.fault.read.kind.usage": "故障类型：stall、truncate、status 或 delay",
+  "flag.probe.fault.read.kind.usage": "故障类型：stall、truncate、status、delay 或 rate",
   "flag.probe.fault.read.length.usage": "从 --offset 开始的故障范围长度（默认只命中该偏移）",
   "flag.probe.fault.read.offset.usage": "故障生效的字节偏移（默认命中任意窗口）",
   "flag.probe.fault.read.path.usage": "要注入故障的虚拟文件路径",
@@ -884,5 +884,6 @@
   "flag.probe.bench.read.sample-interval.usage": "基准采样之间的间隔",
   "flag.probe.bench.upload.samples.usage": "基准采样次数",
   "flag.probe.bench.upload.sample-interval.usage": "基准采样之间的间隔",
-  "flag.probe.test.read.window.usage": "本次测量覆盖读窗口（字节或 KiB/MiB）"
+  "flag.probe.test.read.window.usage": "本次测量覆盖读窗口（字节或 KiB/MiB）",
+  "flag.probe.fault.read.rate.usage": "rate 故障的 body 速率，例如 150k"
 }

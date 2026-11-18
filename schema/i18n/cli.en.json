@@ -247,8 +247,8 @@
   "cmd.probe.fault.list.long": "List every read fault on the running mount, including rules whose remaining count reached zero.",
   "cmd.probe.fault.list.short": "List armed read faults",
   "cmd.probe.fault.long": "Arm, list, and clear read faults on a running mount. Faults are handled\nby the shared read layer exactly like provider failures, so they exercise the\nidle timeout, short-body replay, and retryable-status backoff paths.",
-  "cmd.probe.fault.read.example": "  qrypt probe fault read --path /cloud/movie.mp4 --kind stall --after 1m\n  qrypt probe fault read --path /cloud/movie.mp4 --kind truncate --after 2m --times 1\n  qrypt probe fault read --path /cloud/movie.mp4 --kind status --status 500",
-  "cmd.probe.fault.read.long": "Arm one read fault for a file. stall stops producing bytes after --after,\ntruncate ends the body there, status returns an HTTP status, and delay waits\nbefore the body is returned. The rule fires --times times (default once), so\nthe first failed attempt is followed by a healthy replay.",
+  "cmd.probe.fault.read.example": "  qrypt probe fault read --path /cloud/movie.mp4 --kind stall --after 1m\n  qrypt probe fault read --path /cloud/movie.mp4 --kind truncate --after 2m --times 1\n  qrypt probe fault read --path /cloud/movie.mp4 --kind status --status 500\n  qrypt probe fault read --path /cloud/movie.mp4 --kind rate --rate 150k --times 100",
+  "cmd.probe.fault.read.long": "Arm one read fault for a file. stall stops producing bytes after --after,\ntruncate ends the body there, status returns an HTTP status, delay waits\nbefore the body is returned, and rate paces the body at a fixed byte rate\n(emulating a per-connection provider throttle). The rule fires --times times\n(default once), so the first failed attempt is followed by a healthy replay.",
   "cmd.probe.fault.read.short": "Arm one read fault",
   "cmd.probe.fault.short": "Inject probe-only read faults",
   "cmd.probe.example": "  qrypt probe test crud --mount cloud\n  qrypt probe bench fs --mount cloud --size 64m",
@@ -575,7 +575,7 @@
   "flag.probe.fault.read.after.usage": "bytes delivered before a stall or truncate fires (default 0)",
   "flag.probe.fault.read.delay.usage": "open delay for --kind delay, e.g. 2s",
   "flag.probe.fault.read.include-prefetch.usage": "let the rule fire on background prefetch reads",
-  "flag.probe.fault.read.kind.usage": "fault kind: stall, truncate, status, or delay",
+  "flag.probe.fault.read.kind.usage": "fault kind: stall, truncate, status, delay, or rate",
   "flag.probe.fault.read.length.usage": "fault range length from --offset (default: target one offset)",
   "flag.probe.fault.read.offset.usage": "byte offset the fault applies to (default: any window)",
   "flag.probe.fault.read.path.usage": "virtual path of the file to inject into",
@@ -884,5 +884,6 @@
   "flag.probe.bench.read.sample-interval.usage": "delay between benchmark samples",
   "flag.probe.bench.upload.samples.usage": "number of benchmark samples",
   "flag.probe.bench.upload.sample-interval.usage": "delay between benchmark samples",
-  "flag.probe.test.read.window.usage": "override read window in bytes or KiB/MiB for this measurement"
+  "flag.probe.test.read.window.usage": "override read window in bytes or KiB/MiB for this measurement",
+  "flag.probe.fault.read.rate.usage": "body rate for --kind rate, e.g. 150k"
 }
