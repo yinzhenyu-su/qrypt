@@ -151,6 +151,7 @@ step "Generated docs in sync" bash -c '
   fi
 '
 
+step "Docs links and whitespace" scripts/ci/check-docs.sh
 step "Install script" scripts/install/check-install.sh
 step "Fast suite" scripts/ci/test-layers.sh fast
 step "Race suite" scripts/ci/test-layers.sh race

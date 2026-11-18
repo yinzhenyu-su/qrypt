@@ -252,7 +252,10 @@ then reads it with `os.Open` through the supplied mount point. Setup and cleanup
 are excluded from the read measurements. `cold` clears qrypt's durable and
 in-memory read caches; every measured read requests OS cache bypass/drop where
 supported, while `warm` keeps qrypt's read-cache state from the preceding read.
-`both` reports both modes. Each measurement includes open and time-to-first-byte
+`both` reports both modes. A multi-sample run re-reads the same range, so
+later samples can hit bytes an earlier sample fetched; add `--fresh-offsets`
+(with `--path`) to advance every sample by one read length, or clear the cache
+between samples. Each measurement includes open and time-to-first-byte
 latency, total and steady throughput, peak throughput over a one-second window,
 data-bearing read-call latency percentiles, cache hit/miss deltas, VFS read-call
 count, byte count, and content-hash validation. The test fails when the supplied
@@ -388,7 +391,9 @@ qrypt probe cache clear --mount quark-encrypt
 
 The command talks to the running mount's probe socket, drops the durable
 chunks, hot chunks, range-hit state, and sequential-read state, and returns
-JSON. In-flight reads finish normally; the next read starts cold. Add `--cold`
+JSON. It needs the mount to have `test_enabled = true` (or an isolated
+`QRYPT_HOME` test mount); otherwise the probe socket rejects the request with
+`mount "NAME" is not enabled for probe tests`. In-flight reads finish normally; the next read starts cold. Add `--cold`
 to `playback-sim.py` to run the clear immediately before the measurement:
 
 ```sh
