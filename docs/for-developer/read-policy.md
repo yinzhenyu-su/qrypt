@@ -197,7 +197,9 @@ clear the test mount before the run; the runner never clears between reads or
 owns the mount lifecycle.
 
 Reconcile the result with the mount's read trace using
-[analyze-read-traffic.py](../../scripts/dev/analyze-read-traffic.py). It reports
+[analyze-read-traffic.py](../../scripts/dev/analyze-read-traffic.py). It
+classifies each window row by the stall its timings show (provider TTFB, slow
+body, local wait, retry, no body) and lists the slowest rows, then reports
 executor `body_bytes`, caller deliveries (total and unique), the delivered bytes
 inside each window, shared bytes another session reused, real unused tails of
 completed windows, and an explicit unknown residual for canceled windows whose

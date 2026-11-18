@@ -23,6 +23,10 @@ ratio:
    whether those bytes arrived, so they stay in ``unknown_residual_bytes``
    instead of being reported as waste.
 
+The report also classifies each window row by the stall its timings show
+(provider TTFB, slow body, local wait, retry, no body) and lists the slowest
+rows, so a run answers which layer was slow without rereading the trace.
+
 Raw traces and reports stay outside Git; only sanitized summaries belong in a
 change's validation record. ``--self-check`` builds a small synthetic sample in
 a temporary directory (never in the repository) and asserts the reconciliation.
@@ -58,6 +62,14 @@ SOURCE_END_PHASE = "source_range_end"
 SOURCE_PHASES = (SOURCE_BEGIN_PHASE, SOURCE_END_PHASE)
 READ_PHASE = "read"
 
+# Stall classification thresholds for the window summary. A body below this
+# rate while taking at least half a second is a throttled connection; an open
+# above a second with a healthy body is provider TTFB, not local slowness.
+SLOW_BODY_RATE_KIB_S = 350
+SLOW_BODY_US = 500_000
+PROVIDER_TTFB_US = 1_000_000
+LOCAL_QUEUE_US = 100_000
+
 
 def parse_timestamp(value):
     """Return epoch nanoseconds for a log timestamp, or None."""
@@ -82,6 +94,16 @@ def extra_block(body):
     text = body[start + len(marker):]
     end = text.rfind("]")
     return text[:end] if end >= 0 else text
+
+
+def as_int(value, default=0):
+    """Return an integer extra value, or the default when it is absent."""
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def parse_extra(text):
@@ -195,6 +217,12 @@ def parse_trace(path):
                     "progress_end": extra.get("progress_end"),
                     "read_streams": streams if isinstance(streams, int) else 1,
                     "actual_in_flight": in_flight if isinstance(in_flight, int) else 0,
+                    "open_us": as_int(extra.get("open_us")),
+                    "body_us": as_int(extra.get("body_us")),
+                    "first_body_us": as_int(extra.get("first_body_us")),
+                    "local_wait_us": as_int(extra.get("local_wait_us")),
+                    "queue_us": as_int(extra.get("queue_us")),
+                    "fetch_attempts": max(1, as_int(extra.get("fetch_attempts", 1))),
                 }
             )
     return {
@@ -529,6 +557,68 @@ def session_attribution(trace_deliveries, deliveries):
     for entry in trace_deliveries:
         per_session.setdefault(entry["session_id"], []).append(span(entry))
     return per_session, None
+
+
+def summarize_windows(windows):
+    """Classify window rows by the stall their own timings show.
+
+    The report reconciles bytes; this summary answers which layer was slow.
+    A long body at a low rate points at a throttled connection, a large open
+    with a healthy body points at provider TTFB, a large local wait or queue
+    points at the shared layer, and more than one attempt means a retry. Rows
+    without a body are reported separately instead of being counted as fast.
+    """
+    summary = {
+        "windows": len(windows),
+        "fetch_windows": 0,
+        "prefetch_windows": 0,
+        "body_bytes": 0,
+        "classification": {},
+        "slowest": [],
+    }
+    slowest = []
+    for window in windows:
+        body = window.get("body_bytes", 0)
+        summary["body_bytes"] += body
+        if window["phase"] == "fetch_window":
+            summary["fetch_windows"] += 1
+        else:
+            summary["prefetch_windows"] += 1
+        body_us = window.get("body_us", 0)
+        rate = body / (body_us / 1_000_000) if body_us > 0 and body > 0 else 0.0
+        open_us = window.get("open_us", 0)
+        local_wait = window.get("local_wait_us", 0)
+        queue = window.get("queue_us", 0)
+        if window.get("fetch_attempts", 1) > 1:
+            kind = "retry"
+        elif body_us >= SLOW_BODY_US and 0 < rate < SLOW_BODY_RATE_KIB_S * 1024:
+            kind = "slow_body"
+        elif open_us >= PROVIDER_TTFB_US:
+            kind = "provider_ttfb"
+        elif local_wait > body_us or queue >= LOCAL_QUEUE_US:
+            kind = "local_wait"
+        elif body <= 0:
+            kind = "no_body"
+        else:
+            kind = "healthy"
+        summary["classification"][kind] = summary["classification"].get(kind, 0) + 1
+        if body_us > 0:
+            slowest.append((body_us, window))
+    slowest.sort(key=lambda item: item[0], reverse=True)
+    for body_us, window in slowest[:5]:
+        body = window.get("body_bytes", 0)
+        summary["slowest"].append(
+            {
+                "phase": window["phase"],
+                "offset": window["offset"],
+                "bytes": body,
+                "body_us": body_us,
+                "rate_kib_s": round(body / (body_us / 1000) / 1024, 1),
+                "open_us": window.get("open_us", 0),
+                "attempts": window.get("fetch_attempts", 1),
+            }
+        )
+    return summary
 
 
 def reconcile(trace, runner):
@@ -1114,7 +1204,9 @@ def main():
         parser.error("--output is required")
     if args.output.exists():
         parser.error("output already exists; preserve previous reports")
-    report = reconcile(parse_trace(args.trace), parse_runner(args.runner))
+    trace = parse_trace(args.trace)
+    report = reconcile(trace, parse_runner(args.runner))
+    report["summary"] = summarize_windows(trace["windows"])
     args.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     totals = report["totals"]
@@ -1126,6 +1218,21 @@ def main():
         f"unknown={totals['unknown_residual_bytes']} "
         f"amplification={ratio(totals.get('amplification_over_unique'))}"
     )
+    summary = report["summary"]
+    classes = " ".join(
+        f"{name}={value}" for name, value in sorted(summary["classification"].items())
+    )
+    print(
+        f"windows={summary['windows']} "
+        f"fetch={summary['fetch_windows']} prefetch={summary['prefetch_windows']} "
+        f"body_bytes={summary['body_bytes']} {classes}"
+    )
+    for row in summary["slowest"][:3]:
+        print(
+            f"slowest {row['phase']} offset={row['offset']} bytes={row['bytes']} "
+            f"body_us={row['body_us']} rate_kib_s={row['rate_kib_s']} "
+            f"open_us={row['open_us']} attempts={row['attempts']}"
+        )
     if not totals["complete"]:
         # An incomplete report is not a passing measurement; say why instead of
         # printing a ratio that the report deliberately withheld.
