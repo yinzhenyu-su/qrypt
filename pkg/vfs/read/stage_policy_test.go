@@ -194,7 +194,7 @@ func TestStageSuggestionKeepsCacheAdmission(t *testing.T) {
 	if err := rc.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(cache.puts) == 0 {
+	if cache.putCount() == 0 {
 		t.Fatal("stage suggestion suppressed the durable cache write")
 	}
 }

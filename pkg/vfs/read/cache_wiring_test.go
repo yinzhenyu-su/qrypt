@@ -3,6 +3,7 @@ package read
 import (
 	"context"
 	"io"
+	"sync"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -14,8 +15,21 @@ import (
 // the cache; whether a run then promotes a chunk is the cache's business and is
 // covered where the policy lives.
 type recordingCache struct {
+	mu     sync.Mutex
 	puts   []readcache.Access
 	lookup []readcache.Access
+}
+
+func (c *recordingCache) putCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.puts)
+}
+
+func (c *recordingCache) putSnapshot() []readcache.Access {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]readcache.Access(nil), c.puts...)
 }
 
 func (c *recordingCache) AddHit()                  {}
@@ -32,17 +46,23 @@ func (c *recordingCache) HasChunk(string, int64) (bool, error)     { return fals
 func (c *recordingCache) DebugSnapshot() readcache.DebugReadCache  { return readcache.DebugReadCache{} }
 
 func (c *recordingCache) GetChunkRange(_ string, _, _, _ int64, access readcache.Access) ([]byte, bool, error) {
+	c.mu.Lock()
 	c.lookup = append(c.lookup, access)
+	c.mu.Unlock()
 	return nil, false, nil
 }
 
 func (c *recordingCache) GetChunkWithRange(_ string, _, _, _ int64, access readcache.Access) ([]byte, []byte, bool, error) {
+	c.mu.Lock()
 	c.lookup = append(c.lookup, access)
+	c.mu.Unlock()
 	return nil, nil, false, nil
 }
 
 func (c *recordingCache) PutChunkAsync(_ string, _, _ int64, _ []byte, access readcache.Access) {
+	c.mu.Lock()
 	c.puts = append(c.puts, access)
+	c.mu.Unlock()
 }
 
 // TestStoreChunkCarriesTheRunFromContext pins the write half of the plumbing: a
@@ -56,10 +76,10 @@ func TestStoreChunkCarriesTheRunFromContext(t *testing.T) {
 	ctx := WithCacheAccess(context.Background(), readcache.Access{Run: 42})
 	backend.StoreChunk(ctx, "cache-key", drive.Entry{ID: "id"}, 3, []byte("chunk"))
 
-	if len(cache.puts) != 1 {
-		t.Fatalf("cache received %d puts, want 1", len(cache.puts))
+	if cache.putCount() != 1 {
+		t.Fatalf("cache received %d puts, want 1", cache.putCount())
 	}
-	if got := cache.puts[0].Run; got != 42 {
+	if got := cache.putSnapshot()[0].Run; got != 42 {
 		t.Fatalf("admitted run = %d, want 42", got)
 	}
 }
@@ -93,7 +113,7 @@ func TestStoreChunkWithoutCacheAccessAdmitsAsUnknownRun(t *testing.T) {
 
 	reader.newBackend().StoreChunk(context.Background(), "cache-key", drive.Entry{ID: "id"}, 0, []byte("chunk"))
 
-	if len(cache.puts) != 1 || cache.puts[0] != (readcache.Access{}) {
-		t.Fatalf("admitted access = %+v, want the zero Access", cache.puts)
+	if cache.putCount() != 1 || cache.putSnapshot()[0] != (readcache.Access{}) {
+		t.Fatalf("admitted access = %+v, want the zero Access", cache.putSnapshot())
 	}
 }
