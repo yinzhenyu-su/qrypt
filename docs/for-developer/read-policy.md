@@ -210,8 +210,11 @@ owns the mount lifecycle.
 Reconcile the result with the mount's read trace using
 [analyze-read-traffic.py](../../scripts/dev/analyze-read-traffic.py). It
 classifies each window row by the stall its timings show (provider TTFB, slow
-body, local wait, retry, no body) and lists the slowest rows, then reports
-executor `body_bytes`, caller deliveries (total and unique), the delivered bytes
+body, local wait, retry, no body) and lists the slowest rows, counts chunk
+coverage (distinct chunks versus visits, so a lookahead that re-admits a range
+another window already fetches shows up as duplicate visits and estimated
+redundant bytes), then reports executor `body_bytes`, caller deliveries (total
+and unique), the delivered bytes
 inside each window, shared bytes another session reused, real unused tails of
 completed windows, and an explicit unknown residual for canceled windows whose
 received bytes cannot be split between a useful prefix and a dead tail. A

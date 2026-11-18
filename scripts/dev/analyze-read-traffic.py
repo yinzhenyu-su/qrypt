@@ -26,6 +26,9 @@ ratio:
 The report also classifies each window row by the stall its timings show
 (provider TTFB, slow body, local wait, retry, no body) and lists the slowest
 rows, so a run answers which layer was slow without rereading the trace.
+Chunk coverage counts distinct chunks against visits, so a scheduler that
+re-fetches ground another window already holds shows up as duplicate visits
+instead of hiding inside the body-byte total.
 
 Raw traces and reports stay outside Git; only sanitized summaries belong in a
 change's validation record. ``--self-check`` builds a small synthetic sample in
@@ -40,6 +43,11 @@ from pathlib import Path
 
 
 MIB = 1 << 20
+
+# Executor windows are chunk aligned in the read path, so coverage can be
+# counted at this granularity to spot a lookahead that re-fetches ground
+# another window is already transferring.
+READ_CHUNK_SIZE = 512 * 1024
 
 LINE_PATTERN = re.compile(
     r"^\[(?P<timestamp>[^\]]+)\]\s+(?P<level>\w+)\s+\[(?P<scope>[^\]]+)\]\s+(?P<body>.*)$"
@@ -559,6 +567,42 @@ def session_attribution(trace_deliveries, deliveries):
     return per_session, None
 
 
+def coverage_summary(windows):
+    """Count chunk coverage so duplicate lookahead work is visible.
+
+    ``distinct_chunks`` stays flat while ``chunk_visits`` grows when the
+    scheduler admits a range another window already fetches. Windows are chunk
+    aligned in the read path, so ``redundant_bytes_estimate`` is the wire
+    traffic spent on ground a previous window already covered.
+    """
+    visits = {}
+    for window in windows:
+        start = window["offset"]
+        size = window["size"]
+        if size <= 0:
+            continue
+        first = start // READ_CHUNK_SIZE
+        last = (start + size - 1) // READ_CHUNK_SIZE
+        for chunk in range(first, last + 1):
+            visits[chunk] = visits.get(chunk, 0) + 1
+    duplicate_visits = sum(value - 1 for value in visits.values() if value > 1)
+    top = sorted(
+        ((visits[chunk] - 1, chunk) for chunk in visits if visits[chunk] > 1),
+        key=lambda item: (-item[0], item[1]),
+    )[:5]
+    return {
+        "distinct_chunks": len(visits),
+        "chunk_visits": sum(visits.values()),
+        "duplicate_visits": duplicate_visits,
+        "max_chunk_visits": max(visits.values(), default=0),
+        "redundant_bytes_estimate": duplicate_visits * READ_CHUNK_SIZE,
+        "top_duplicates": [
+            {"chunk": chunk, "offset": chunk * READ_CHUNK_SIZE, "extra_visits": extra}
+            for extra, chunk in top
+        ],
+    }
+
+
 def summarize_windows(windows):
     """Classify window rows by the stall their own timings show.
 
@@ -575,6 +619,7 @@ def summarize_windows(windows):
         "body_bytes": 0,
         "classification": {},
         "slowest": [],
+        "coverage": coverage_summary(windows),
     }
     slowest = []
     for window in windows:
@@ -922,8 +967,25 @@ def self_check():
         assert report["passes"]["seek-01"]["delivered_bytes_total"] == 262144, report["passes"]
         assert report["passes"]["seek-01"]["cross_pass_delivered_bytes"] == 0, report["passes"]
         assert totals["complete"] is True and totals["completeness_problems"] == [], totals
+    self_check_coverage()
     self_check_review()
     print("read-traffic self-check passed")
+
+
+def self_check_coverage():
+    """Pin the duplicate-coverage counter on a hand-written window set."""
+    windows = [
+        {"phase": "prefetch_window", "offset": 0, "size": 1024 * 1024},
+        {"phase": "prefetch_window", "offset": 512 * 1024, "size": 1024 * 1024},
+        {"phase": "prefetch_window", "offset": 1024 * 1024, "size": 512 * 1024},
+    ]
+    coverage = coverage_summary(windows)
+    assert coverage["distinct_chunks"] == 3, coverage
+    assert coverage["chunk_visits"] == 5, coverage
+    assert coverage["duplicate_visits"] == 2, coverage
+    assert coverage["redundant_bytes_estimate"] == 2 * READ_CHUNK_SIZE, coverage
+    assert coverage["max_chunk_visits"] == 2, coverage
+    assert coverage["top_duplicates"][0]["chunk"] == 1, coverage
 
 
 def self_check_review():
@@ -1227,6 +1289,16 @@ def main():
         f"fetch={summary['fetch_windows']} prefetch={summary['prefetch_windows']} "
         f"body_bytes={summary['body_bytes']} {classes}"
     )
+    coverage = summary["coverage"]
+    print(
+        f"coverage distinct_chunks={coverage['distinct_chunks']} "
+        f"visits={coverage['chunk_visits']} duplicates={coverage['duplicate_visits']} "
+        f"redundant_bytes={coverage['redundant_bytes_estimate']}"
+    )
+    for row in coverage["top_duplicates"]:
+        print(
+            f"duplicate offset={row['offset']} extra_visits={row['extra_visits']}"
+        )
     for row in summary["slowest"][:3]:
         print(
             f"slowest {row['phase']} offset={row['offset']} bytes={row['bytes']} "

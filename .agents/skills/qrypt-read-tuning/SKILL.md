@@ -326,7 +326,10 @@ Attribute traffic with
 mount trace plus the runner JSON. Its summary classifies every window by the
 stall its timings show (provider TTFB, slow body, local wait, retry, no body)
 and lists the slowest rows, which usually identifies the slow layer before
-reading any raw event. It separates executor `body_bytes`, total and
+reading any raw event. Its chunk coverage counters (distinct chunks versus
+visits) expose a lookahead that re-admits a range another window already
+fetches, which reads as duplicate visits and estimated redundant bytes. It
+separates executor `body_bytes`, total and
 unique caller delivery, the delivered bytes inside each window, bytes another
 session reused, real unused tails of completed windows, and an unknown residual
 for canceled windows. A canceled window is traffic: only the prefix it received
