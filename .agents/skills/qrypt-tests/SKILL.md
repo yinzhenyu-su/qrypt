@@ -38,8 +38,8 @@ description: Run qrypt tests manually — local hygiene/unit/race/coverage/fuzz 
 ## 1. 本地单元 / 门禁
 
 ```bash
-# 与 CI check job 等价的本地门禁（提交 main 前必须跑，结束时打印
-# "== local CI check passed =="）
+# 与 CI check job 等价的本地门禁（提交 main 前默认必跑，结束时打印
+# "== local CI check passed =="；文档/历史重写等豁免情形见 AGENTS.md）
 scripts/ci/check-all.sh
 
 # 分层跑，避免每次都全量

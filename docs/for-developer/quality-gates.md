@@ -349,6 +349,22 @@ pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟
 脚本按用途分目录（`ci/`、`schema/`、`install/`、`release/`、`dev/`），
 命名约定和每个目录的职责见 [`scripts/README.md`](../../scripts/README.md)。
 
+### 何时可以跳过全量门禁
+
+`check-all.sh` 是默认门禁：提交到 `main` 或合并前必须全绿。以下情况允许跳过，
+但要在提交信息或 PR 里写明原因，并给出最近一次全量通过的时间：
+
+- 只改文档、注释、示例等不影响运行时的内容。此时至少跑
+  `scripts/ci/check-docs.sh`，并确认 `git diff --check` 干净。
+- 只做历史重写、路径/引用脱敏、tag 重指等不改变工作树代码的操作（例如重写
+  已发布历史后再强推）。
+- 维护者明确允许某个版本带已知失败发布，并把修复顺延到下一个版本（例如
+  v0.7.0 的已知问题留到 v0.7.1）。
+
+`pre-push` 钩子对 `main` 和 `v*` tag 会跑 `check-all.sh`；需要跳过时可使用
+`git push --no-verify` 或 `QRYPT_SKIP_HOOKS=1`，这属于上述豁免情形，跳过要在
+推送说明里记录。普通分支只跑受影响包的检查，不受此限制。
+
 `check-install.sh` 在 `ci.yaml` 的 `static` 任务中运行；`smoke-install.sh --docker`
 在 `stability` 任务中运行。`scripts/install/install.sh`（Linux / macOS）与
 `scripts/install/install.ps1`（Windows）是首次安装脚本：下载并校验 release，把二进制装到
