@@ -57,6 +57,7 @@ func (r *Reader) schedulePrefetch(ctx context.Context, entry drive.Entry, endChu
 		// hide the window from scheduling too.
 		covered, end, next := r.windowCoverage(cacheKey, index)
 		if covered {
+			r.state.noteDedupedLookahead(end - index + 1)
 			index = end + 1
 			continue
 		}
@@ -67,7 +68,9 @@ func (r *Reader) schedulePrefetch(ctx context.Context, entry drive.Entry, endChu
 		count := int(min(int64(window), horizonEnd-index))
 		if next > index && next < horizonEnd {
 			// Do not straddle a window another read already admitted.
+			unnarrowed := count
 			count = int(min(int64(count), next-index))
+			r.state.noteDedupedLookahead(int64(unnarrowed - count))
 		}
 		load := r.startPrefetchWindow(ctx, entry, index, count, true)
 		if load == nil {

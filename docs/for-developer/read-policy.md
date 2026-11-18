@@ -104,6 +104,12 @@ byte of a newly opened file dropped from 4.2 s to 1.5 s. On a healthy link the
 split does not arm, so the default stays neutral. `QRYPT_FG_SPLIT=0` disables
 it for one run when triaging.
 
+The runtime snapshot also carries lookahead accounting
+(`deduped_lookahead_chunks` and `overlapping_window_chunks`) so a scheduling
+regression shows up in a counter instead of only in the wire bytes: the
+scheduler skips ranges an in-flight window already covers, and a window that
+still overlaps another one increments the second counter.
+
 With debug logging enabled, `[READ]` lines retain initial/seek completion,
 window fetches, prefetches and foreground wait transitions even after the
 diagnostic history wraps. Match the operation ID, window range and session to

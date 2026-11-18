@@ -419,7 +419,12 @@ with a deadline.
   replayed range reports `fetch_attempts` and the last `fetch_retry_reason`
   (`timeout`, `truncated_body`, `status_5xx`, `rate_limited`,
   `request_timeout`). The mount debug
-  snapshot exposes `read_timeouts`, `prefetch_timeouts`, and `last_timeout`.
+  snapshot exposes `read_timeouts`, `prefetch_timeouts`, and `last_timeout`,
+  plus lookahead accounting: `deduped_lookahead_chunks` counts lookahead chunks
+  the scheduler skipped because an in-flight window already covers them, and
+  `overlapping_window_chunks` counts chunks a newly admitted window shared with
+  one already in flight. The dedupe should keep the latter at zero; a nonzero
+  value means duplicate provider work.
 
 ## Upload State Flow
 

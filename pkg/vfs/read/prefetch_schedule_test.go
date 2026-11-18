@@ -94,6 +94,9 @@ func TestPrefetchSkipsWindowsAlreadyInFlight(t *testing.T) {
 			t.Fatalf("windows = %v, want the remaining horizon at 7, 9 and 11", windows)
 		}
 	}
+	if deduped, overlapping := r.state.LookaheadStats(); deduped == 0 || overlapping != 0 {
+		t.Fatalf("lookahead accounting = (deduped %d, overlapping %d); want the covered chunks counted and no overlap", deduped, overlapping)
+	}
 	close(gate)
 	waitPrefetchIdle(t, r)
 }

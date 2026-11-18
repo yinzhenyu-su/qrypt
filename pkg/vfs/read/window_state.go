@@ -108,10 +108,16 @@ func (w *windowLoad) chunkAvailable(index int64) bool {
 }
 
 // windowState coalesces concurrent reads of the same cache window.
-// Owned by the read domain; mu guards loads.
+// Owned by the read domain; mu guards loads and the lookahead accounting.
 type windowState struct {
 	mu    sync.Mutex
 	loads map[string]*windowLoad
+	// dedupedChunks counts chunks the scheduler did not admit because an
+	// in-flight window already covers them; overlappingChunks counts chunks a
+	// newly admitted window shares with another in-flight window, which the
+	// dedupe should keep at zero.
+	dedupedChunks     int64
+	overlappingChunks int64
 }
 
 func newWindowState() *windowState {
@@ -126,9 +132,48 @@ func (s *State) beginWindowLoad(key string, load *windowLoad) (*windowLoad, bool
 	if existing := s.windows.loads[key]; existing != nil {
 		return existing, true
 	}
+	s.noteWindowOverlapLocked(load)
 	load.key = key
 	s.windows.loads[key] = load
 	return load, false
+}
+
+// noteWindowOverlapLocked counts chunks a new load shares with loads already
+// in flight. schedulePrefetch checks coverage before admitting, so a nonzero
+// count means a window was admitted over ground another window already fetches.
+// Callers hold windows.mu.
+func (s *State) noteWindowOverlapLocked(load *windowLoad) {
+	for _, other := range s.windows.loads {
+		if other.fid != load.fid {
+			continue
+		}
+		start, end := max(load.start, other.start), min(load.end, other.end)
+		if end >= start {
+			s.windows.overlappingChunks += end - start + 1
+		}
+	}
+}
+
+// noteDedupedLookahead records chunks the scheduler skipped because an
+// admitted window already covers them.
+func (s *State) noteDedupedLookahead(chunks int64) {
+	if chunks <= 0 {
+		return
+	}
+	s.windows.mu.Lock()
+	s.windows.dedupedChunks += chunks
+	s.windows.mu.Unlock()
+}
+
+// LookaheadStats reports the dedupe counters: chunks the scheduler skipped as
+// already covered, and chunks overlapping windows that should never be
+// admitted together.
+func (s *State) LookaheadStats() (dedupedChunks, overlappingChunks int) {
+	s.windows.mu.Lock()
+	dedupedChunks = int(s.windows.dedupedChunks)
+	overlappingChunks = int(s.windows.overlappingChunks)
+	s.windows.mu.Unlock()
+	return dedupedChunks, overlappingChunks
 }
 
 // endWindowLoad unregisters load. The removal is identity-checked: a

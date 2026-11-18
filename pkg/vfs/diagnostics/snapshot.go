@@ -34,6 +34,11 @@ type RuntimeSnapshot struct {
 	PrefetchTimeouts int
 	LastTimeout      *DebugReadTimeout
 	Counters         drive.CounterSnapshot
+	// DedupedLookaheadChunks counts lookahead chunks the scheduler skipped as
+	// already covered; OverlappingWindowChunks counts chunks a new window
+	// shared with one already in flight (expected to stay zero).
+	DedupedLookaheadChunks  int
+	OverlappingWindowChunks int
 }
 
 // DebugReadTimeout describes the most recent read fetch timeout.
@@ -131,6 +136,8 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 	snapshot.Runtime.RangeHitLimit = runtimeState.RangeHitLimit
 	snapshot.Runtime.ReadTimeouts = runtimeState.ReadTimeouts
 	snapshot.Runtime.PrefetchTimeouts = runtimeState.PrefetchTimeouts
+	snapshot.Runtime.DedupedLookaheadChunks = runtimeState.DedupedLookaheadChunks
+	snapshot.Runtime.OverlappingWindowChunks = runtimeState.OverlappingWindowChunks
 	if last := runtimeState.LastTimeout; last != nil {
 		snapshot.Runtime.LastTimeout = &MountReadTimeout{
 			CacheKey:    last.CacheKey,

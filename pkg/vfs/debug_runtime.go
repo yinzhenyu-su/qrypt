@@ -343,6 +343,7 @@ func (r vfsDebugSnapshotRuntime) Runtime() diagnostics.RuntimeSnapshot {
 		RangeHitLimit: read.RangeHitLimit,
 	}
 	out.WindowLoads, out.Prefetches, out.RangeHitCount = r.read.RuntimeStats()
+	out.DedupedLookaheadChunks, out.OverlappingWindowChunks = r.read.LookaheadStats()
 	foregroundTimeouts, prefetchTimeouts, lastTimeout := r.read.TimeoutStats()
 	out.ReadTimeouts = foregroundTimeouts
 	out.PrefetchTimeouts = prefetchTimeouts
