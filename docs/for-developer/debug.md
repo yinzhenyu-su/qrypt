@@ -423,7 +423,13 @@ run can still hit what that run already fetched; run the script again, or seek
 far away, when every sample must be a cache miss. `probe test read --cache-mode
 cold` remains the benchmark-native option: it clears the cache before every
 cold sample and also reports mounted read latency, throughput, and seek
-behavior.
+behavior. When measuring an existing file with `--path`, add
+`--fresh-offsets` to advance every sample by one read length (or
+`--offset-step` bytes) instead of re-reading the same range; each sample then
+lands in a region no earlier sample fetched. Each measurement also reports
+`wire_bytes` and `amplification` (provider bytes per delivered byte) computed
+from the window events of that read, so over-fetch on a slow link shows up in
+the same output as the latency and throughput numbers.
 
 ### Inject Read Faults
 

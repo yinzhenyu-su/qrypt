@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -81,6 +82,8 @@ type MountedReadMeasurement struct {
 	CacheHits      int64              `json:"cache_hits"`
 	CacheMisses    int64              `json:"cache_misses"`
 	CacheHitRate   float64            `json:"cache_hit_rate"`
+	WireBytes      int64              `json:"wire_bytes,omitempty"`
+	Amplification  float64            `json:"amplification,omitempty"`
 	VFSReadCalls   int                `json:"vfs_read_calls"`
 	TraversedVFS   bool               `json:"traversed_vfs"`
 	OSCacheControl string             `json:"os_cache_control"`
@@ -236,6 +239,8 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	if samples <= 0 {
 		samples = 1
 	}
+	freshOffsets := req.FreshOffsets
+	freshStep := int64(0)
 	if samples > MaxMountedReadTestSamples {
 		optionErr = fmt.Errorf("read test samples must be between 1 and %d", MaxMountedReadTestSamples)
 	}
@@ -320,6 +325,22 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	}
 	if startOffset+rangeLength > size {
 		optionErr = fmt.Errorf("read test offset+length exceeds file size %d", size)
+	}
+	if freshOffsets {
+		if existingPath == "" {
+			optionErr = fmt.Errorf("read test --fresh-offsets requires --path")
+		}
+		freshStep = rangeLength
+		if req.OffsetStep != "" {
+			if parsed := ParseXferSize(req.OffsetStep); parsed > 0 {
+				freshStep = parsed
+			} else {
+				optionErr = fmt.Errorf("read test offset step must be a positive byte count")
+			}
+		}
+		if last := startOffset + int64(max(samples, 1)-1)*freshStep + rangeLength; last > size {
+			optionErr = fmt.Errorf("fresh offsets exceed file size: last sample ends at %d, file is %d bytes", last, size)
+		}
 	}
 	if readPattern != "sequential" && (req.Offset != "" || req.Length != "") {
 		optionErr = fmt.Errorf("read test offset/length only apply to --pattern sequential")
@@ -435,6 +456,15 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		expectedHash = ""
 	}
 
+	// readOffset advances each sample so a fresh-offsets run never measures
+	// bytes an earlier sample already fetched.
+	readOffset := func(sample int) int64 {
+		if !freshOffsets || sample <= 1 {
+			return startOffset
+		}
+		return startOffset + int64(sample-1)*freshStep
+	}
+
 	if readPattern == "sequential" || readPattern == "both" {
 		for sample := 1; sample <= samples; sample++ {
 			if cacheMode == "cold" || cacheMode == "both" {
@@ -442,10 +472,11 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 					result.Steps = append(result.Steps, failedFSStep("clear_read_cache", err))
 					return result
 				}
-				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, startOffset, rangeLength, "cold", sample)
+				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "cold", sample)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
 				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
+				measureAmplification(&measurement, events)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
@@ -456,13 +487,13 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				if readErr != nil {
 					return result
 				}
-				if expectedHash == "" {
+				if !freshOffsets && expectedHash == "" {
 					expectedHash = measurement.ContentHash
 				}
 			}
 			if cacheMode == "warm" || cacheMode == "both" {
 				if cacheMode == "warm" {
-					prime, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, startOffset, rangeLength, "prime", sample)
+					prime, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "prime", sample)
 					primeEvents, _ := mountedReadEvents(fs, mount, file, primeStarted)
 					if primeErr == nil && !mountedReadTraversed(mountedVFSReadCalls(primeEvents), prime.CacheHits, prime.CacheMisses) {
 						primeErr = fmt.Errorf("mounted read did not traverse qrypt; verify --mount-point")
@@ -475,10 +506,11 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 						expectedHash = prime.ContentHash
 					}
 				}
-				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, startOffset, rangeLength, "warm", sample)
+				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "warm", sample)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
 				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
+				measureAmplification(&measurement, events)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
@@ -489,7 +521,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				if readErr != nil {
 					return result
 				}
-				if expectedHash == "" {
+				if !freshOffsets && expectedHash == "" {
 					expectedHash = measurement.ContentHash
 				}
 			}
@@ -1401,6 +1433,47 @@ func mountedReadEvents(fs vfs.FileSystem, mount, path string, since time.Time) (
 		}
 	}
 	return nil, false
+}
+
+// measureAmplification records how many provider bytes a mounted read pulled
+// against the bytes it delivered. Wire bytes come from the window events the
+// read layer reports; the delivered side is the measurement itself.
+func measureAmplification(measurement *MountedReadMeasurement, events []drive.MetricEvent) {
+	wire := mountedReadWireBytes(events)
+	if wire <= 0 {
+		return
+	}
+	measurement.WireBytes = wire
+	if measurement.Bytes > 0 {
+		measurement.Amplification = float64(wire) / float64(measurement.Bytes)
+	}
+}
+
+// mountedReadWireBytes sums provider body bytes across the window events of one
+// mounted read. Both fetch and speculative prefetch events count: prefetch
+// bytes are wire cost whether or not the read consumed them.
+func mountedReadWireBytes(events []drive.MetricEvent) int64 {
+	var total int64
+	for _, event := range events {
+		switch event.Phase {
+		case "fetch_window", "prefetch_window":
+		default:
+			continue
+		}
+		switch v := event.Extra["body_bytes"].(type) {
+		case int64:
+			total += v
+		case int:
+			total += int64(v)
+		case float64:
+			total += int64(v)
+		case json.Number:
+			if n, err := v.Int64(); err == nil {
+				total += n
+			}
+		}
+	}
+	return total
 }
 
 func mountedVFSReadCalls(events []drive.MetricEvent) int {

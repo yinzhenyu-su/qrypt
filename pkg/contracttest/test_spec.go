@@ -20,6 +20,8 @@ type DriverTestRequest struct {
 	Count              int    `json:"count,omitempty"`
 	VFS                bool   `json:"vfs,omitempty"`
 	Samples            int    `json:"samples,omitempty"`
+	FreshOffsets       bool   `json:"fresh_offsets,omitempty"`
+	OffsetStep         string `json:"offset_step,omitempty"`
 	SampleInterval     string `json:"sample_interval,omitempty"`
 	MountPoint         string `json:"mount_point,omitempty"`
 	Path               string `json:"path,omitempty"`

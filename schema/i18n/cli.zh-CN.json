@@ -607,6 +607,8 @@
   "flag.probe.test.read.path.usage": "测量已存在的文件（虚拟路径），不创建测试文件",
   "flag.probe.test.read.pattern.usage": "读取模式：sequential、seek 或 both",
   "flag.probe.test.read.samples.usage": "读取采样次数（最大 10）",
+  "flag.probe.test.read.fresh-offsets.usage": "每个采样前移读取偏移，让每次采样都读取未缓存的数据",
+  "flag.probe.test.read.offset-step.usage": "fresh-offsets 每次采样前移的字节数（默认：读取长度）",
   "flag.probe.test.read.seek-count.usage": "每次采样的 seek 探测次数（最大 32）",
   "flag.probe.test.read.seek-overlap-timeout.usage": "等待进行中的读取与 seek 重叠的最长时间",
   "flag.probe.test.read.seek-scenario.usage": "seek 场景：isolated、prefetch 或 concurrent",

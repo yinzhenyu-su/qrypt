@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -529,5 +531,54 @@ func TestMountedSeekTraversalSurvivesEvictedFirstFUSERead(t *testing.T) {
 	events[0].Phase = "prefetch_window"
 	if mountedVFSReadInRange(events, offset, 1<<20) {
 		t.Fatal("prefetch cannot prove foreground traversal")
+	}
+}
+
+func TestMountedReadWireBytesCountsWindowBodies(t *testing.T) {
+	events := []drive.MetricEvent{
+		{Phase: "fetch_window", Extra: map[string]any{"body_bytes": int64(300)}},
+		{Phase: "prefetch_window", Extra: map[string]any{"body_bytes": 200}},
+		{Phase: "wait_window", Extra: map[string]any{"body_bytes": int64(999)}},
+		{Phase: "fetch_window", Extra: map[string]any{"body_bytes": float64(100)}},
+		{Phase: "prefetch_window", Extra: map[string]any{"body_bytes": json.Number("50")}},
+		{Phase: "fetch_window"},
+	}
+	if got := mountedReadWireBytes(events); got != 650 {
+		t.Fatalf("wire bytes = %d, want 650", got)
+	}
+	measurement := MountedReadMeasurement{Bytes: 512}
+	measureAmplification(&measurement, events)
+	if measurement.WireBytes != 650 {
+		t.Fatalf("measurement wire bytes = %d, want 650", measurement.WireBytes)
+	}
+	if math.Abs(measurement.Amplification-650.0/512.0) > 1e-9 {
+		t.Fatalf("amplification = %v, want %v", measurement.Amplification, 650.0/512.0)
+	}
+}
+
+func TestRunVFSMountedReadTestFreshOffsetsRequirePath(t *testing.T) {
+	shortenVFSIdleInterval(t)
+	fs := newMountedReadCleanupFS()
+	result := RunVFSMountedReadTest(context.Background(), fs, "local", DriverTestRequest{
+		Mount: "local", MountPoint: t.TempDir(), Size: "64k", BlockSize: "4k",
+		CacheMode: "cold", Samples: 1, FreshOffsets: true,
+	})
+	if result.Pass {
+		t.Fatalf("fresh offsets without --path were accepted: %+v", result)
+	}
+	if len(result.Steps) == 0 || !strings.Contains(result.Steps[0].Error, "requires --path") {
+		t.Fatalf("steps = %+v, want a --fresh-offsets requires --path validation error", result.Steps)
+	}
+}
+
+func TestRunVFSMountedReadTestRejectsOffsetStepWithoutFreshOffsets(t *testing.T) {
+	shortenVFSIdleInterval(t)
+	fs := newMountedReadCleanupFS()
+	result := RunVFSMountedReadTest(context.Background(), fs, "local", DriverTestRequest{
+		Mount: "local", MountPoint: t.TempDir(), Size: "64k", BlockSize: "4k",
+		CacheMode: "cold", Samples: 1, OffsetStep: "0",
+	})
+	if result.Pass {
+		t.Fatalf("a non-positive offset step was accepted: %+v", result)
 	}
 }

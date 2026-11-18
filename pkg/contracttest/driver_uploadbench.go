@@ -113,7 +113,7 @@ func RunDriverUploadBenchmark(ctx context.Context, mount string, d drive.Driver,
 		return report
 	}
 	defer func() {
-		if err := fx.d.Remove(ctx, fx.TestDir); err != nil && report.CleanupError == "" {
+		if err := RemoveFixtureTree(ctx, fx.d, fx); err != nil && report.CleanupError == "" {
 			report.CleanupError = err.Error()
 		}
 	}()

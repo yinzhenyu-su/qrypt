@@ -607,6 +607,8 @@
   "flag.probe.test.read.path.usage": "measure an existing file (virtual path) instead of creating a test file",
   "flag.probe.test.read.pattern.usage": "read pattern: sequential, seek, or both",
   "flag.probe.test.read.samples.usage": "number of read samples (max 10)",
+  "flag.probe.test.read.fresh-offsets.usage": "advance the read offset on every sample so each sample is cold",
+  "flag.probe.test.read.offset-step.usage": "bytes to advance per fresh-offset sample (default: read length)",
   "flag.probe.test.read.seek-count.usage": "number of seek probes per sample (max 32)",
   "flag.probe.test.read.seek-overlap-timeout.usage": "maximum wait for an in-flight read to overlap a seek",
   "flag.probe.test.read.seek-scenario.usage": "seek scenario: isolated, prefetch, or concurrent",

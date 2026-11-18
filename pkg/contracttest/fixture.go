@@ -109,6 +109,36 @@ func waitConvergence(ctx context.Context, d time.Duration) error {
 }
 
 // Remove deletes one entry and reports whether cleanup succeeded.
+// RemoveFixtureTree deletes a fixture directory and everything under it.
+// Providers can report a delete before it propagates, so a plain directory
+// removal sometimes leaves the fixture behind; this retries, removes listed
+// children first, and returns the last error so a caller can surface a cleanup
+// failure instead of silently leaving a remote directory.
+func RemoveFixtureTree(ctx context.Context, d drive.Driver, fx *Fixture) error {
+	ctx = context.WithoutCancel(ctx)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			if err := waitConvergence(ctx, 200*time.Millisecond); err != nil {
+				return lastErr
+			}
+		}
+		if entries, err := d.List(ctx, fx.TestDir.ID); err == nil {
+			for _, child := range entries {
+				if err := d.Remove(ctx, child); err != nil {
+					lastErr = err
+				}
+			}
+		}
+		if err := d.Remove(ctx, fx.TestDir); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 func (fx *Fixture) Remove(ctx context.Context, entry drive.Entry, role string) (CRUDCleanupResult, bool) {
 	start := time.Now()
 	err := fx.d.Remove(ctx, entry)
