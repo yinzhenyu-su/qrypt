@@ -136,8 +136,27 @@ func TestReadWindowRangeStopsAfterTruncatedBodyBudget(t *testing.T) {
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("error = %v, want io.ErrUnexpectedEOF", err)
 	}
-	if backend.calls != fetchTimeoutAttempts {
-		t.Fatalf("driver calls = %d, want %d", backend.calls, fetchTimeoutAttempts)
+	// Two Range attempts: the truncated body and the drive-layer replay.
+	if backend.calls != 2 {
+		t.Fatalf("driver calls = %d, want the truncated attempt plus one replay", backend.calls)
+	}
+}
+
+// TestStatusRetryExhaustionIsOwnedByDrive: a provider that keeps answering 5xx
+// spends the drive layer's status attempts (three) and fails the read; the read
+// layer adds no window-level retry on top, so the driver sees exactly those
+// attempts and any retry remains in one place.
+func TestStatusRetryExhaustionIsOwnedByDrive(t *testing.T) {
+	backend := &scriptedReadBackend{failures: []error{
+		providerStatus(t, http.StatusInternalServerError),
+		providerStatus(t, http.StatusBadGateway),
+		providerStatus(t, http.StatusServiceUnavailable),
+	}}
+	if _, _, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err == nil {
+		t.Fatal("read succeeded despite three 5xx answers")
+	}
+	if backend.calls != 3 {
+		t.Fatalf("driver calls = %d, want the three drive-layer status attempts", backend.calls)
 	}
 }
 

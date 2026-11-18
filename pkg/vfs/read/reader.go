@@ -696,7 +696,15 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		}
 		load.data = make(map[int64][]byte, len(load.chunks))
 	}
-	for attempt := 0; attempt <= fetchTimeoutAttempts; attempt++ {
+	// A foreground read joins an existing window when one covers its block and
+	// never retries a finished fetch of its own: Range attempts, idle-stall
+	// replays and status backoff all belong to the drive layer. The two loop
+	// rounds here only cover join hazards -- the joined window may finish
+	// without the block or have failed as an abandoned prefetch.
+	for round := 0; ; round++ {
+		if round > maxWindowJoins {
+			return nil, fmt.Errorf("vfs: window %s finished without block %d", key, startIndex)
+		}
 		existing, joined := r.state.beginWindowLoad(key, load)
 		if !joined {
 			break
@@ -721,7 +729,7 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		ready, waitErr := existing.waitTarget(ctx, startIndex)
 		switch {
 		case waitErr == nil && !ready:
-			// The joined window finished without this block; retry as the
+			// The joined window finished without this block; re-join as the
 			// owner of a window that covers exactly what this read needs.
 			detach()
 			r.observer.DebugFinishActive(activeID)
@@ -745,9 +753,9 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 				// for the prefetch itself, but a foreground read still needs
 				// its data. Take the window over and fetch it here instead of
 				// surfacing a background failure as the caller's error; the
-				// abandoned load has been unregistered by now, so the retry
+				// abandoned load has been unregistered by now, so the re-join
 				// registers this reader's own window.
-				if existing.prefetch && attempt < fetchTimeoutAttempts && ctx.Err() == nil &&
+				if existing.prefetch && round < maxWindowJoins && ctx.Err() == nil &&
 					(isReadFetchTimeout(existing.err) || errors.Is(existing.err, context.Canceled) || errors.Is(existing.err, drive.ErrReadAdmissionBusy)) {
 					if isReadFetchTimeout(existing.err) {
 						extra["cancel_reason"] = "timeout"
@@ -1042,7 +1050,12 @@ func (r *Reader) streamChunkWindow(ctx context.Context, entry drive.Entry, start
 	return snapshot, err
 }
 
-const fetchTimeoutAttempts = 2
+// maxWindowJoins bounds how often a foreground read re-enters the window
+// registry after inheriting an unusable join: one round for a window that
+// finished without the block and one to adopt an abandoned prefetch. Retries
+// of an in-flight Range (idle stalls, truncated bodies, retryable status) are
+// owned by the drive layer alone.
+const maxWindowJoins = 2
 
 func storeWindowChunks(ctx context.Context, backend readWindowBackend, entry drive.Entry, startIndex, endIndex int64, data []byte) map[int64][]byte {
 	chunks := make(map[int64][]byte, len(data)/ChunkSize+1)

@@ -62,7 +62,18 @@ so the lookahead scheduled by a refill survives until the handle is closed. Idle
 at the first unpublished block, under the original total deadline and retry
 limits, without replaying delivered bytes. Unknown-size objects retain buffered
 whole-window validation. Closing a running job cancels it; admission is released
-after its fetch has stopped. Crypt is charged at the outer source and invokes its raw driver without a second source admission.
+after its fetch has stopped.
+
+Range attempts have a single owner: the drive layer replays idle stalls,
+truncated bodies and retryable status codes, resuming at the first unpublished
+block under one fetch deadline, so a slow provider never forces the read layer
+to re-fetch bytes it already holds. The read layer does not retry a finished
+window; it re-enters the window registry at most twice — once when the window it
+joined finished without its block (it then owns a window shaped for that read)
+and once to adopt an abandoned prefetch. Anything beyond that surfaces the
+original error to the caller.
+
+Crypt is charged at the outer source and invokes its raw driver without a second source admission.
 
 Local bandwidth wait is excluded from remote idle detection and included in the
 fetch total bound. Drivers can inspect explicit cancellation causes. Idle stalls

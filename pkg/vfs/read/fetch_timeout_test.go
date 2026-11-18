@@ -195,12 +195,13 @@ func TestReaderWindowWaitersShareTimeoutError(t *testing.T) {
 			t.Fatal("waiters did not return after the loader timed out")
 		}
 	}
-	if calls := driver.ReadStats().Calls; calls != fetchTimeoutAttempts {
-		t.Fatalf("driver calls = %d, want the waiters to share one load (one retry)", calls)
+	// One joined load: the idle-stall attempt and its drive-layer replay.
+	if calls := driver.ReadStats().Calls; calls != 2 {
+		t.Fatalf("driver calls = %d, want the waiters to share one load (attempt plus replay)", calls)
 	}
 }
 
-func TestReaderRetriesTimedOutFetchOnce(t *testing.T) {
+func TestReadPathReplaysTimedOutFetchOnce(t *testing.T) {
 	var calls atomic.Int32
 	reader, _, _ := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
 		BodyFunc: func(ctx context.Context, data []byte) io.ReadCloser {
@@ -219,7 +220,7 @@ func TestReaderRetriesTimedOutFetchOnce(t *testing.T) {
 	}
 }
 
-func TestReaderRetryExhaustionFailsWholeWindow(t *testing.T) {
+func TestTimedOutReplayExhaustionFailsWindow(t *testing.T) {
 	reader, _, driver := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
 		BodyFunc: func(ctx context.Context, _ []byte) io.ReadCloser {
 			return &stalledReadBody{ctx: ctx}
@@ -229,8 +230,8 @@ func TestReaderRetryExhaustionFailsWholeWindow(t *testing.T) {
 	if !drive.IsFetchTimeout(err) {
 		t.Fatalf("read error = %v, want a fetch timeout", err)
 	}
-	if calls := driver.ReadStats().Calls; calls != fetchTimeoutAttempts {
-		t.Fatalf("driver calls = %d, want %d", calls, fetchTimeoutAttempts)
+	if calls := driver.ReadStats().Calls; calls != 2 {
+		t.Fatalf("driver calls = %d, want the drive-layer attempt plus its replay", calls)
 	}
 }
 
@@ -358,9 +359,9 @@ func TestForegroundReadTakesOverTimedOutPrefetch(t *testing.T) {
 	var calls atomic.Int32
 	reader, state, driver := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
 		BodyFunc: func(ctx context.Context, data []byte) io.ReadCloser {
-			// The prefetch burns its original attempt and its retry; the
+			// The prefetch spends its drive-layer attempt and replay; the
 			// foreground read that takes over then succeeds.
-			if calls.Add(1) <= fetchTimeoutAttempts {
+			if calls.Add(1) <= 2 {
 				return &stalledReadBody{ctx: ctx}
 			}
 			return io.NopCloser(bytes.NewReader(data))
