@@ -125,13 +125,15 @@ func RemoveFixtureTree(ctx context.Context, d drive.Driver, fx *Fixture) error {
 		}
 		if entries, err := d.List(ctx, fx.TestDir.ID); err == nil {
 			for _, child := range entries {
-				if err := d.Remove(ctx, child); err != nil {
+				if err := d.Remove(ctx, child); err != nil && lastErr == nil {
 					lastErr = err
 				}
 			}
 		}
 		if err := d.Remove(ctx, fx.TestDir); err != nil {
-			lastErr = err
+			if lastErr == nil {
+				lastErr = err
+			}
 			continue
 		}
 		return nil

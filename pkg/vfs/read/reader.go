@@ -788,7 +788,6 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 			// window fetch so it stops holding a provider slot, unless another
 			// reader has already joined the window.
 			detach()
-			detach = nil
 			if r.state.abandonWindow(load, 0, true) && load.cancel != nil {
 				// Cancel the fetch and wait for it to unwind so the read does
 				// not return while the window still holds a provider slot.
