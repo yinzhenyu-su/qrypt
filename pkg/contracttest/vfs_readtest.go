@@ -66,6 +66,14 @@ type readPlanOverrider interface {
 	ClearReadPlanOverride()
 }
 
+// MountedReadTick is one elapsed second of a sustained read: the bytes the
+// mount delivered in that second and their implied rate.
+type MountedReadTick struct {
+	Second          int   `json:"second"`
+	Bytes           int64 `json:"bytes"`
+	RateBytesPerSec int64 `json:"rate_bytes_per_sec"`
+}
+
 type MountedReadMeasurement struct {
 	Mode           string             `json:"mode"`
 	Sample         int                `json:"sample"`
@@ -84,9 +92,15 @@ type MountedReadMeasurement struct {
 	CacheHitRate   float64            `json:"cache_hit_rate"`
 	WireBytes      int64              `json:"wire_bytes,omitempty"`
 	Amplification  float64            `json:"amplification,omitempty"`
-	VFSReadCalls   int                `json:"vfs_read_calls"`
-	TraversedVFS   bool               `json:"traversed_vfs"`
-	OSCacheControl string             `json:"os_cache_control"`
+	// HoldOpen reports that this sample reused one mounted handle instead of
+	// opening the file itself.
+	HoldOpen bool `json:"hold_open,omitempty"`
+	// Timeline breaks a sustained read into per-second delivered bytes so a
+	// rate drop is visible without another measurement.
+	Timeline       []MountedReadTick `json:"timeline,omitempty"`
+	VFSReadCalls   int               `json:"vfs_read_calls"`
+	TraversedVFS   bool              `json:"traversed_vfs"`
+	OSCacheControl string            `json:"os_cache_control"`
 	// TimedOut reports that the probe's own read-call timeout fired. The VFS
 	// fetch timeout normally produces an I/O error first.
 	TimedOut      bool  `json:"timed_out,omitempty"`
@@ -465,6 +479,16 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		return startOffset + int64(sample-1)*freshStep
 	}
 
+	var held *os.File
+	if req.HoldOpen {
+		held, err = os.Open(mountedFile)
+		if err != nil {
+			result.Steps = append(result.Steps, failedFSStep("hold_open", err))
+			return result
+		}
+		defer held.Close()
+	}
+
 	if readPattern == "sequential" || readPattern == "both" {
 		for sample := 1; sample <= samples; sample++ {
 			if cacheMode == "cold" || cacheMode == "both" {
@@ -472,7 +496,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 					result.Steps = append(result.Steps, failedFSStep("clear_read_cache", err))
 					return result
 				}
-				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "cold", sample)
+				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "cold", sample, held, req.Timeline)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
 				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
@@ -493,7 +517,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 			}
 			if cacheMode == "warm" || cacheMode == "both" {
 				if cacheMode == "warm" {
-					prime, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "prime", sample)
+					prime, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "prime", sample, held, req.Timeline)
 					primeEvents, _ := mountedReadEvents(fs, mount, file, primeStarted)
 					if primeErr == nil && !mountedReadTraversed(mountedVFSReadCalls(primeEvents), prime.CacheHits, prime.CacheMisses) {
 						primeErr = fmt.Errorf("mounted read did not traverse qrypt; verify --mount-point")
@@ -506,7 +530,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 						expectedHash = prime.ContentHash
 					}
 				}
-				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "warm", sample)
+				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "warm", sample, held, req.Timeline)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
 				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
@@ -655,18 +679,26 @@ func parseMountedReadOffset(raw string) (int64, error) {
 	return value, nil
 }
 
-func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, expectedHash string, blockSize, startOffset, length int64, mode string, sample int) (MountedReadMeasurement, time.Time, error) {
+func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, expectedHash string, blockSize, startOffset, length int64, mode string, sample int, hold *os.File, timeline bool) (MountedReadMeasurement, time.Time, error) {
 	measurement := MountedReadMeasurement{Mode: mode, Sample: sample, StartOffset: startOffset}
 	before := fsMountState(fs, mount)
 	started := time.Now()
-	file, err := os.Open(path)
-	measurement.OpenMicros = elapsedMicros(started)
-	if err != nil {
-		return measurement, started, err
+	file := hold
+	if file != nil {
+		measurement.HoldOpen = true
+	} else {
+		opened, err := os.Open(path)
+		measurement.OpenMicros = elapsedMicros(started)
+		if err != nil {
+			return measurement, started, err
+		}
+		defer opened.Close()
+		file = opened
 	}
-	defer file.Close()
 	measurement.OSCacheControl = prepareColdMountedRead(file)
-	if startOffset > 0 {
+	// A held handle stays where the previous sample stopped, so every sample
+	// repositions it; a freshly opened handle is already at zero.
+	if startOffset > 0 || hold != nil {
 		if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
 			return measurement, started, err
 		}
@@ -716,6 +748,9 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 			}
 			measurement.Bytes += int64(n)
 			measurement.ReadCalls++
+			if timeline {
+				measurement.Timeline = addMountedReadTick(measurement.Timeline, int(time.Since(started)/time.Second), int64(n))
+			}
 			windowBytes += int64(n)
 			_, _ = hash.Write(buf[:n])
 			if elapsed := time.Since(windowStarted); elapsed >= time.Second {
@@ -766,6 +801,22 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 		return measurement, started, fmt.Errorf("mounted read content hash mismatch")
 	}
 	return measurement, started, nil
+}
+
+// addMountedReadTick folds delivered bytes into the elapsed second they
+// landed in. Reads complete in time order, so only the last tick can absorb
+// more bytes; a full second with no read stays absent rather than zero.
+func addMountedReadTick(ticks []MountedReadTick, second int, bytes int64) []MountedReadTick {
+	if bytes <= 0 {
+		return ticks
+	}
+	if len(ticks) == 0 || ticks[len(ticks)-1].Second != second {
+		ticks = append(ticks, MountedReadTick{Second: second})
+	}
+	tick := &ticks[len(ticks)-1]
+	tick.Bytes += bytes
+	tick.RateBytesPerSec = tick.Bytes
+	return ticks
 }
 
 type mountedReadResult struct {

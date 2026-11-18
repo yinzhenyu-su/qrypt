@@ -99,6 +99,8 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 		cmd.Flags().Int("samples", 1, fmt.Sprintf("number of read samples (max %d)", contracttest.MaxMountedReadTestSamples))
 		cmd.Flags().Bool("fresh-offsets", false, "advance the read offset on every sample so each sample is cold")
 		cmd.Flags().String("offset-step", "", "bytes to advance per fresh-offset sample (default: read length)")
+		cmd.Flags().Bool("hold-open", false, "keep one mounted file handle across samples to measure a sustained session")
+		cmd.Flags().Bool("timeline", false, "record delivered bytes per elapsed second during reads")
 		cmd.Flags().Int("seek-count", contracttest.DefaultMountedSeekCount, fmt.Sprintf("number of seek probes per sample (max %d)", contracttest.MaxMountedSeekCount))
 		cmd.Flags().Duration("seek-overlap-timeout", contracttest.DefaultMountedSeekOverlapTimeout, "maximum wait for an in-flight read to overlap a seek")
 		cmd.Flags().String("seek-scenario", "isolated", "seek scenario: isolated, prefetch, or concurrent")
@@ -191,6 +193,12 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	if flag := cmd.Flags().Lookup("offset-step"); flag != nil {
 		req.OffsetStep, _ = cmd.Flags().GetString("offset-step")
 	}
+	if flag := cmd.Flags().Lookup("hold-open"); flag != nil {
+		req.HoldOpen, _ = cmd.Flags().GetBool("hold-open")
+	}
+	if flag := cmd.Flags().Lookup("timeline"); flag != nil {
+		req.Timeline, _ = cmd.Flags().GetBool("timeline")
+	}
 	if flag := cmd.Flags().Lookup("seek-count"); flag != nil {
 		req.SeekCount, _ = cmd.Flags().GetInt("seek-count")
 	}
@@ -248,7 +256,7 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		}
 	case "read":
 		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
-			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --offset, --length, --idle-timeout, --total-timeout, --streams, --window, --size, --block-size, --cache-mode, --pattern, --samples, --fresh-offsets, --offset-step, and seek options")
+			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --offset, --length, --idle-timeout, --total-timeout, --streams, --window, --size, --block-size, --cache-mode, --pattern, --samples, --fresh-offsets, --offset-step, --hold-open, --timeline, and seek options")
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("read test requires --mount")

@@ -177,7 +177,7 @@ func TestMeasureMountedFileReadsSubRange(t *testing.T) {
 	wantHash := sha256.Sum256(data[offset : offset+length])
 
 	measurement, _, err := measureMountedFile(
-		context.Background(), newXferFakeFS(), "local", file, fmt.Sprintf("%x", wantHash), 4<<10, offset, length, "cold", 1,
+		context.Background(), newXferFakeFS(), "local", file, fmt.Sprintf("%x", wantHash), 4<<10, offset, length, "cold", 1, nil, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestMeasureMountedFileIncludesFinalPartialPeakWindow(t *testing.T) {
 	wantHash := sha256.Sum256(data)
 
 	measurement, _, err := measureMountedFile(
-		context.Background(), newXferFakeFS(), "local", file, fmt.Sprintf("%x", wantHash), 4<<10, 0, int64(len(data)), "cold", 1,
+		context.Background(), newXferFakeFS(), "local", file, fmt.Sprintf("%x", wantHash), 4<<10, 0, int64(len(data)), "cold", 1, nil, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -580,5 +580,50 @@ func TestRunVFSMountedReadTestRejectsOffsetStepWithoutFreshOffsets(t *testing.T)
 	})
 	if result.Pass {
 		t.Fatalf("a non-positive offset step was accepted: %+v", result)
+	}
+}
+
+func TestMeasureMountedFileHeldHandleAndTimeline(t *testing.T) {
+	data := make([]byte, 128<<10)
+	fillMountedReadPattern(data, 0)
+	path := t.TempDir() + "/data.bin"
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+
+	ctx := context.Background()
+	first, _, err := measureMountedFile(ctx, newXferFakeFS(), "local", path, "", 4<<10, 0, 32<<10, "cold", 1, held, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := measureMountedFile(ctx, newXferFakeFS(), "local", path, "", 4<<10, 32<<10, 32<<10, "cold", 2, held, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, measurement := range []MountedReadMeasurement{first, second} {
+		if !measurement.HoldOpen {
+			t.Fatal("held sample did not report the reused handle")
+		}
+		if measurement.OpenMicros != 0 {
+			t.Fatalf("held sample reported %d open microseconds, want 0", measurement.OpenMicros)
+		}
+		var delivered int64
+		for _, tick := range measurement.Timeline {
+			if tick.Bytes <= 0 || tick.RateBytesPerSec != tick.Bytes {
+				t.Fatalf("tick = %+v, want positive bytes and implied rate", tick)
+			}
+			delivered += tick.Bytes
+		}
+		if delivered != measurement.Bytes {
+			t.Fatalf("timeline delivered %d bytes, measurement saw %d", delivered, measurement.Bytes)
+		}
+	}
+	if got := sha256.Sum256(data[32<<10 : 64<<10]); second.ContentHash != fmt.Sprintf("%x", got) {
+		t.Fatalf("held second sample content hash = %s, want %x", second.ContentHash, got)
 	}
 }

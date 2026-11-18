@@ -255,7 +255,8 @@ supported, while `warm` keeps qrypt's read-cache state from the preceding read.
 `both` reports both modes. A multi-sample run re-reads the same range, so
 later samples can hit bytes an earlier sample fetched; add `--fresh-offsets`
 (with `--path`) to advance every sample by one read length, or clear the cache
-between samples. Each measurement includes open and time-to-first-byte
+between samples. `--hold-open` and `--timeline` switch the run to sustained-session
+shape and per-second delivery detail. Each measurement includes open and time-to-first-byte
 latency, total and steady throughput, peak throughput over a one-second window,
 data-bearing read-call latency percentiles, cache hit/miss deltas, VFS read-call
 count, byte count, and content-hash validation. The test fails when the supplied

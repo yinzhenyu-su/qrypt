@@ -12,16 +12,22 @@ import (
 
 // DriverTestRequest is the JSON body for the local probe endpoints.
 type DriverTestRequest struct {
-	Test               string `json:"test"`
-	Mount              string `json:"mount,omitempty"`
-	Source             string `json:"source,omitempty"`
-	Dest               string `json:"dest,omitempty"`
-	Size               string `json:"size,omitempty"`
-	Count              int    `json:"count,omitempty"`
-	VFS                bool   `json:"vfs,omitempty"`
-	Samples            int    `json:"samples,omitempty"`
-	FreshOffsets       bool   `json:"fresh_offsets,omitempty"`
-	OffsetStep         string `json:"offset_step,omitempty"`
+	Test         string `json:"test"`
+	Mount        string `json:"mount,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Dest         string `json:"dest,omitempty"`
+	Size         string `json:"size,omitempty"`
+	Count        int    `json:"count,omitempty"`
+	VFS          bool   `json:"vfs,omitempty"`
+	Samples      int    `json:"samples,omitempty"`
+	FreshOffsets bool   `json:"fresh_offsets,omitempty"`
+	OffsetStep   string `json:"offset_step,omitempty"`
+
+	// HoldOpen keeps one mounted file handle across read samples, so a
+	// sustained run measures a session instead of a sequence of cold opens.
+	HoldOpen bool `json:"hold_open,omitempty"`
+	// Timeline records delivered bytes per elapsed second during a read.
+	Timeline           bool   `json:"timeline,omitempty"`
 	SampleInterval     string `json:"sample_interval,omitempty"`
 	MountPoint         string `json:"mount_point,omitempty"`
 	Path               string `json:"path,omitempty"`
