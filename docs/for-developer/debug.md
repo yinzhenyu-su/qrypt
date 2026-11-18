@@ -349,6 +349,32 @@ stall came from the remote read or from the cache. `--warm` keeps the OS page
 cache instead of bypassing it with `F_NOCACHE`; `--json FILE` stores the
 per-second series for comparison between runs.
 
+### Compare Two Builds On The Same File
+
+`scripts/dev/read-ab.py` measures a control build against the working tree
+with isolated mounts: each side gets its own temporary mount point,
+`QRYPT_HOME`, and read cache, so the production mount, its cache, and its logs
+never affect the numbers. The script builds the control from a git ref in a
+temporary worktree (uncommitted changes stay untouched), mounts both sides with
+quiet logging and no bandwidth limit, and interleaves playback-shaped reads
+with rotating order. Each round reads a fresh region; samples where the
+provider stalls on TTFB or where qrypt's cache serves the read are excluded and
+retried at a shifted offset.
+
+```sh
+scripts/dev/read-ab.py --mount quark-encrypt \
+  --path "/videos/sample.mp4" \
+  --offsets 200,450,650,850 --length 2MiB --rounds 2
+```
+
+The table reports each sample's throughput and TTFB plus the candidate/control
+ratio; the summary gives the median over clean pairs, which is the number to
+decide on (individual pairs move with CDN variance). `--amplify` adds a second
+debug-logging pass that reports provider wire bytes per delivered byte for both
+sides. The script needs a client config with credentials (default: repository
+`qrypt.toml`) and Python 3.11+; `--keep` keeps the temporary binaries, logs, and
+results for inspection.
+
 ### Measure Cache-Miss Load Time
 
 `playback-sim.py` bypasses the OS page cache by default but still reads through
