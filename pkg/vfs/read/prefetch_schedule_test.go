@@ -148,3 +148,39 @@ func TestPrefetchFailureWaitsForTheNextRead(t *testing.T) {
 	r.host.waitCall(t, 2)
 	waitPrefetchIdle(t, r)
 }
+
+// The horizon is refreshed on every foreground read, so the scheduler must
+// report a decision when it admits speculative work or when the stop reason
+// changes, not once per 16 KiB read. Without that dedupe a debug mount emits
+// thousands of prefetch_plan events for a single playback read.
+func TestPrefetchPlanLogsRepeatedDecisionsOnce(t *testing.T) {
+	recorder := &eventRecorder{}
+	reader := newTestReader(testReaderDeps{Host: stubHost{}, State: NewState(nil)})
+	reader.observer = recorder
+	entry := drive.Entry{ID: "0/file.bin", Size: 8 << 20}
+	ctx := drive.WithDebugOperation(context.Background(), drive.DebugOperation{OpID: "op", Name: "/file.bin"})
+
+	for i := 0; i < 5; i++ {
+		reader.logPrefetchPlan(ctx, entry, "cache", 1, 9, "depth", 0)
+	}
+	if got := countPrefetchPlans(recorder); got != 1 {
+		t.Fatalf("prefetch_plan events = %d after five identical depth decisions, want 1", got)
+	}
+
+	reader.logPrefetchPlan(ctx, entry, "cache", 1, 9, "covered", 1)      // admitted work
+	reader.logPrefetchPlan(ctx, entry, "cache", 1, 9, "not_admitted", 0) // reason changed
+	reader.logPrefetchPlan(ctx, entry, "cache", 1, 9, "not_admitted", 0) // repeated again
+	if got := countPrefetchPlans(recorder); got != 3 {
+		t.Fatalf("prefetch_plan events = %d, want 3 (admission + change + none)", got)
+	}
+}
+
+func countPrefetchPlans(recorder *eventRecorder) int {
+	plans := 0
+	for _, event := range recorder.snapshot() {
+		if event.Phase == "prefetch_plan" {
+			plans++
+		}
+	}
+	return plans
+}

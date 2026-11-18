@@ -38,9 +38,12 @@ func (r *Reader) schedulePrefetch(ctx context.Context, entry drive.Entry, endChu
 		return
 	}
 	reason := "covered"
-	if logging.L.Enabled(logging.LevelDebug) {
-		defer func() { r.recordPrefetchPlan(ctx, entry, cursor, horizonEnd, reason) }()
-	}
+	started := 0
+	defer func() {
+		if logging.L.Enabled(logging.LevelDebug) {
+			r.logPrefetchPlan(ctx, entry, cacheKey, cursor, horizonEnd, reason, started)
+		}
+	}()
 	owned := r.prefetchInFlight(cacheKey)
 	if owned >= depth {
 		reason = "depth"
@@ -57,6 +60,7 @@ func (r *Reader) schedulePrefetch(ctx context.Context, entry drive.Entry, endChu
 			reason = "not_admitted"
 			return
 		}
+		started++
 		owned++
 		index = load.end + 1
 		if owned >= depth {
@@ -64,6 +68,29 @@ func (r *Reader) schedulePrefetch(ctx context.Context, entry drive.Entry, endChu
 			return
 		}
 	}
+}
+
+// logPrefetchPlan emits the per-read scheduling decision, but only when the
+// read admitted speculative work or the stop reason changed. A horizon refresh
+// happens on every foreground read, so logging unconditionally would emit one
+// line per 16 KiB read; one line per admitted window keeps the diagnostic
+// useful without turning debug logging into the bottleneck it observes.
+func (r *Reader) logPrefetchPlan(ctx context.Context, entry drive.Entry, cacheKey string, cursor, end int64, reason string, started int) {
+	r.prefetchLogMu.Lock()
+	if r.prefetchLog == nil {
+		r.prefetchLog = make(map[string]string, 8)
+	}
+	last, seen := r.prefetchLog[cacheKey]
+	if started == 0 && seen && last == reason {
+		r.prefetchLogMu.Unlock()
+		return
+	}
+	if len(r.prefetchLog) > 1024 {
+		r.prefetchLog = make(map[string]string, 8)
+	}
+	r.prefetchLog[cacheKey] = reason
+	r.prefetchLogMu.Unlock()
+	r.recordPrefetchPlan(ctx, entry, cursor, end, reason)
 }
 
 // prefetchInFlight counts speculative windows already admitted for one file.

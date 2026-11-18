@@ -31,6 +31,11 @@ type Reader struct {
 	policy   *CachePolicy
 	faults   ReadFaultInjector
 
+	// prefetchLogMu guards prefetchLog, the last scheduling decision reported
+	// for one cache key so repeated reads in the same window log once.
+	prefetchLogMu sync.Mutex
+	prefetchLog   map[string]string
+
 	// fgMu guards fgSplit: the per-object adaptive foreground-split state.
 	fgMu       sync.Mutex
 	fgSplit    map[string]*fgSplitState
