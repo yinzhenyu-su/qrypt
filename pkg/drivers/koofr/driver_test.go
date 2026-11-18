@@ -37,8 +37,20 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 
 func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
 	d := New(Options{})
-	if got := d.ReadPolicy().Bulk.Streams; got != 1 {
+	policy := d.ReadPolicy()
+	if got := policy.Bulk.Streams; got != 1 {
 		t.Fatalf("BulkStreams = %d, want 1", got)
+	}
+	if got := policy.Interactive.WindowBytes; got != 4<<20 {
+		t.Fatalf("Interactive.WindowBytes = %d, want %d", got, 4<<20)
+	}
+	// PrefetchWindowBytes stays zero so shareable lookahead follows the read
+	// window; the depth default keeps four lookahead windows.
+	if got := policy.Interactive.PrefetchWindowBytes; got != 0 {
+		t.Fatalf("Interactive.PrefetchWindowBytes = %d, want 0 (follow read window)", got)
+	}
+	if got := policy.Interactive.PrefetchDepth; got != 4 {
+		t.Fatalf("Interactive.PrefetchDepth = %d, want 4", got)
 	}
 	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
 		t.Fatal("parallel_range should stay declared for future tuning")
