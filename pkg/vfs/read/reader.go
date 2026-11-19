@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -28,6 +31,25 @@ type Reader struct {
 	source   *drive.ReadSource
 	policy   *CachePolicy
 	faults   ReadFaultInjector
+
+	// prefetchLogMu guards prefetchLog, the last scheduling decision reported
+	// for one cache key so repeated reads in the same window log once.
+	prefetchLogMu sync.Mutex
+	prefetchLog   map[string]string
+
+	// fgMu guards fgSplit: the per-object adaptive foreground-split state.
+	fgMu       sync.Mutex
+	fgSplit    map[string]*fgSplitState
+	fgLastSlow time.Time
+	// inflight counts foreground Read calls so Quiesce can wait for them.
+	inflight atomic.Int32
+
+	// Adaptive split knobs live on the reader so tests can tune one reader
+	// without mutating shared package state.
+	fgEnterBytesPerSec int64
+	fgExitBytesPerSec  int64
+	fgSlowWindows      int
+	fgThrottleMemory   time.Duration
 }
 
 // ReaderDeps is the explicit dependency set for a read-domain reader.
@@ -67,14 +89,19 @@ func NewReader(deps ReaderDeps) *Reader {
 	}
 	deps.State.scheduler = deps.Source.Scheduler()
 	r := &Reader{
-		host:     deps.Host,
-		state:    deps.State,
-		observer: deps.Observer,
-		health:   deps.Health,
-		counters: deps.Counters,
-		profile:  deps.Source.Policy().Effective,
-		source:   deps.Source,
-		faults:   deps.ReadFaults,
+		host:               deps.Host,
+		state:              deps.State,
+		observer:           deps.Observer,
+		health:             deps.Health,
+		counters:           deps.Counters,
+		profile:            deps.Source.Policy().Effective,
+		source:             deps.Source,
+		faults:             deps.ReadFaults,
+		fgSplit:            map[string]*fgSplitState{},
+		fgEnterBytesPerSec: fgSplitEnterBytesPerSecDefault,
+		fgExitBytesPerSec:  fgSplitExitBytesPerSecDefault,
+		fgSlowWindows:      fgSplitSlowWindowsDefault,
+		fgThrottleMemory:   fgSplitThrottleMemoryDefault,
 	}
 	r.policy = newCachePolicy(deps.State)
 	return r
@@ -96,8 +123,19 @@ func (r *Reader) resolve(ctx context.Context, path string) (drive.Entry, error) 
 // resolvePlan resolves the caller's intent, access stage, and the driver
 // profile into the concrete plan carried by this read's context.
 func (r *Reader) resolvePlan(ctx context.Context, defaultWindowChunks int, stage ReadStage) ReadPlan {
-	hint, hinted := AccessHintFromContext(ctx)
-	plan := PlanResolver{Profile: r.profile, AdaptiveDepth: r.state.adaptivePrefetchLimit(stage == StageSequential), ParallelSequential: hinted && !hint.Concurrent}.ResolveStage(stage, ReadIntentFromContext(ctx), defaultWindowChunks)
+	plan := PlanResolver{Profile: r.profile, AdaptiveDepth: r.state.adaptivePrefetchLimit(stage == StageSequential)}.ResolveStage(stage, ReadIntentFromContext(ctx), defaultWindowChunks)
+	r.applyPlanOverride(&plan)
+	return plan
+}
+
+// DebugPlan resolves the plan a read would use for stage and intent with the
+// current measurement override applied. Probe diagnostics use it to describe
+// the configured shape; the executed shape still comes from the metric events.
+func (r *Reader) DebugPlan(stage ReadStage, intent ReadIntent, callerChunks int) ReadPlan {
+	if callerChunks < 1 {
+		callerChunks = 1
+	}
+	plan := PlanResolver{Profile: r.profile, AdaptiveDepth: r.state.adaptivePrefetchLimit(stage == StageSequential)}.ResolveStage(stage, intent, callerChunks)
 	r.applyPlanOverride(&plan)
 	return plan
 }
@@ -141,12 +179,36 @@ func (r *Reader) applyPlanOverride(plan *ReadPlan) bool {
 		return false
 	}
 	changed := false
-	if override.MaxStreams > 0 && plan.Intent != ReadIntentInteractive && plan.Intent != ReadIntentProbe {
+	if override.MaxStreams > 0 && plan.Intent != ReadIntentInteractive {
 		plan.MaxStreams = override.MaxStreams
 		changed = true
 	}
-	if override.WindowChunks > 0 && plan.Intent != ReadIntentProbe {
+	if override.WindowChunks > 0 {
 		plan.WindowChunks = override.WindowChunks
+		changed = true
+	}
+	if override.PrefetchChunks > 0 {
+		plan.PrefetchChunks = override.PrefetchChunks
+		if plan.PrefetchDepth <= 0 {
+			plan.PrefetchDepth = 1
+		}
+		changed = true
+	}
+	if override.PrefetchDepth != nil {
+		plan.PrefetchDepth = *override.PrefetchDepth
+		if plan.PrefetchDepth <= 0 {
+			plan.PrefetchChunks = 0
+		} else if plan.PrefetchChunks <= 0 {
+			plan.PrefetchChunks = plan.WindowChunks
+		}
+		changed = true
+	}
+	if override.PartBytes != nil {
+		plan.PartBytes = *override.PartBytes
+		changed = true
+	}
+	if override.MinParallelBytes != nil {
+		plan.MinParallelBytes = *override.MinParallelBytes
 		changed = true
 	}
 	return changed
@@ -164,7 +226,18 @@ func (r *Reader) pendingUpload(path string) (vfstypes.PendingUpload, bool, error
 // from staging when present and otherwise reading remote chunks through
 // the cache window machinery.
 func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc io.ReadCloser, err error) {
-	defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
+	if r.inflight.Add(1) == 1 {
+		r.state.quiesceSignal()
+	}
+	defer func() {
+		if r.inflight.Add(-1) == 0 {
+			r.state.quiesceSignal()
+		}
+	}()
+	silent := silentReadEvents(ctx)
+	if !silent {
+		defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
+	}
 	path = CleanVirtualPath(path)
 	started := util.Now()
 	// One counter sample per read attempt, on every exit path. It measures
@@ -175,9 +248,11 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	// eventually drains. Counters deliberately track remote materialization,
 	// which is the part that costs bandwidth and time.
 	var countedBytes int64
-	defer func() { r.counters.RecordRead(countedBytes, util.Now().Sub(started), err) }()
+	if !silent {
+		defer func() { r.counters.RecordRead(countedBytes, util.Now().Sub(started), err) }()
+	}
 	opID := r.observer.DebugNextOpID()
-	activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
+	activeID := r.beginReadOp(silent, vfstypes.DebugActiveOp{
 		OpID:      opID,
 		Kind:      "vfs_read",
 		Phase:     "resolve",
@@ -186,34 +261,34 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		Requested: size,
 	})
 	if pending, ok, err := r.pendingUpload(path); err == nil && ok {
-		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
+		r.updateReadOp(silent, activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "staging_open"
 			op.RemoteID = pending.FID
 		})
 		rc, err := util.OpenRead(pending.LocalPath, offset, size)
 		if err != nil {
-			r.observer.DebugFinishActive(activeID)
-			r.observer.DebugRecordRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
+			r.finishReadOp(silent, activeID)
+			r.recordReadOp(silent, opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
 			return nil, err
 		}
 		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
-			r.observer.DebugFinishActive(activeID)
-			r.observer.DebugRecordRead(opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, nil, readErr)
+			r.finishReadOp(silent, activeID)
+			r.recordReadOp(silent, opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, nil, readErr)
 		}}, nil
 	}
 	entry, err := r.resolve(ctx, path)
 	if err != nil {
-		r.observer.DebugFinishActive(activeID)
-		r.observer.DebugRecordRead(opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, nil, err)
+		r.finishReadOp(silent, activeID)
+		r.recordReadOp(silent, opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
 	if entry.IsDir {
 		err := fmt.Errorf("vfs: %s is a directory", path)
-		r.observer.DebugFinishActive(activeID)
-		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, nil, err)
+		r.finishReadOp(silent, activeID)
+		r.recordReadOp(silent, opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
-	r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
+	r.updateReadOp(silent, activeID, func(op *vfstypes.DebugActiveOp) {
 		op.Phase = "read_range"
 		op.RemoteID = entry.ID
 	})
@@ -226,6 +301,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	r.state.beginForegroundRead(cacheKey)
 	defer r.state.endForegroundRead(cacheKey)
 	hint, hinted := AccessHintFromContext(ctx)
+	readCtx = withReadSession(readCtx, hint.SessionID)
 	decision := accessDecision{}
 	// The read run must be known before the data is fetched, because that is
 	// when chunks are admitted to the cache. A hinted read already has its
@@ -273,9 +349,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		// foreground Range is loading. Non-zero offsets are treated as seeks
 		// until contiguous access is observed, so random probes do not trigger
 		// speculative network reads.
-		// An adaptive pass warms only its seed window: the controller must not
-		// find a full stage window already admitted before it knows the budget.
-		r.prefetchWindow(readCtx, entry, offset/ChunkSize+1, firstPrefetchChunks(plan, windowChunks))
+		r.prefetchWindow(readCtx, entry, offset/ChunkSize+1, prefetchWindowChunks(plan, windowChunks))
 	}
 	data, startChunk, endChunk, err := r.readRange(readCtx, entry, offset, size, windowChunks)
 	hitsAfter, missesAfter := r.observer.DebugCacheCounters()
@@ -283,8 +357,8 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		if ctx.Err() != nil {
 			r.state.cancelReadScope(ctx, cacheKey, "caller")
 		}
-		r.observer.DebugFinishActive(activeID)
-		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, ReadEventExtra(readCtx, windowChunks, err), err)
+		r.finishReadOp(silent, activeID)
+		r.recordReadOp(silent, opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, ReadEventExtra(readCtx, windowChunks, err), err)
 		return nil, err
 	}
 	if !hinted {
@@ -297,9 +371,8 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		// lookahead scheduled below belongs to the run that was recorded.
 		readCtx = WithCacheAccess(readCtx, actual)
 	}
-	consumed := deliveredRange{offset: offset, size: int64(len(data))}
 	if readPrefetchEnabled(ctx) && plan.PrefetchDepth > 0 && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
-		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
+		r.updateReadOp(silent, activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "prefetch_schedule"
 			op.Extra = map[string]any{
 				"start_chunk":   startChunk,
@@ -309,23 +382,49 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 				"adaptive":      decision.adaptive,
 			}
 		})
-		r.schedulePrefetch(readCtx, entry, endChunk, windowChunks, decision.sequential, plan, consumed)
-	} else if readPrefetchEnabled(ctx) && plan.PrefetchDepth > 0 && !decision.stale && !hint.Concurrent && !decision.discontinuous {
-		// This read does not admit a prefetch yet, but its delivered bytes are
-		// still consumption: the budget grows from delivered bytes alone, so the
-		// same range earns the same credit however the caller splits it. A
-		// discontinuous read is a seek: its old pass is canceled below the gate
-		// and a new one starts only after contiguous access is confirmed.
-		r.creditSessionDelivery(readCtx, entry, endChunk+1, decision.sequential, windowChunks, plan, consumed)
+		r.schedulePrefetch(readCtx, entry, endChunk, windowChunks, decision.sequential, plan)
 	}
 	var chunks int64
 	if len(data) > 0 {
 		chunks = endChunk - startChunk + 1
 	}
-	r.observer.DebugFinishActive(activeID)
-	r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, ReadEventExtra(readCtx, windowChunks, nil), nil)
+	r.finishReadOp(silent, activeID)
+	r.recordReadOp(silent, opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, ReadEventExtra(readCtx, windowChunks, nil), nil)
 	countedBytes = int64(len(data))
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// beginReadOp starts an active operation for a read unless the read is a
+// silent stream refill.
+func (r *Reader) beginReadOp(silent bool, op vfstypes.DebugActiveOp) uint64 {
+	if silent {
+		return 0
+	}
+	return r.observer.DebugBeginActive(op)
+}
+
+// updateReadOp forwards an active-operation update unless the read is silent.
+func (r *Reader) updateReadOp(silent bool, id uint64, update func(*vfstypes.DebugActiveOp)) {
+	if silent {
+		return
+	}
+	r.observer.DebugUpdateActive(id, update)
+}
+
+// finishReadOp completes an active operation unless the read is silent.
+func (r *Reader) finishReadOp(silent bool, id uint64) {
+	if silent {
+		return
+	}
+	r.observer.DebugFinishActive(id)
+}
+
+// recordReadOp records a read event unless the read is silent.
+func (r *Reader) recordReadOp(silent bool, opID, path, fid string, offset, size, bytes int64, source string, hits, misses, chunks int64, started time.Time, extra map[string]any, err error) {
+	if silent {
+		return
+	}
+	r.observer.DebugRecordRead(opID, path, fid, offset, size, bytes, source, hits, misses, chunks, started, extra, err)
 }
 
 // CleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
@@ -492,7 +591,6 @@ func (r *Reader) readChunkRange(ctx context.Context, entry drive.Entry, index, s
 }
 
 func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entry, index, start, size int64, windowChunks int, runtime readRuntime) ([]byte, error) {
-	ctx = withWindowBypass(ctx)
 	cacheKey := runtime.CacheKey(entry)
 	access := cacheAccess(ctx)
 	if data, ok, err := r.lookupCachedChunk(ctx, entry, cacheKey, index, start, size, access, runtime, "", "", true); err != nil {
@@ -638,15 +736,30 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		}
 	}
 	key := WindowShapeKey(WindowKey(LoadKey(r.host, entry), startIndex, endIndex), streams)
-	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: streams, done: make(chan struct{})}
-	registered := false
-	for attempt := 0; attempt <= fetchTimeoutAttempts; attempt++ {
+	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: streams, intent: plan.Intent, done: make(chan struct{})}
+	if entry.Size > 0 {
+		// Known-size windows publish completed blocks: initialize the per-block
+		// channels before the load is registered so joiners can wait on them.
+		// Bulk windows use the same part scheduler, so downloads and playback
+		// share one execution path.
+		load.progressive = true
+		load.chunks = make([]windowChunk, int(endIndex-startIndex+1))
+		for index := range load.chunks {
+			load.chunks[index].ready = make(chan struct{})
+		}
+		load.data = make(map[int64][]byte, len(load.chunks))
+	}
+	// A foreground read joins an existing window when one covers its block and
+	// never retries a finished fetch of its own: Range attempts, idle-stall
+	// replays and status backoff all belong to the drive layer. The two loop
+	// rounds here only cover join hazards -- the joined window may finish
+	// without the block or have failed as an abandoned prefetch.
+	for round := 0; ; round++ {
+		if round > maxWindowJoins {
+			return nil, fmt.Errorf("vfs: window %s finished without block %d", key, startIndex)
+		}
 		existing, joined := r.state.beginWindowLoad(key, load)
 		if !joined {
-			registered = true
-			break
-		}
-		if windowBypassed(ctx, existing) {
 			break
 		}
 		detach, ok := r.state.attachWindow(existing)
@@ -669,10 +782,8 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		ready, waitErr := existing.waitTarget(ctx, startIndex)
 		switch {
 		case waitErr == nil && !ready:
-			extra := windowWaitExtra(existing)
-			extra["wait_us"] = util.Now().Sub(started).Microseconds()
-			RecordChunkDetail(r.observer, ctx, entry, "wait_window_load_bypass", startIndex, 0, ChunkSize, 0, started, extra, nil)
-			r.bypassPrefetch(ctx, existing)
+			// The joined window finished without this block; re-join as the
+			// owner of a window that covers exactly what this read needs.
 			detach()
 			r.observer.DebugFinishActive(activeID)
 			continue
@@ -688,16 +799,16 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 				}
 			}
 			waitFinished := util.Now()
-			extra := ExtraWithWindow(existing.extra, existing.start, existing.end)
+			extra := ExtraWithWindow(existing.extra)
 			extra["wait_us"] = waitFinished.Sub(started).Microseconds()
 			if existing.err != nil {
 				// A timed-out or abandoned prefetch is a silent cancellation
 				// for the prefetch itself, but a foreground read still needs
 				// its data. Take the window over and fetch it here instead of
 				// surfacing a background failure as the caller's error; the
-				// abandoned load has been unregistered by now, so the retry
+				// abandoned load has been unregistered by now, so the re-join
 				// registers this reader's own window.
-				if existing.prefetch && attempt < fetchTimeoutAttempts && ctx.Err() == nil &&
+				if existing.prefetch && round < maxWindowJoins && ctx.Err() == nil &&
 					(isReadFetchTimeout(existing.err) || errors.Is(existing.err, context.Canceled) || errors.Is(existing.err, drive.ErrReadAdmissionBusy)) {
 					if isReadFetchTimeout(existing.err) {
 						extra["cancel_reason"] = "timeout"
@@ -731,6 +842,88 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 	}
 
 	started := util.Now()
+	r.startWindowFetch(ctx, entry, startIndex, endIndex, load)
+	// The fetch runs in its own goroutine, so the block this read waits for is
+	// served as soon as the drive publishes it instead of after the window tail.
+	detach, attached := r.state.attachWindow(load)
+	if attached {
+		defer detach()
+		ready, waitErr := load.waitTarget(ctx, startIndex)
+		switch {
+		case waitErr != nil:
+			if data, ok := load.published(startIndex); ok {
+				fetchTimingFromContext(ctx).recordWait(util.Now().Sub(started))
+				return data, nil
+			}
+			// The caller went away before its block was published. Cancel the
+			// window fetch so it stops holding a provider slot, unless another
+			// reader has already joined the window.
+			detach()
+			if r.state.abandonWindow(load, 0, true) && load.cancel != nil {
+				// Cancel the fetch and wait for it to unwind so the read does
+				// not return while the window still holds a provider slot.
+				load.cancel()
+				<-load.done
+			}
+			return nil, waitErr
+		case ready:
+			if data, ok := load.published(startIndex); ok {
+				fetchTimingFromContext(ctx).recordWait(util.Now().Sub(started))
+				return data, nil
+			}
+			// The window finished without publishing this block; fall through to
+			// the fetch outcome so the caller sees the error instead of hanging.
+			<-load.done
+		}
+	} else {
+		<-load.done
+	}
+	if data, ok := load.published(startIndex); ok {
+		fetchTimingFromContext(ctx).recordWait(util.Now().Sub(started))
+		return data, nil
+	}
+	if load.err != nil {
+		return nil, load.err
+	}
+	if data, ok := load.data[startIndex]; ok && len(data) > 0 {
+		return data, nil
+	}
+	return nil, fmt.Errorf("vfs: window load finished without block %d", startIndex)
+}
+
+// startWindowFetch runs one foreground window fetch in its own goroutine and
+// ties its lifetime to the stream scope: a seek, session release or file close
+// abandons the window and cancels the fetch, while the reading goroutine waits
+// only for the block it needs.
+func (r *Reader) startWindowFetch(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, load *windowLoad) {
+	cacheKey := r.host.ReadCacheKey(entry)
+	scope, releaseScope := r.state.scopeFor(ctx, cacheKey)
+	fetchCtx, cancelFetch := context.WithCancelCause(context.WithoutCancel(ctx))
+	load.cancel = func() { cancelFetch(drive.ReadCallerCanceled) }
+	stopScope := context.AfterFunc(scope.ctx, func() {
+		if r.state.abandonWindow(load, 0, true) {
+			if reason := scope.cancelReason(); reason == "seek" || reason == "session_release" {
+				cancelFetch(drive.ReadSuperseded)
+			} else {
+				cancelFetch(drive.ReadCallerCanceled)
+			}
+		}
+	})
+	go func() {
+		defer releaseScope()
+		defer stopScope()
+		defer cancelFetch(nil)
+		r.runWindowFetch(fetchCtx, entry, startIndex, endIndex, load)
+	}()
+}
+
+// runWindowFetch executes one foreground window, publishing each block as the
+// drive layer completes it, then closes done and unregisters the load.
+func (r *Reader) runWindowFetch(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, load *windowLoad) {
+	cacheKey := r.host.ReadCacheKey(entry)
+	plan, _ := readPlanFromContext(ctx)
+	streams := grantedStreams(ctx, plan.MaxStreams)
+	started := util.Now()
 	activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
 		Kind:        "vfs_window_load",
 		Phase:       "acquire_slot",
@@ -743,52 +936,179 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		WindowEnd:   endIndex,
 		ReadIntent:  plan.Intent.String(),
 		ReadStreams: streams,
-		WaitFor:     key,
 	})
 	r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) { op.Phase = "fetch_window" })
-	load.data, load.extra, load.err = r.fetchChunkWindow(ctx, entry, startIndex, endIndex)
+	if load.progressive {
+		load.extra, load.err = r.streamChunkWindow(ctx, entry, startIndex, endIndex, load)
+	} else {
+		load.data, load.extra, load.err = r.fetchChunkWindow(ctx, entry, startIndex, endIndex)
+	}
 	fetchFinished := util.Now()
 	fetchTimingFromContext(ctx).recordFetch(fetchFinished.Sub(started))
 	r.observer.DebugFinishActive(activeID)
 	recordWindowFetchTimeouts(r.state, false, cacheKey, startIndex, endIndex, load.extra)
-	fetchExtra := ExtraWithWindow(load.extra, startIndex, endIndex)
-	// Attach the resolved plan so a detail event explains which stage and
-	// window policy produced this fetch, not only the driver-level timing.
-	for key, value := range ReadPlanExtra(ctx, int(endIndex-startIndex+1)) {
+	fetchExtra := ExtraWithWindow(load.extra)
+	// Attach the plan slice that explains this window's shape; the full plan is
+	// on the summary read event.
+	for key, value := range readPlanWindowExtra(ctx) {
 		if _, exists := fetchExtra[key]; !exists {
 			fetchExtra[key] = value
 		}
 	}
+	fetchExtra["window_chunks"] = int(endIndex - startIndex + 1)
 	fetchExtra["fetch_us"] = fetchFinished.Sub(started).Microseconds()
 	if isReadFetchTimeout(load.err) {
 		fetchExtra["cancel_reason"] = "timeout"
 	}
 	RecordChunkDetail(r.observer, ctx, entry, "fetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, WindowBytes(load.data), started, fetchExtra, load.err)
+	if load.progressive {
+		// Wake any waiter of a block this fetch did not publish; result() then
+		// reports the window error instead of blocking forever.
+		load.finishChunks()
+	}
 	close(load.done)
-
-	if registered {
-		r.state.endWindowLoad(load)
-	}
-	if load.err != nil {
-		return nil, load.err
-	}
-	return load.data[startIndex], nil
+	r.state.endWindowLoad(load)
 }
 
-func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) (map[int64][]byte, map[string]any, error) {
+// windowFetch is the prepared shape of one foreground window fetch: the plan
+// resolved for this read, the stream/split choice, and the trace that carries
+// the range diagnostics. The buffered and progressive fetch paths share it so
+// the adaptive split sees the same inputs either way.
+type windowFetch struct {
+	ctx         context.Context
+	entry       drive.Entry
+	plan        ReadPlan
+	windowBytes int64
+	streams     int
+	partBytes   int64
+	adaptive    bool
+	started     time.Time
+	trace       *drive.ReadTrace
+}
+
+func (r *Reader) prepareWindowFetch(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) windowFetch {
 	ctx = r.withFetchTimeouts(ctx)
 	plan, _ := readPlanFromContext(ctx)
 	ctx = r.withReadFaults(ctx)
 	trace := r.newReadTrace(ctx, entry)
 	ctx = drive.WithReadTrace(ctx, trace)
-	data, err := r.source.Fetch(ctx, entry, drive.RangePlan{Offset: startIndex * ChunkSize, Size: (endIndex - startIndex + 1) * ChunkSize, Streams: grantedStreams(ctx, plan.MaxStreams), Split: plan.Split, Timeouts: fetchTimeoutsFromContext(ctx), Priority: priority(ctx), Speculative: isPrefetchRead(ctx)})
-	if err != nil {
-		return nil, trace.Snapshot(), err
+	windowBytes := (endIndex - startIndex + 1) * ChunkSize
+	streams := grantedStreams(ctx, plan.MaxStreams)
+	if streams < 1 {
+		streams = 1
 	}
-	return storeWindowChunks(ctx, r.newBackend(), entry, startIndex, endIndex, data), trace.Snapshot(), nil
+	prefetch := isPrefetchRead(ctx)
+	adaptive := foregroundSplitEnabled() && !prefetch && plan.streaming() && windowBytes >= ChunkSize
+	partBytes := int64(0)
+	if adaptive {
+		if parts := r.foregroundSplitRequested(entry.ID); parts > 1 {
+			streams = parts
+			if limit := r.streamLimit(); limit > 0 && streams > limit {
+				streams = limit
+			}
+			if streams > 1 {
+				// Split windows use an even layout: each worker takes an equal
+				// share of the window. A fixed small part would multiply Range
+				// requests without adding parallelism, and the even split keeps
+				// the Range count equal to the worker count.
+				partBytes = (windowBytes + int64(streams) - 1) / int64(streams)
+			}
+		}
+	} else if streams > 1 {
+		// Streaming and bulk windows take their part layout from the driver's
+		// split policy, translated here so the source executes an explicit
+		// shape and never interprets policy itself.
+		streams, partBytes = drive.WindowPartLayout(windowBytes, streams, plan.PartBytes, plan.MinParallelBytes)
+		if streams > 1 && partBytes <= 0 {
+			partBytes = (windowBytes + int64(streams) - 1) / int64(streams)
+		}
+	}
+	return windowFetch{ctx: ctx, entry: entry, plan: plan, windowBytes: windowBytes, streams: streams, partBytes: partBytes, adaptive: adaptive, started: time.Now(), trace: trace}
 }
 
-const fetchTimeoutAttempts = 2
+func (w windowFetch) rangePlan(startIndex int64) drive.RangePlan {
+	// The read layer owns the window's part layout; the drive source only
+	// executes the ranges it is given.
+	return drive.RangePlan{
+		Offset:      startIndex * ChunkSize,
+		Size:        w.windowBytes,
+		Streams:     w.streams,
+		Workers:     w.streams,
+		Part:        w.partBytes,
+		Timeouts:    fetchTimeoutsFromContext(w.ctx),
+		Priority:    priority(w.ctx),
+		Speculative: isPrefetchRead(w.ctx),
+	}
+}
+
+// observeWindowFetch feeds the window's transfer rate into the adaptive
+// foreground split and attaches its shape to the window's diagnostics.
+func (r *Reader) observeWindowFetch(w windowFetch, snapshot map[string]any, delivered int64, elapsed time.Duration) {
+	if !w.adaptive {
+		return
+	}
+	if us, ok := snapshot["body_us"].(int64); ok && us > 0 {
+		// Judge the provider's transfer rate, not its open latency: a fast
+		// link with a slow request open must not arm the split.
+		elapsed = time.Duration(us) * time.Microsecond
+	}
+	if w.streams > 1 {
+		snapshot["fg_split_streams"] = w.streams
+		snapshot["fg_split_part_bytes"] = w.partBytes
+	}
+	r.observeForegroundRate(w.entry.ID, delivered, elapsed)
+	snapshot["fg_split_mode"] = r.foregroundSplitting(w.entry.ID)
+	if elapsed > 0 {
+		snapshot["fg_split_rate_kb_s"] = int64(float64(delivered) / elapsed.Seconds() / 1024)
+	}
+}
+
+func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) (map[int64][]byte, map[string]any, error) {
+	w := r.prepareWindowFetch(ctx, entry, startIndex, endIndex)
+	data, err := r.source.Fetch(w.ctx, entry, w.rangePlan(startIndex))
+	if err != nil {
+		return nil, w.trace.Snapshot(), err
+	}
+	snapshot := w.trace.Snapshot()
+	r.observeWindowFetch(w, snapshot, int64(len(data)), time.Since(w.started))
+	return storeWindowChunks(w.ctx, r.newBackend(), entry, startIndex, endIndex, data), snapshot, nil
+}
+
+// streamChunkWindow is fetchChunkWindow with progressive publication: every
+// block the drive layer completes is stored and published while the rest of
+// the window is still in flight, so a reader waiting for the head block does
+// not pay for the window's tail.
+func (r *Reader) streamChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, load *windowLoad) (map[string]any, error) {
+	w := r.prepareWindowFetch(ctx, entry, startIndex, endIndex)
+	backend := r.newBackend()
+	delivered := int64(0)
+	var err error
+	if w.streams > 1 && w.partBytes > 0 && w.rangePlan(startIndex).Offset%ChunkSize == 0 {
+		// A split foreground window is scheduled by the read layer: it owns the
+		// worker count and part layout instead of delegating the whole window.
+		delivered, err = r.streamWindowParts(w.ctx, entry, w, startIndex, load, backend)
+	} else {
+		err = r.source.FetchStream(w.ctx, entry, w.rangePlan(startIndex), func(offset int64, block []byte) {
+			index := offset / ChunkSize
+			backend.StoreChunk(w.ctx, backend.CacheKey(entry), entry, index, block)
+			load.data[index] = block
+			load.publish(index, block)
+			delivered += int64(len(block))
+		})
+	}
+	snapshot := w.trace.Snapshot()
+	if err == nil {
+		r.observeWindowFetch(w, snapshot, delivered, time.Since(w.started))
+	}
+	return snapshot, err
+}
+
+// maxWindowJoins bounds how often a foreground read re-enters the window
+// registry after inheriting an unusable join: one round for a window that
+// finished without the block and one to adopt an abandoned prefetch. Retries
+// of an in-flight Range (idle stalls, truncated bodies, retryable status) are
+// owned by the drive layer alone.
+const maxWindowJoins = 2
 
 func storeWindowChunks(ctx context.Context, backend readWindowBackend, entry drive.Entry, startIndex, endIndex int64, data []byte) map[int64][]byte {
 	chunks := make(map[int64][]byte, len(data)/ChunkSize+1)
@@ -827,11 +1147,8 @@ func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byt
 	if plan.Intent != ReadIntentBulk && plan.Stage != StageSequential && plan.WindowChunks > 0 {
 		maxChunks = int64(plan.WindowChunks)
 	}
-	load := r.state.findWindow(fid, index, streams, maxChunks)
+	load := r.state.findWindow(fid, index, streams, maxChunks, readSession(ctx))
 	if load == nil {
-		return nil, false, nil
-	}
-	if windowBypassed(ctx, load) {
 		return nil, false, nil
 	}
 	detach, ok := r.state.attachWindow(load)
@@ -857,10 +1174,8 @@ func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byt
 	ready, waitErr := load.waitTarget(ctx, index)
 	switch {
 	case waitErr == nil && !ready:
-		r.bypassPrefetch(ctx, load)
-		extra := windowWaitExtra(load)
-		extra["wait_us"] = util.Now().Sub(started).Microseconds()
-		RecordChunkDetail(r.observer, ctx, drive.Entry{ID: fid}, "wait_window_bypass", index, 0, ChunkSize, 0, started, extra, nil)
+		// The speculative window finished without publishing this block; that
+		// is a miss, so the caller fetches it in its own window.
 		return nil, false, nil
 	case waitErr == nil:
 		data, err := load.result(index)
@@ -891,15 +1206,7 @@ func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byt
 
 func windowWaitExtra(load *windowLoad) map[string]any {
 	extra := map[string]any{
-		"window_start": load.start, "window_end": load.end,
 		"window_chunks": load.end - load.start + 1, "window_streams": load.streams,
-		"window_prefetch": load.prefetch, "window_session_id": load.sessionID,
-	}
-	if load.prefetch {
-		extra["wait_budget_us"] = prefetchWaitBudget.Microseconds()
-	}
-	if !load.createdAt.IsZero() {
-		extra["window_age_us"] = time.Since(load.createdAt).Microseconds()
 	}
 	if load.trace != nil {
 		for key, value := range load.trace.Snapshot() {
@@ -925,7 +1232,7 @@ func (r *Reader) readChunkAvailableFor(cacheKey string, index int64, streams int
 			return true
 		}
 	}
-	return r.state.findWindow(cacheKey, index, streams, 0) != nil
+	return r.state.findWindow(cacheKey, index, streams, 0, 0) != nil
 }
 
 func (r *Reader) hotChunk(cacheKey string, index int64) ([]byte, bool) {
@@ -938,101 +1245,121 @@ func (r *Reader) putHotChunk(cacheKey string, index int64, data []byte) {
 
 // --- prefetch ---
 
-// prefetchWaitBudget bounds waiting without new bytes in the target block.
-// A progressing single-stream prefetch keeps its work; a stalled or distant
-// target is taken over within this interval. Shared idle/total limits still apply.
-// It is a variable so a test can exercise the bypass without waiting three
-// seconds.
-var prefetchWaitBudget = 3 * time.Second
+// foregroundSplitEnabled reports whether the adaptive foreground-window split
+// is active. It is on by default: once a foreground window's measured rate
+// shows a per-connection throttle, later windows are fetched as several
+// parallel Range requests instead of one, so the provider cannot gate the whole
+// read on a single connection, and the mode falls back to one stream once the
+// rate recovers. QRYPT_FG_SPLIT=0 disables it for one run while triaging.
+func foregroundSplitEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("QRYPT_FG_SPLIT"))) {
+	case "0", "false", "no", "off":
+		return false
+	}
+	return true
+}
+
+const foregroundSplitStreams = 4
+
+// Adaptive thresholds: a foreground window is split only after a measured
+// window rate falls below fgSplitEnterBytesPerSec, and the split is dropped
+// again once a window reaches fgSplitExitBytesPerSec. The hysteresis keeps the
+// mode stable instead of flapping on one noisy sample. A reader copies these
+// defaults into per-reader knobs so tests can force either decision without
+// mutating shared state.
+const (
+	fgSplitEnterBytesPerSecDefault int64 = 350 << 10
+	fgSplitExitBytesPerSecDefault  int64 = 900 << 10
+	// fgSplitSlowWindowsDefault is how many consecutive slow windows must be
+	// observed before the adaptive mode starts splitting. One is enough:
+	// playback's first sequential window is megabytes wide, so waiting for a
+	// second slow sample would stall the player for that whole window. A false
+	// positive on a fast link is bounded because one split window above the
+	// exit rate reverts it.
+	fgSplitSlowWindowsDefault = 1
+	// fgSplitThrottleMemoryDefault keeps the split armed for objects that have
+	// no rate sample yet after any object recently measured a slow window:
+	// opening the next file during the same throttled session should not pay
+	// the cold-start single-stream window again. It expires on its own.
+	fgSplitThrottleMemoryDefault = 5 * time.Minute
+)
+
+// fgSplitState is one object's adaptive split decision and last measured rate.
+type fgSplitState struct {
+	rate       int64
+	slowStreak int
+	splitting  bool
+}
+
+// observeForegroundRate records the measured throughput of one foreground
+// window and flips the adaptive split mode with hysteresis.
+func (r *Reader) observeForegroundRate(objectID string, bytes int64, elapsed time.Duration) {
+	if objectID == "" || bytes <= 0 || elapsed <= 0 {
+		return
+	}
+	rate := int64(float64(bytes) / elapsed.Seconds())
+	r.fgMu.Lock()
+	defer r.fgMu.Unlock()
+	state := r.fgSplit[objectID]
+	if state == nil {
+		state = &fgSplitState{}
+		r.fgSplit[objectID] = state
+	}
+	state.rate = rate
+	if rate < r.fgEnterBytesPerSec {
+		r.fgLastSlow = time.Now()
+	}
+	if state.splitting {
+		if rate >= r.fgExitBytesPerSec {
+			state.splitting = false
+			state.slowStreak = 0
+		}
+		return
+	}
+	if rate >= r.fgEnterBytesPerSec {
+		state.slowStreak = 0
+		return
+	}
+	state.slowStreak++
+	if state.slowStreak >= r.fgSlowWindows {
+		state.splitting = true
+	}
+}
+
+// foregroundSplitRequested reports how many streams the adaptive mode wants for
+// this object's foreground windows (0 = keep one stream).
+func (r *Reader) foregroundSplitRequested(objectID string) int {
+	r.fgMu.Lock()
+	defer r.fgMu.Unlock()
+	state := r.fgSplit[objectID]
+	if state != nil && state.splitting {
+		return foregroundSplitStreams
+	}
+	if (state == nil || state.rate == 0) && !r.fgLastSlow.IsZero() && time.Since(r.fgLastSlow) < r.fgThrottleMemory {
+		// No sample for this object yet and the provider was recently slow for
+		// another one: hedge the first window instead of paying a cold-start
+		// single-stream window during the same throttled session.
+		return foregroundSplitStreams
+	}
+	return 0
+}
+
+// foregroundSplitting reports whether speculative lookahead should stand down
+// because the foreground is using the object's connections for its own parts.
+func (r *Reader) foregroundSplitting(objectID string) bool {
+	return r.foregroundSplitRequested(objectID) > 0
+}
 
 // prefetchWindowChunks is the speculative window size for a planned read: the
 // driver's stage suggestion when it made one, otherwise the foreground window.
 func prefetchWindowChunks(plan ReadPlan, windowChunks int) int {
+	if plan.PrefetchDepth <= 0 {
+		return 0
+	}
 	if plan.PrefetchChunks > 0 {
 		return plan.PrefetchChunks
 	}
 	return windowChunks
-}
-
-// firstPrefetchChunks sizes the offset-zero warm-up window. A consumption-credit
-// plan starts at its seed, so the warm-up cannot admit a full stage window
-// ahead of the controller; every other plan keeps its stage window.
-func firstPrefetchChunks(plan ReadPlan, windowChunks int) int {
-	if plan.usesConsumptionCredit() {
-		return max(1, int(plan.seedBytes()/ChunkSize))
-	}
-	return prefetchWindowChunks(plan, windowChunks)
-}
-
-// schedulePrefetch advances a known session's bounded lookahead; callers
-// without session identity keep one bounded scheduling burst. consumed is the
-// caller's successful delivery and is the only input that may grow the
-// session's forward budget.
-func (r *Reader) schedulePrefetch(ctx context.Context, entry drive.Entry, endChunk int64, windowChunks int, sequential bool, plan ReadPlan, consumed deliveredRange) {
-	plan = r.sessionPlan(ctx, windowChunks, sequential, plan)
-	if r.updateSessionPrefetch(ctx, entry, endChunk+1, plan, consumed, true) {
-		return
-	}
-	for i := 0; i < plan.PrefetchDepth; i++ {
-		r.prefetchWindow(ctx, entry, endChunk+1+int64(i*plan.PrefetchChunks), plan.PrefetchChunks)
-	}
-}
-
-// sessionPlan resolves the stage a session will execute. It is shared by prefetch
-// admission and by delivery accounting so both see the same plan.
-func (r *Reader) sessionPlan(ctx context.Context, windowChunks int, sequential bool, plan ReadPlan) ReadPlan {
-	stage := plan.Stage
-	if sequential {
-		stage = StageSequential
-	}
-	if stage != plan.Stage {
-		return r.resolvePlan(ctx, windowChunks, stage)
-	}
-	return plan
-}
-
-// creditSessionDelivery records one successful delivery with the session's
-// forward budget without admitting a window. Credit is adaptive-only state and
-// needs an established session; a read that never starts one is a no-op.
-func (r *Reader) creditSessionDelivery(ctx context.Context, entry drive.Entry, cursor int64, sequential bool, windowChunks int, plan ReadPlan, consumed deliveredRange) {
-	if consumed.size <= 0 || !plan.usesConsumptionCredit() {
-		return
-	}
-	r.updateSessionPrefetch(ctx, entry, cursor, r.sessionPlan(ctx, windowChunks, sequential, plan), consumed, false)
-}
-
-func (r *Reader) PrefetchAdjacentChunks(ctx context.Context, entry drive.Entry, endChunk int64, windowChunks int, sequential bool) {
-	r.prefetchAdjacentChunks(ctx, entry, endChunk, windowChunks, sequential, 0)
-}
-
-// prefetchAdjacentChunks issues the legacy lookahead: windows the size of the
-// foreground window, or the bounded prefetch slots when the foreground reads
-// one chunk at a time. windows > 0 replaces only the count, so an explicit
-// stage depth applies without also requiring an explicit prefetch window.
-func (r *Reader) prefetchAdjacentChunks(ctx context.Context, entry drive.Entry, endChunk int64, windowChunks int, sequential bool, windows int) {
-	if windowChunks <= 0 {
-		return
-	}
-	prefetchChunks := windowChunks
-	if windowChunks == 1 {
-		// Keep the foreground miss to one chunk for TTFB, then fill the
-		// bounded prefetch slots so sequential FUSE reads pipeline remote GETs.
-		if windows <= 0 {
-			windows = r.state.adaptivePrefetchLimit(sequential)
-		}
-		if sequential {
-			prefetchChunks = SequentialPrefetchChunks
-		}
-	}
-	if windows <= 0 {
-		// A window wider than one chunk keeps the single lookahead window the
-		// legacy rule opens for it.
-		windows = 1
-	}
-	for i := 0; i < windows; i++ {
-		startIndex := endChunk + 1 + int64(i*prefetchChunks)
-		r.prefetchWindow(ctx, entry, startIndex, prefetchChunks)
-	}
 }
 
 func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex int64, count int) *windowLoad {
@@ -1076,8 +1403,8 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 	}
 	maxEndIndex := plannedEndIndex
 	if !bounded {
-		// One-shot and ReadStream callers retain their merged window size.
-		// Only the session controller owns a consumption-bounded horizon.
+		// One-shot and ReadStream callers retain their merged window size;
+		// the scheduler's bounded path already derives its span from the plan.
 		maxEndIndex = startIndex + int64(count) - 1
 	}
 	endIndex := startIndex
@@ -1114,8 +1441,9 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 	prefetchCtx = WithPrefetchRead(prefetchCtx)
 
 	hint, _ := AccessHintFromContext(ctx)
+	prefetchPlan, _ := readPlanFromContext(ctx)
 	trace := r.newReadTrace(prefetchCtx, entry)
-	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: 1, prefetch: true, progressive: entry.Size > 0, trace: trace, createdAt: time.Now(), done: make(chan struct{}), cancel: func() { cancelCause(drive.ReadSuperseded) }, sessionID: hint.SessionID}
+	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: 1, prefetch: true, progressive: entry.Size > 0, trace: trace, createdAt: time.Now(), done: make(chan struct{}), cancel: func() { cancelCause(drive.ReadSuperseded) }, sessionID: hint.SessionID, intent: prefetchPlan.Intent}
 	load.chunks = make([]windowChunk, int(endIndex-startIndex+1))
 	for i := range load.chunks {
 		load.chunks[i].ready = make(chan struct{})
@@ -1139,9 +1467,9 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 		}
 	})
 
-	scope.jobs.Add(1)
+	scope.beginJob()
 	go func() {
-		defer scope.jobs.Done()
+		defer scope.endJob()
 		defer job.Close()
 		defer releaseScope()
 		defer stopScope()
@@ -1168,13 +1496,28 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 			close(load.done)
 			r.state.releasePrefetch()
 			cancel()
+			job.Close()
 		}()
 		// Speculative range admission is atomic and never waits for capacity.
 		prefetchCtx = drive.WithReadTrace(prefetchCtx, trace)
 		prefetchCtx = r.withReadFaults(prefetchCtx)
+		// The window is executed through the same streaming FetchStream path
+		// the foreground single-stream window uses; the job's admission is
+		// reused by the Range inside it, so no second permit is taken.
+		var ctxErr error
+		if prefetchCtx, ctxErr = job.Context(prefetchCtx); ctxErr != nil {
+			load.err = ctxErr
+			return
+		}
 		backend := r.newBackend()
 		load.data = make(map[int64][]byte, len(load.chunks))
-		load.err = job.RunChunks(prefetchCtx, func(offset int64, data []byte) {
+		load.err = r.source.FetchStream(prefetchCtx, entry, drive.RangePlan{
+			Offset:      startIndex * ChunkSize,
+			Size:        (endIndex - startIndex + 1) * ChunkSize,
+			Timeouts:    fetchTimeoutsFromContext(ctx),
+			Priority:    PriorityLow,
+			Speculative: true,
+		}, func(offset int64, data []byte) {
 			index := offset / ChunkSize
 			backend.StoreChunk(prefetchCtx, backend.CacheKey(entry), entry, index, data)
 			load.data[index] = data
@@ -1215,31 +1558,4 @@ func (r *Reader) withReadFaults(ctx context.Context) context.Context {
 	return drive.WithReadBodyTransform(ctx, func(ctx context.Context, e drive.Entry, offset, size int64, rc io.ReadCloser) (io.ReadCloser, error) {
 		return applyReadFault(ctx, r.faults, e, offset, size, rc)
 	})
-}
-
-type windowBypassKey struct{}
-type windowBypass struct{ loads sync.Map }
-
-func withWindowBypass(ctx context.Context) context.Context {
-	if ctx.Value(windowBypassKey{}) != nil {
-		return ctx
-	}
-	return context.WithValue(ctx, windowBypassKey{}, &windowBypass{})
-}
-func windowBypassed(ctx context.Context, load *windowLoad) bool {
-	b, _ := ctx.Value(windowBypassKey{}).(*windowBypass)
-	if b == nil {
-		return false
-	}
-	_, ok := b.loads.Load(load)
-	return ok
-}
-func (r *Reader) bypassPrefetch(ctx context.Context, load *windowLoad) {
-	if b, _ := ctx.Value(windowBypassKey{}).(*windowBypass); b != nil {
-		b.loads.Store(load, struct{}{})
-	}
-	hint, _ := AccessHintFromContext(ctx)
-	if r.state.abandonWindow(load, hint.SessionID, false) && load.cancel != nil {
-		load.cancel()
-	}
 }

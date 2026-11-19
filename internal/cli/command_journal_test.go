@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -40,8 +41,25 @@ func TestPrintPendingVerboseIncludesDebugState(t *testing.T) {
 	}
 }
 
+// waitPendingEmpty waits for the upload engine to drain. Both build paths
+// return a *vfs.VFS or *vfs.Namespace, which expose the event-driven drain
+// primitive, so the engine broadcasts every transition the answer depends on
+// instead of the caller polling for it.
 func waitPendingEmpty(t *testing.T, fs builtFS) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if waiter, ok := fs.(vfs.UploadIdleWaiter); ok {
+		if err := waiter.WaitUploadsIdle(ctx); err != nil {
+			t.Fatalf("pending uploads did not drain: %v (pending=%+v)", err, cliruntime.PendingFiles(fs))
+		}
+		if active := activeUploadCount(fs); active != 0 {
+			t.Fatalf("active uploads still reported after the engine drained: %d", active)
+		}
+		return
+	}
+	// Compatibility fallback for a builtFS that does not expose the drain
+	// primitive (no build path does today).
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(cliruntime.PendingFiles(fs)) == 0 && activeUploadCount(fs) == 0 {

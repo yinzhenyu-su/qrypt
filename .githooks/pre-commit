@@ -17,6 +17,9 @@ if [ -n "$unformatted" ]; then
   exit 1
 fi
 
+echo "== pre-commit: machine-specific paths =="
+scripts/ci/check-paths.sh --tree
+
 echo "== pre-commit: go vet =="
 go vet ./...
 

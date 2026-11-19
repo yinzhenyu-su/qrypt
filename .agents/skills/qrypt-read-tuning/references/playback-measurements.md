@@ -153,9 +153,10 @@ Retain debug `[READ]` logs in the private test runtime. The in-memory diagnostic
 ring can evict initial events under tiny FUSE reads. Correlate operation, file,
 session, target chunk, window range and time:
 
-`read_access` → `wait_window_begin` → `wait_window_done` or
-`wait_window_bypass` → `fetch_window`. Registration joins use
-`wait_window_load_*`. A later `prefetch_window` completes the network window.
+`read_access` → `wait_window_begin` → `wait_window_done`; a window that finishes
+without the target block is a miss and the read issues its own `fetch_window`.
+Registration joins use `wait_window_load_*`. A later `prefetch_window` completes
+the network window.
 
 Check these explanations in order:
 
@@ -168,18 +169,15 @@ Check these explanations in order:
    target position. Receiving the first block does not make a distant target
    ready. Ordinary Fetch validates a whole window; progressive speculative
    loads publish complete authenticated blocks, with final EOF/Close checks.
-4. Did the delay align with `prefetchWaitBudget` (3 s of target inactivity)?
-   The old fixed elapsed-time rule discarded progressing slow blocks. Current
-   lookup/registration joins renew only for new plaintext inside the target
-   block of a known-size single-stream progressive load. Unknown-size buffered
-   fallback keeps the fixed wait budget. Prefix/tail traffic and replay
-   do not renew it; shared total and caller deadlines still apply. A repeated
-   local takeover interval is not a fixed CDN first-byte delay. Correlate the
-   target offset, partial body bytes and takeover counts before changing timeouts.
-   Use a paced nonuniform body exceeding 3 s per block to verify both joins,
-   plus no-progress, distant target, replay, caller and total-deadline controls.
-5. Did takeover refetch received bytes, or did retries request only the missing
-   suffix? Count canceled work as traffic; keep authentication, response-length
+4. There is no foreground give-up timer: a joined window is waited on until its
+   target block is published, the fetch's own idle/total deadline fails it, or
+   the caller cancels. A window that finishes without the block is a miss and
+   the read fetches its own small range; nothing is re-requested mid-flight.
+   Correlate the target offset with body progress and the fetch timeouts before
+   blaming a local wait. Use a paced nonuniform body to verify the join, plus
+   caller-deadline and no-progress controls.
+5. Did a retry request only the missing suffix, or did it refetch received
+   bytes? Count canceled work as traffic; keep authentication, response-length
    validation, total deadlines and bounded retry limits intact.
 
 Executor `body_bytes` counts wrapped plaintext, including cancellations/retries;
@@ -224,16 +222,16 @@ does not prove that every window's traffic was recorded. Per-session attribution
 requires every caller delivery to match a traced read carrying a session identity; interval
 coverage of 100% is not evidence, because two sessions reading the same range
 cover it while only one of them was logged. When that evidence is missing,
-`per_session_gap` says so and the report falls back to global delivery. Never publish the raw report.
+`per_session_gap` says so and the report falls back to global delivery. Never publish the raw report. Its summary classifies window rows by stall kind (provider TTFB, slow body, local wait, retry, no body) and lists the slowest rows.
 
-For a playback session, the session budget is the thing under test, not a
-timeout: `prefetch_credit` events must show `seed` first and `grow` only after
-delivery, `budget_bytes` must stay at or below `stage_ceiling_bytes`, and a seek,
-idle retirement or lowered ceiling must reset it. Credit is a byte count, not a
-request count: the same range read in one call or in several smaller calls must
-reach the same `budget_bytes`. A `fixed` stage policy, an
-unknown-size object, a hintless caller or `ReadStream` never ramps, so their
-amplification and request shape should be compared on the original rules.
+For a playback session, the executed pipeline shape is the thing under test:
+`prefetch_window_chunks` (`W`) and `prefetch_depth` (`D`) must equal the resolved
+plan, the horizon must be consumed cursor + `W × D` chunks clamped at EOF, and
+no `prefetch_credit`/`budget_bytes` events should appear because the fixed
+pipeline has no forward budget or credit controller. A seek, stage change or
+idle retirement starts a fresh session; consumption alone advances the cursor.
+An unknown-size object, a hintless caller or `ReadStream` keeps bounded batch
+scheduling, so compare their amplification and request shape on those rules.
 
 `actual_in_flight` is per trace/window. Four simultaneous one-stream lookaheads
 can each report one; that is not source-wide concurrency one. Summed worker
@@ -245,12 +243,10 @@ shared-call timelines. `source_in_flight` includes admitted calls while opening
 and consuming a body; provider-private requests and unstarted reservations are
 excluded. Calls without a trace sink contribute to the count but emit no pair.
 `prefetch_plan` reports consumed `cursor_chunk`, exclusive `horizon_end_chunk`,
-contiguous in-memory `ready_end_chunk`, `pending_windows`, `fill_stop`, and
-source/object admitted counts, plus the session's dynamic plan beside the stage
-ceilings: `prefetch_mode`, `budget_bytes`, `credit_bytes`, `delivered_end`,
-`window_cap_bytes`, `depth_cap`, `stage_ceiling_bytes`. `prefetch_credit` records
-each budget transition with a constant `budget_change` reason. These are
-independently sampled, not an atomic snapshot. Completed-but-evicted markers are
+contiguous in-memory `ready_end_chunk`, `pending_windows`, `fill_stop`, source
+and object admitted counts, plus the fixed plan `prefetch_window_chunks` and
+`prefetch_depth`. These are independently
+sampled, not an atomic snapshot. Completed-but-evicted markers are
 not ready bytes. Inspect whether a slow target coincides with full active depth
 and body progress, or with no requests and delayed refill. A full paused horizon
 intentionally stops fetching.
@@ -306,25 +302,24 @@ checks separate from actual backend performance acceptance.
 
 ## Verify the sliding window, not just the knobs
 
-For known-size mounted reads with valid session/request IDs, inspect
-[the controller](../../../../pkg/vfs/read/prefetch_session.go),
-[the plan resolver](../../../../pkg/vfs/read/plan.go) and actual ranges. The plan
-keeps the stage's `Wcap`/`Dcap` ceilings; the session executes a forward budget
-`H` that starts at `min(Hcap, Wcap, 1 MiB)` and doubles only after a full budget
-of new delivered bytes. The horizon is consumption cursor + `H` in chunks,
-clamped to EOF, and each fill admits `min(Wcap, H)`-sized windows up to
-`min(Dcap, ceil(H/W))` of them. Ready and in-flight data occupy it; completion
-may fill holes but cannot advance the cursor. A fixed stage policy executes its
-window and depth literally, with no credit.
+For known-size mounted reads, inspect
+[the read-driven lookahead](../../../../pkg/vfs/read/prefetch.go) and
+[the plan resolver](../../../../pkg/vfs/read/plan.go) and actual ranges. The
+resolved `ReadPlan` is the whole rule: a positive `PrefetchDepth` resolves
+`W = PrefetchWindowBytes` (or the read window when zero) and `D = max(1,
+min(PrefetchDepth, AdaptiveDepth))`; there is no mode enum to decode. Each read
+schedules a fixed horizon of `W × D` chunks past its consumed cursor, clamped to
+EOF, admitting contiguous `W`-sized windows from the cursor and skipping ready,
+cached and in-flight blocks up to `D` active windows. There is no worker, no
+per-handle cursor and no budget/credit state to reset: the next read re-derives
+the horizon from its own cursor, so a paused file stops growing it.
 
-Verify completion refill without another foreground read, consumption refill,
-nearest-hole ordering, and notification after capacity is released by direct or
-other-session work. Distant tails are batched against the current budget; cursor
-holes and EOF do not wait for a batch. A full paused horizon should stop
-downloading and avoid busy waits. Failures, hot-cache eviction and late
-completions must not cause endless refill, and none of them may grant credit.
-Check that a seek, idle retirement or lowered ceiling resets or clamps `H` before
-blaming a backend for a large short-load tail.
+Verify that lookahead starts from each read's own cursor, skips already
+published blocks, respects the in-flight depth gate and stays bounded at EOF.
+Cursor holes are filled immediately; a full horizon should stop admitting work
+without busy waits. A failed window must wait for the next read rather than
+retrying autonomously. Check that a seek, stage change or handle release retires
+the matching windows before blaming a backend for a large short-load tail.
 
 Many `read_access` discontinuities and `prefetch_cancel_reason=seek` events
 during nominally contiguous user reads can indicate classification failure.

@@ -30,7 +30,7 @@ func (p *CachePolicy) Admit(ctx context.Context, entry drive.Entry, cacheKey str
 	if p.hot != nil {
 		p.hot.putHotChunk(cacheKey, index, chunk)
 	}
-	if plan, ok := readPlanFromContext(ctx); ok && !plan.CacheWrites {
+	if plan, ok := readPlanFromContext(ctx); ok && !plan.cacheWrites() {
 		return
 	}
 	if p.durable != nil {

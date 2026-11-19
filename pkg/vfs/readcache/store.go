@@ -67,6 +67,7 @@ func (c *Store) GetChunk(fid string, index int64, access Access) ([]byte, bool, 
 		return nil, false, err
 	}
 	c.touchReadChunk(fc, index, info, access)
+	c.touchActivity(fid)
 	c.AddHit()
 	return data, true, nil
 }
@@ -103,6 +104,7 @@ func (c *Store) getChunkRange(fid string, index, start, size int64, includeChunk
 		return nil, nil, false, nil
 	}
 	if start >= info.size {
+		c.touchActivity(fid)
 		c.AddHit()
 		return nil, nil, true, nil
 	}
@@ -159,6 +161,7 @@ func (c *Store) getChunkRange(fid string, index, start, size int64, includeChunk
 		return nil, nil, false, nil
 	}
 	c.touchReadChunk(fc, index, info, access)
+	c.touchActivity(fid)
 	c.AddHit()
 	return data, chunk, true, nil
 }
@@ -204,6 +207,7 @@ func (c *Store) dropReadChunkIndex(fid string, index int64) {
 			delete(sh.chunks, fid)
 		}
 		sh.mu.Unlock()
+		c.forgetActivity(fid)
 	}
 	c.scheduleReadIndexSave()
 }
@@ -254,7 +258,7 @@ func (c *Store) putChunk(fid string, fileSize, index int64, data []byte, access 
 		size:     int64(len(data)),
 		accessAt: time.Now(),
 		admitRun: access.Run,
-		state:    stateUnproven,
+		state:    stateProbationary,
 	}
 	fc.mu.Unlock()
 	delta := int64(len(data))
@@ -262,6 +266,7 @@ func (c *Store) putChunk(fid string, fileSize, index int64, data []byte, access 
 		delta -= old.size
 	}
 	c.readBytes.Add(delta)
+	c.touchActivity(fid)
 	c.addPut()
 	c.evictIfNeeded()
 	return nil
@@ -393,6 +398,7 @@ func (c *Store) replaceFileChunks(fid string, fileSize int64, chunks map[int64]c
 	return files
 }
 func (c *Store) InvalidateFile(fid string) {
+	c.forgetActivity(fid)
 	sh := c.shardFor(fid)
 	sh.mu.Lock()
 	fc := sh.chunks[fid]
@@ -555,7 +561,7 @@ func (c *Store) loadReadIndex() error {
 				continue
 			}
 			// admitRun and state are deliberately left at their zero values:
-			// chunks read back from disk start unproven and are promoted by the
+			// chunks read back from disk start probationary and are protected by the
 			// first read run that comes back for them, so the persisted index
 			// never has to carry replacement state.
 			fc.chunks[chunkIndex] = chunkInfo{
@@ -875,7 +881,7 @@ func (c *Store) writeReadCacheChunk(f *os.File, path string, write readCacheWrit
 		size:     int64(len(write.data)),
 		accessAt: time.Now(),
 		admitRun: write.access.Run,
-		state:    stateUnproven,
+		state:    stateProbationary,
 	}
 	fc.mu.Unlock()
 	delta := int64(len(write.data))
@@ -883,6 +889,7 @@ func (c *Store) writeReadCacheChunk(f *os.File, path string, write readCacheWrit
 		delta -= old.size
 	}
 	c.readBytes.Add(delta)
+	c.touchActivity(write.fid)
 	c.addPut()
 	return nil
 }
@@ -927,6 +934,9 @@ func (c *Store) ClearReadCache() error {
 		sh.mu.Unlock()
 	}
 	c.readBytes.Store(0)
+	c.activityMu.Lock()
+	c.activity = nil
+	c.activityMu.Unlock()
 	c.stats.evicted.Add(removed)
 
 	readingDir := c.dir

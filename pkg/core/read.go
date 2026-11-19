@@ -18,7 +18,6 @@ type ReadIntent = vfs.ReadIntent
 const (
 	ReadIntentInteractive = vfs.ReadIntentInteractive
 	ReadIntentBulk        = vfs.ReadIntentBulk
-	ReadIntentProbe       = vfs.ReadIntentProbe
 )
 
 var WithReadIntent = vfs.WithReadIntent

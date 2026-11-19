@@ -56,13 +56,13 @@ func blockEveryRange(release <-chan struct{}) func(int64, int64) (<-chan struct{
 
 func waitFilePermitsReleased(t *testing.T, r *stagedReader) {
 	t.Helper()
-	key := r.host.entry.ID
-	deadline := time.Now().Add(2 * time.Second)
-	for r.state.scheduler.PerFileInUse(key) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("file permits still held: %d", r.state.scheduler.PerFileInUse(key))
-		}
-		time.Sleep(time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := r.reader.Quiesce(ctx); err != nil {
+		t.Fatalf("quiesce after reads: %v", err)
+	}
+	if got := r.state.scheduler.PerFileInUse(r.host.entry.ID); got != 0 {
+		t.Fatalf("file permits still held after quiesce: %d", got)
 	}
 }
 
@@ -71,12 +71,27 @@ func runConcurrentReads(t *testing.T, budget int) (maxActive int) {
 	r := newStagedReaderWithProfile(t, 16<<20, budgetProfile(budget))
 	release := make(chan struct{})
 	var once sync.Once
-	r.host.gateFn = blockEveryRange(release)
+	gated := blockEveryRange(release)
+	started := make(chan struct{}, budget)
+	r.host.gateFn = func(offset, size int64) (<-chan struct{}, bool) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		return gated(offset, size)
+	}
 
 	first := r.goRead(sessionContext(1, 1), 4<<20, ChunkSize)
 	second := r.goRead(sessionContext(2, 1), 8<<20, ChunkSize)
-	// Give both reads time to reach the permit or the provider.
-	time.Sleep(150 * time.Millisecond)
+	// Wait until each read the budget admits reaches the gated provider, so the
+	// measurement below covers exactly the ranges allowed in flight at once.
+	for i := 0; i < budget; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d of %d foreground ranges reached the provider", i, budget)
+		}
+	}
 	maxActive = r.host.maxConcurrent()
 	once.Do(func() { close(release) })
 	for _, done := range []<-chan asyncRead{first, second} {
@@ -197,7 +212,7 @@ func TestPrefetchUsesAdmissionPermits(t *testing.T) {
 func TestFileBudgetBoundsParallelSubRanges(t *testing.T) {
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 4
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	profile.MaxInFlight = 2
 	r := newStagedReaderWithProfile(t, 16<<20, profile)
 	ctx := WithoutReadPrefetch(WithReadIntent(sessionContext(1, 1), ReadIntentBulk))

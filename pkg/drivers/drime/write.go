@@ -131,7 +131,7 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	if entry.IsDir && body.Marked == 0 {
 		// One observation showed a directory delete succeeding without marking
 		// while a child was still settling. Re-check and retry once.
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(removeSettleDelay)
 		if children, err := d.listChildren(ctx, entry.ParentID); err == nil {
 			for _, child := range children {
 				if child.ID == entry.ID {
@@ -219,7 +219,7 @@ func (d *Driver) getEntry(ctx context.Context, id, parentID string) (drive.Entry
 func (d *Driver) waitForChildren(ctx context.Context, dirID string, want int) {
 	const timeout = 5 * time.Second
 	deadline := time.Now().Add(timeout)
-	backoff := 150 * time.Millisecond
+	backoff := childSettleBackoff
 	for {
 		if count, err := d.listChildren(ctx, dirID); err == nil && len(count) >= want {
 			return

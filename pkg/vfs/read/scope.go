@@ -3,6 +3,7 @@ package read
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 type readScopeKey struct {
@@ -13,14 +14,36 @@ type readScopeKey struct {
 // ReadScope owns the lifetime of speculative prefetch for one file/session.
 // Foreground reads never use it; they keep their caller context.
 type ReadScope struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	refs     int
-	jobs     sync.WaitGroup
-	mu       sync.Mutex
-	reason   string
-	prefetch *prefetchSession
+	ctx    context.Context
+	cancel context.CancelFunc
+	refs   int
+	jobs   sync.WaitGroup
+	mu     sync.Mutex
+	reason string
+	// busy counts speculative jobs in flight for this scope. It lets Quiesce
+	// report when no lookahead work is outstanding without waiting on a
+	// WaitGroup that a later Acquire may add to.
+	busy atomic.Int32
+	// onChange wakes Quiesce waiters when the last job finishes.
+	onChange func()
 }
+
+// beginJob registers one speculative job with the scope.
+func (s *ReadScope) beginJob() {
+	s.jobs.Add(1)
+	s.busy.Add(1)
+}
+
+// endJob retires one speculative job and wakes quiesce waiters on the last.
+func (s *ReadScope) endJob() {
+	if s.busy.Add(-1) == 0 && s.onChange != nil {
+		s.onChange()
+	}
+	s.jobs.Done()
+}
+
+// idle reports whether no speculative job is running in this scope.
+func (s *ReadScope) idle() bool { return s.busy.Load() == 0 }
 
 func (s *ReadScope) setReason(reason string) {
 	s.mu.Lock()
@@ -43,6 +66,23 @@ type ScopeRegistry struct {
 	byCache   map[string]map[readScopeKey]struct{}
 	bySession map[uint64]map[readScopeKey]struct{}
 	closed    bool
+	// onChange wakes Quiesce waiters when a scope's job count changes.
+	onChange func()
+}
+
+// idle reports whether every registered scope has retired its speculative jobs.
+func (r *ScopeRegistry) idle() bool {
+	if r == nil {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, scope := range r.scopes {
+		if !scope.idle() {
+			return false
+		}
+	}
+	return true
 }
 
 func newScopeRegistry() *ScopeRegistry {
@@ -64,12 +104,12 @@ func (r *ScopeRegistry) Acquire(ctx context.Context, cacheKey string) (*ReadScop
 		r.mu.Unlock()
 		scopeCtx, cancel := context.WithCancel(context.Background())
 		cancel()
-		return &ReadScope{ctx: scopeCtx, cancel: cancel}, func() {}
+		return &ReadScope{ctx: scopeCtx, cancel: cancel, onChange: r.onChange}, func() {}
 	}
 	scope := r.scopes[key]
 	if scope == nil {
 		scopeCtx, cancel := context.WithCancel(context.Background())
-		scope = &ReadScope{ctx: scopeCtx, cancel: cancel}
+		scope = &ReadScope{ctx: scopeCtx, cancel: cancel, onChange: r.onChange}
 		r.scopes[key] = scope
 		if cacheKey != "" {
 			addScopeIndex(r.byCache, cacheKey, key)
@@ -166,22 +206,18 @@ func (r *ScopeRegistry) Cancel(ctx context.Context, cacheKey, reason string) {
 	}
 }
 
-// cancelController applies a per-read gate to autonomous session scheduling.
-// A one-shot caller disabling new prefetch can still consume an existing load.
+// cancelController stops speculative work for the read's file/session when the
+// caller disables lookahead or asks for a concurrent pass. Scopes exist only
+// for speculative windows, so an existing scope is always cancelable here.
 func (r *ScopeRegistry) cancelController(ctx context.Context, cacheKey string) {
 	hint, _ := AccessHintFromContext(ctx)
 	key := readScopeKey{cacheKey: cacheKey, sessionID: hint.SessionID}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if scope := r.scopes[key]; scope != nil {
-		scope.mu.Lock()
-		active := scope.prefetch != nil
-		scope.mu.Unlock()
-		if active {
-			scope.setReason("prefetch_disabled")
-			scope.cancel()
-			r.removeLocked(key)
-		}
+		scope.setReason("prefetch_disabled")
+		scope.cancel()
+		r.removeLocked(key)
 	}
 }
 

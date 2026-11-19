@@ -165,7 +165,7 @@ func TestSourceCloseClosesOutstandingBodies(t *testing.T) {
 	}
 }
 func TestFixedSplitCeilingIsIndependentOfWorkers(t *testing.T) {
-	layout := partitionRange(7, 24<<20, 3, SplitPolicy{PartBytes: 4 << 20})
+	layout := explicitRangeLayout(7, 24<<20, 3, 4<<20)
 	spans := make([]readRange, layout.count())
 	for i := range spans {
 		spans[i] = layout.at(int64(i))
@@ -302,8 +302,8 @@ func TestPendingReadCancellationAndSourceClose(t *testing.T) {
 	}
 	job.Close()
 	job.Close()
-	if _, err := job.Run(context.Background()); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("closed job ran: %v", err)
+	if _, err := job.Context(context.Background()); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("closed job handed out a context: %v", err)
 	}
 	gate := make(chan struct{})
 	d.ReadBehavior.GateFunc = func(int64, int64) <-chan struct{} { return gate }
@@ -311,8 +311,14 @@ func TestPendingReadCancellationAndSourceClose(t *testing.T) {
 	if job == nil {
 		t.Fatal("unstarted job retained admission")
 	}
+	jobCtx, err := job.Context(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
-	go func() { _, err := job.Run(context.Background()); done <- err }()
+	go func() {
+		done <- s.FetchStream(jobCtx, e, p, func(int64, []byte) {})
+	}()
 	waitForReadActive(t, d.FakeDriver, 1)
 	job.Close()
 	select {
@@ -333,7 +339,7 @@ func TestPendingReadCancellationAndSourceClose(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := job.Run(context.Background()); err == nil {
+	if _, closeErr := job.Context(context.Background()); closeErr == nil {
 		t.Fatal("source close left pending work runnable")
 	}
 	if s.scheduler.PerFileInUse(e.ID) != 0 {
@@ -360,7 +366,7 @@ func TestSourceFixedPartQueueCoversMoreTasksThanWorkers(t *testing.T) {
 	done := make(chan outcome, 1)
 	trace := &ReadTrace{}
 	go func() {
-		b, err := s.Fetch(WithReadTrace(context.Background(), trace), e, RangePlan{Size: int64(len(data)), Streams: 3, Split: SplitPolicy{PartBytes: 4 << 20}})
+		b, err := s.Fetch(WithReadTrace(context.Background(), trace), e, RangePlan{Size: int64(len(data)), Workers: 3, Part: 4 << 20})
 		done <- outcome{b, err}
 	}()
 	waitForReadActive(t, d.FakeDriver, 3)
@@ -390,7 +396,7 @@ func TestSourceFixedPartQueueCoversMoreTasksThanWorkers(t *testing.T) {
 	if active := d.ReadStats().MaxConcurrent; active > 3 {
 		t.Fatalf("active=%d want <=3", active)
 	}
-	layout := partitionRange(0, MaxReadWindowBytes, 3, SplitPolicy{PartBytes: 1})
+	layout := explicitRangeLayout(0, MaxReadWindowBytes, 3, 1)
 	if layout.count() != MaxReadWindowBytes || layout.workers != 3 {
 		t.Fatalf("lazy layout=%+v", layout)
 	}
@@ -400,8 +406,8 @@ func TestSourceRejectsInvalidPlansBeforeAdmission(t *testing.T) {
 	s := newPolicySource(t, []byte("data"), 1)
 	e := Entry{ID: "0/file.bin", Size: 4}
 	for _, plan := range []RangePlan{
-		{Size: 1, Split: SplitPolicy{PartBytes: 1<<63 - 1}},
-		{Size: 1, Split: SplitPolicy{MinParallelBytes: MaxReadWindowBytes + 1}},
+		{Size: 1, Part: 1<<63 - 1},
+		{Size: 1, Part: -1},
 		{Size: 1, Streams: 33},
 		{Offset: -1, Size: 1},
 		{Offset: 1<<63 - 1, Size: 1},

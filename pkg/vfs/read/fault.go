@@ -19,19 +19,6 @@ type ReadFaultInjector interface {
 	ConsumeReadFault(id string)
 }
 
-type prefetchReadContextKey struct{}
-
-// WithPrefetchRead marks a background prefetch read so foreground-only fault
-// rules skip it.
-func WithPrefetchRead(ctx context.Context) context.Context {
-	return context.WithValue(ctx, prefetchReadContextKey{}, true)
-}
-
-func isPrefetchRead(ctx context.Context) bool {
-	value, _ := ctx.Value(prefetchReadContextKey{}).(bool)
-	return value
-}
-
 // applyReadFault injects the matched fault into a driver range read. It runs
 // below the shared window fetch, so the injected stall/truncate/status is
 // handled by the same timeout, replay, and backoff paths as a real provider.
@@ -67,6 +54,15 @@ func applyReadFault(ctx context.Context, faults ReadFaultInjector, entry drive.E
 			Status: status,
 			Err:    fmt.Errorf("injected read fault: status %d", status),
 		}
+	case faultinject.ReadFaultRate:
+		return &rateReadCloser{
+			ctx:     ctx,
+			inner:   body,
+			faults:  faults,
+			faultID: fault.ID,
+			rate:    fault.RateBytesPerSec,
+			start:   time.Now(),
+		}, nil
 	case faultinject.ReadFaultStall, faultinject.ReadFaultTruncate:
 		return &faultReadCloser{
 			ctx:        ctx,
@@ -123,6 +119,47 @@ func (f *faultReadCloser) Read(p []byte) (int, error) {
 
 func (f *faultReadCloser) Close() error {
 	return f.inner.Close()
+}
+
+// rateReadCloser paces a provider body at a fixed byte rate. Bytes are read
+// from the inner body and then delayed so the consumer observes a throttled
+// connection, which is what a per-connection CDN limit looks like to the shared
+// read layer. The rule is consumed on the first delivered read so a body that
+// is closed before any byte cannot swallow a rule.
+type rateReadCloser struct {
+	ctx      context.Context
+	inner    io.ReadCloser
+	faults   ReadFaultInjector
+	faultID  string
+	rate     int64
+	start    time.Time
+	read     int64
+	consumed bool
+}
+
+func (r *rateReadCloser) Read(p []byte) (int, error) {
+	n, err := r.inner.Read(p)
+	if n > 0 {
+		r.read += int64(n)
+		if !r.consumed {
+			r.consumed = true
+			r.faults.ConsumeReadFault(r.faultID)
+			logging.L.Debugf("[READFAULT] fire kind=rate rate=%dB/s", r.rate)
+		}
+		if r.rate > 0 {
+			want := time.Duration(float64(r.read) / float64(r.rate) * float64(time.Second))
+			if elapsed := time.Since(r.start); want > elapsed {
+				if sleepErr := sleepContext(r.ctx, want-elapsed); sleepErr != nil {
+					return n, sleepErr
+				}
+			}
+		}
+	}
+	return n, err
+}
+
+func (r *rateReadCloser) Close() error {
+	return r.inner.Close()
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

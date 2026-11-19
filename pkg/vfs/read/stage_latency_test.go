@@ -60,6 +60,19 @@ type stagedHost struct {
 	// plan is the last read plan carried into a driver Range, so tests can
 	// assert the resolved stage without reaching into the reader.
 	plan ReadPlan
+	// changed wakes waiters after a call is recorded or finishes. Tests wait on
+	// it instead of polling so async prefetch/session work resolves as soon as
+	// it happens; the buffer keeps a signal from being lost between a failed
+	// condition check and the select.
+	changed chan struct{}
+}
+
+// signalChanged wakes a waiter without blocking when no one is listening.
+func (h *stagedHost) signalChanged() {
+	select {
+	case h.changed <- struct{}{}:
+	default:
+	}
 }
 
 func (h *stagedHost) Resolve(context.Context, string) (drive.Entry, error) { return h.entry, nil }
@@ -91,11 +104,13 @@ func (h *stagedHost) DriverRead(ctx context.Context, _ drive.Entry, offset, size
 		h.maxActive = h.active
 	}
 	h.mu.Unlock()
+	h.signalChanged()
 
 	done := func() {
 		h.mu.Lock()
 		h.active--
 		h.mu.Unlock()
+		h.signalChanged()
 	}
 	if release != nil {
 		select {
@@ -140,6 +155,7 @@ func (h *stagedHost) markCallError(index int, err error) {
 		h.calls[index].Err = err
 	}
 	h.mu.Unlock()
+	h.signalChanged()
 }
 
 func (h *stagedHost) callCount() int {
@@ -196,29 +212,31 @@ func (h *stagedHost) rangesOverlapping(start, end int64) []stagedCall {
 // synchronously after the foreground read returns.
 func (h *stagedHost) waitRangeSize(t *testing.T, size int64) stagedCall {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for {
 		for _, call := range h.recorded() {
 			if call.Size == size {
 				return call
 			}
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-h.changed:
+		case <-deadline:
 			t.Fatalf("no %d-byte lookahead Range issued: %+v", size, h.recorded())
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
 // waitCall blocks until at least n Range requests have been issued.
 func (h *stagedHost) waitCall(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for h.callCount() < n {
-		if time.Now().After(deadline) {
+		select {
+		case <-h.changed:
+		case <-deadline:
 			t.Fatalf("driver ranges = %d, want at least %d", h.callCount(), n)
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -228,10 +246,21 @@ type stagedReader struct {
 	host   *stagedHost
 }
 
+// stagedPattern is tiled into fixture buffers. A tiled pattern keeps fixture
+// construction cheap under the race detector; the bytes only have to be
+// deterministic for the bytes served by stagedHost to match the fixture.
+var stagedPattern = func() []byte {
+	p := make([]byte, 4096)
+	for i := range p {
+		p[i] = byte(i*7 + i/251)
+	}
+	return p
+}()
+
 func stagedContent(size int) []byte {
 	data := make([]byte, size)
-	for i := range data {
-		data[i] = byte(i*7 + i/251)
+	for off := 0; off < size; off += len(stagedPattern) {
+		copy(data[off:], stagedPattern)
 	}
 	return data
 }
@@ -247,6 +276,7 @@ func newStagedReaderWithProfile(t *testing.T, size int, profile drive.ReadPolicy
 		entry:    drive.Entry{ID: "0/file.bin", Name: "file.bin", Size: int64(size), ModTime: time.Unix(1700000000, 0)},
 		data:     stagedContent(size),
 		cacheKey: "cache",
+		changed:  make(chan struct{}, 1),
 	}
 	state := NewState(nil)
 	reader := newTestReader(testReaderDeps{Host: host, State: state, Profile: profile})
@@ -310,34 +340,30 @@ func TestStageUnalignedWindowNeverReadsPastRequest(t *testing.T) {
 	}
 }
 
-func TestStageSequentialReadPrefetchesOneLargeWindow(t *testing.T) {
+// A confirmed sequential pass uses the adaptive plan's fixed pipeline: one
+// foreground-sized window per active slot, all within W×D chunks of the cursor.
+// The old credit controller widened one window toward 8 MiB instead; that rule
+// is gone, so continuous reads must never issue a window wider than one chunk.
+func TestStageSequentialReadPipelinesLookahead(t *testing.T) {
 	size := 64 << 20
 	r := newStagedReader(t, size)
-	// An adaptive pass starts from a small seed and widens only as the caller
-	// consumes bytes. Reaching the stage's 8 MiB window and 32 MiB horizon
-	// takes 1/2/4/8/16 MiB of successive consumption (§ design 2), so this
-	// continuous pass reads until a wide window must appear: the ramp length,
-	// not a policy constant, decides how many reads it needs. A recorded call
-	// stays visible once issued, so a short poll per read catches the wide
-	// window; the final waitRangeSize is the fallback if the ramp outruns it.
-	want := int64(SequentialPrefetchChunks) * ChunkSize
-	for chunk := int64(0); chunk < 128; chunk++ {
+	var prefetched int
+	for chunk := int64(0); chunk < 64; chunk++ {
 		r.read(t, sessionContext(1, uint64(chunk+1)), chunk*ChunkSize, ChunkSize)
-		for deadline := time.Now().Add(2 * time.Millisecond); ; {
-			for _, call := range r.host.recorded() {
-				if call.Prefetch && call.Size == want {
-					return
-				}
+		for _, call := range r.host.recorded() {
+			if !call.Prefetch {
+				continue
 			}
-			if time.Now().After(deadline) {
-				break
+			prefetched++
+			if call.Size > ChunkSize {
+				t.Fatalf("sequential lookahead widened past one chunk: %+v", call)
 			}
-			time.Sleep(time.Millisecond)
 		}
 	}
-	r.host.waitRangeSize(t, want)
+	if prefetched == 0 {
+		t.Fatal("confirmed sequential reads issued no lookahead")
+	}
 }
-
 func TestStagePrefetchDisabledIssuesOnlyTheTarget(t *testing.T) {
 	r := newStagedReader(t, 8<<20)
 	ctx := WithoutReadPrefetch(sessionContext(1, 1))
@@ -417,7 +443,7 @@ func TestStageSessionReleaseCancelsOnlyItsPrefetch(t *testing.T) {
 	// closed, so only cancellation can release the blocked Range.
 	r.state.cancelScopesBySession(1, "seek")
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for {
 		r.host.mu.Lock()
 		active := r.host.active
@@ -425,9 +451,10 @@ func TestStageSessionReleaseCancelsOnlyItsPrefetch(t *testing.T) {
 		if active == 0 {
 			return
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-r.host.changed:
+		case <-deadline:
 			t.Fatalf("gated prefetch still active (%d) after session cancel", active)
 		}
-		time.Sleep(time.Millisecond)
 	}
 }

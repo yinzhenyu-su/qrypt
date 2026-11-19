@@ -22,10 +22,24 @@ const (
 	minChunkSize     = int64(5 * 1024 * 1024)
 	maxUploadParts   = 10000
 	smallUploadLimit = int64(5 * 1024 * 1024)
-	maxListPages     = 200
 	sessionFile      = "drime_upload_sessions.json"
 	sessionMaxAge    = session.DefaultMaxAge
 	sessionExpire    = 4 * time.Hour
+)
+
+// Test and fasttest knobs. The production values below are what ships; tests
+// may lower the page cap, and the fasttest build may collapse settle waits that
+// only exist so a provider can catch up.
+var (
+	// maxListPages bounds a single listing so a misbehaving provider cannot
+	// loop forever.
+	maxListPages = 200
+	// removeSettleDelay is the single re-check pause after a directory delete
+	// reported success without marking while a child was still settling.
+	removeSettleDelay = 300 * time.Millisecond
+	// childSettleBackoff is the first backoff of the bounded children-settle
+	// poll after a directory rename/move.
+	childSettleBackoff = 150 * time.Millisecond
 )
 
 func drimeParams() []drive.ParamDef {

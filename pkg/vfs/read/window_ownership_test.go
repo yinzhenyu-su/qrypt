@@ -1,9 +1,27 @@
 package read
 
 import (
-	"context"
 	"testing"
+	"time"
 )
+
+func TestLookaheadAccountingSeparatesDedupeFromOverlap(t *testing.T) {
+	state := NewState(nil)
+	first := &windowLoad{fid: "file", start: 4, end: 6, done: make(chan struct{})}
+	state.beginWindowLoad("first", first)
+	if deduped, overlapping := state.LookaheadStats(); deduped != 0 || overlapping != 0 {
+		t.Fatalf("fresh state = (%d, %d), want zero", deduped, overlapping)
+	}
+	second := &windowLoad{fid: "file", start: 6, end: 8, done: make(chan struct{})}
+	state.beginWindowLoad("second", second)
+	if _, overlapping := state.LookaheadStats(); overlapping != 1 {
+		t.Fatalf("overlapping = %d, want the single shared chunk", overlapping)
+	}
+	state.noteDedupedLookahead(3)
+	if deduped, _ := state.LookaheadStats(); deduped != 3 {
+		t.Fatalf("deduped = %d, want 3", deduped)
+	}
+}
 
 func TestWindowTakeoverPreservesOtherSessionsAndDependents(t *testing.T) {
 	state := NewState(nil)
@@ -41,10 +59,28 @@ func TestWindowTakeoverPreservesOtherSessionsAndDependents(t *testing.T) {
 	if state.windows.loads["key"] != fresh {
 		t.Fatal("late old cleanup deleted the replacement")
 	}
-	ctx := withWindowBypass(context.Background())
-	r := &Reader{state: state}
-	r.bypassPrefetch(ctx, load)
-	if !windowBypassed(ctx, load) || windowBypassed(ctx, fresh) {
-		t.Fatal("bypass did not preserve load identity")
+}
+
+func TestAbandonedWindowWakesQuiesceWaiters(t *testing.T) {
+	state := NewState(nil)
+	defer state.Close()
+	load := &windowLoad{fid: "file", start: 0, end: 1, done: make(chan struct{})}
+	state.beginWindowLoad("key", load)
+	// Drain the registration signal so the assertion below only sees the
+	// abandonment notification.
+	select {
+	case <-state.quiesceChanged():
+	default:
+	}
+	if !state.abandonWindow(load, 0, true) {
+		t.Fatal("scope cleanup could not abandon an unshared window")
+	}
+	if !state.windowsEmpty() {
+		t.Fatal("abandoned window still registered")
+	}
+	select {
+	case <-state.quiesceChanged():
+	case <-time.After(time.Second):
+		t.Fatal("abandoning the last window did not wake quiesce waiters")
 	}
 }

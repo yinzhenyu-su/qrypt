@@ -37,6 +37,10 @@ const (
 // wall clock; the retry loop and its attempt counting stay exercised.
 var retrySleep = func(attempt int) { time.Sleep(util.ExponentialBackoff(attempt)) }
 
+// retryWait pauses between retryable download attempts. Like retrySleep it is a
+// variable so tests can collapse the backoff; production keeps WaitExponential.
+var retryWait = util.WaitExponential
+
 type client struct {
 	httpClient *http.Client
 	// downloadClient is swapped when a download connection goes bad; reads go

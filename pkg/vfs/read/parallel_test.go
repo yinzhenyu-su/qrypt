@@ -184,13 +184,13 @@ func TestFindWindowFiltersByShape(t *testing.T) {
 	state.windows.loads[WindowShapeKey(base, 1)] = single
 	state.windows.loads[WindowShapeKey(base, 4)] = parallel
 
-	if got := state.findWindow("fid", 1, 1, 0); got != single {
+	if got := state.findWindow("fid", 1, 1, 0, 0); got != single {
 		t.Fatalf("single-shape lookup = %p, want %p", got, single)
 	}
-	if got := state.findWindow("fid", 1, 4, 0); got != parallel {
+	if got := state.findWindow("fid", 1, 4, 0, 0); got != parallel {
 		t.Fatalf("parallel-shape lookup = %p, want %p", got, parallel)
 	}
-	if got := state.findWindow("fid", 1, 0, 0); got == nil {
+	if got := state.findWindow("fid", 1, 0, 0, 0); got == nil {
 		t.Fatal("any-shape lookup returned nil")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
@@ -22,7 +23,7 @@ const (
 	detachWaitDelay = 2 * time.Second
 )
 
-// mountProbeTimeout bounds the daemon liveness probe in probeMountDaemon. A FUSE
+// mountProbeTimeout bounds the daemon liveness probe in probeMountDaemonWithClock. A FUSE
 // server that does not answer within it is reported as alive, because
 // force-detaching a mount that is merely slow destroys a working mount, which is
 // worse than surfacing the failure the user already has.
@@ -53,9 +54,15 @@ type detachCandidate struct {
 // fails with macFUSE's "mount point ... is itself on a macFUSE volume").
 // detachStaleMountPoint is what both detection paths end in.
 func ensureMountPoint(mountPoint string) error {
+	return ensureMountPointWithClock(mountPoint, testclock.Real)
+}
+
+// ensureMountPointWithClock is ensureMountPoint with the time seam for the
+// daemon liveness probe (a dead-mount probe can wait out its timeout).
+func ensureMountPointWithClock(mountPoint string, clock testclock.Clock) error {
 	mkdirErr := os.MkdirAll(mountPoint, 0o755)
 	if mkdirErr == nil {
-		if root, dead := deadFuseMountRoot(mountPoint); dead {
+		if root, dead := deadFuseMountRootWithClock(mountPoint, clock); dead {
 			return detachStaleMountPoint(root, mountPoint)
 		}
 		return nil
@@ -85,11 +92,16 @@ func ensureMountPoint(mountPoint string) error {
 // for stat(2), so only an operation that actually reaches the daemon shows that
 // the connection is dead.
 func deadFuseMountRoot(path string) (string, bool) {
+	return deadFuseMountRootWithClock(path, testclock.Real)
+}
+
+// deadFuseMountRootWithClock is deadFuseMountRoot with the probe's time seam.
+func deadFuseMountRootWithClock(path string, clock testclock.Clock) (string, bool) {
 	root, ok := fuseMountRoot(path)
 	if !ok {
 		return "", false
 	}
-	if !isDeadDaemonError(probeMountDaemon(path)) {
+	if !isDeadDaemonError(probeMountDaemonWithClock(path, clock)) {
 		// The daemon answered (or did not answer in time): the mount is usable
 		// or at least not provably dead, so leave it alone.
 		return "", false
@@ -121,6 +133,23 @@ func detachRootFor(mountPoint string) string {
 	return mountPoint
 }
 
+// FuseMountRoot returns the root of the FUSE filesystem that covers path, when
+// the platform can report it. Cleanup code uses it to decide whether a
+// directory tree can be deleted: while a FUSE mount is still attached under it,
+// walking the tree with RemoveAll would delete entries inside the mounted
+// filesystem instead of the tree itself.
+func FuseMountRoot(path string) (string, bool) {
+	return fuseMountRoot(path)
+}
+
+// DetachMount force-detaches the FUSE mount that covers path. It covers both
+// the busy mount a normal unmount could not remove and the dead mount left by a
+// process that was killed before it could unmount: the same platform commands
+// clear either one.
+func DetachMount(path string) error {
+	return detachStaleMount(detachRootFor(path))
+}
+
 // fuseMountRoot returns the canonical root of the FUSE filesystem that contains
 // path when the platform can report it (macOS does; see statfsMount).
 func fuseMountRoot(path string) (string, bool) {
@@ -138,11 +167,12 @@ func isFuseFilesystem(fsType string) bool {
 	return strings.Contains(strings.ToLower(fsType), "fuse")
 }
 
-// probeMountDaemon asks the FUSE server behind dir whether it is still there and
-// returns the answer to that single question. nil means "not provably dead",
-// either because the daemon answered or because it did not answer in time.
-func probeMountDaemon(dir string) error {
-	return boundedProbe(mountProbeTimeout, func() error {
+// probeMountDaemonWithClock asks the FUSE server behind dir whether it is still
+// there and returns the answer to that single question. nil means "not provably
+// dead", either because the daemon answered or because it did not answer in
+// time.
+func probeMountDaemonWithClock(dir string, clock testclock.Clock) error {
+	return boundedProbe(clock, mountProbeTimeout, func() error {
 		// A directory read is the cheapest call that reaches the daemon instead
 		// of being served from the dead mount's cached root inode.
 		_, err := os.ReadDir(dir)
@@ -155,17 +185,15 @@ func probeMountDaemon(dir string) error {
 // conservative. The probe goroutine is left to finish on its own if it ever
 // does; the alternative is blocking a mount for as long as a hung FUSE daemon
 // takes to answer.
-func boundedProbe(timeout time.Duration, probe func() error) error {
+func boundedProbe(clock testclock.Clock, timeout time.Duration, probe func() error) error {
 	done := make(chan error, 1)
 	go func() {
 		done <- probe()
 	}()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
-	case <-timer.C:
+	case <-clock.After(timeout):
 		return nil
 	}
 }

@@ -19,24 +19,74 @@ preallocate tasks for the complete file.
 
 `ReadSource.Fetch` shares strict-range checks, timeout handling, truncated-body
 validation, status backoff and replay with `ReadSource.Read`. Replay happens
-before a successful window is delivered. Interactive/probe windows stay single
-stream; probe disables prefetch. FUSE sequential eligibility never rewrites the
-original intent or cache admission. Stream refill re-evaluates the access stage.
+before a successful window is delivered. Interactive windows stay single
+stream; lookahead size is fixed by the resolved W×D horizon. FUSE sequential
+eligibility never rewrites the original intent or cache admission. Stream
+refill re-evaluates the access stage.
+
+Sequential playback reads are small FUSE reads, so a caller window pins one
+single connection and only reaches the provider's per-stream rate. Quark
+therefore recommends a fixed 2 MiB sequential window (initial and seek keep the
+caller window): interleaved 32 MiB playback-shaped reads over the same CDN
+sustained about 4.5–5.7 MB/s with that window versus 2.2–3.4 MB/s with the
+caller window, while a 4 MiB window was slower. Lookahead follows the resolved depth (the
+driver's recommendation capped by the shared prefetch capacity), i.e. four
+2 MiB lookahead windows.
+
+Koofr shows the same shape for a different reason: fixed per-request latency
+dominates its per-connection rate (~2.5–4.2 MiB/s), so a caller window spends
+much of its time waiting for the next request. It recommends a 4 MiB sequential
+window (initial and seek keep the caller window) with the four default lookahead
+windows: interleaved playback-shaped 16 KiB reads of a 5 GB file sustained
+~3.7–4.8 MiB/s versus ~1.9 MiB/s with the caller window, and 32 MiB
+one-MiB-blocked reads improved from ~2.4 to ~4.3 MiB/s. Bulk downloads use
+16 MiB windows split across two 8 MiB parts: 32 MiB downloads of a real remote
+file took ~10.4-11.6 s versus ~11.8-12.6 s with 8 MiB single-stream windows
+(faster in 6 of 7 paired rounds), while raw driver concurrency alone did not
+raise the aggregate ceiling (~3.7-4.5 MiB/s at 1, 2 and 4 streams), so the
+split smooths per-connection stalls instead of adding bandwidth.
 
 The scheduler atomically acquires global and object capacity. Stable provider
 IDs identify objects inside one source; unknown IDs fail. Speculation uses
 `TryFetch`, which reserves complete admission without opening a connection.
-Call `Run`, `RunChunks` or `Close` on the returned pending read. `Run` retains
-whole-window validation. VFS lookahead uses `RunChunks`: each complete 512 KiB
-plaintext block becomes immutable and independently ready, while the same Range
-request continues through the tail. The final block waits for EOF, response
-length and successful Close. Encryption authenticates its own blocks before
-returning plaintext. An incomplete block is never published; already published
-prefix blocks remain valid if a later block fails. Idle/truncation retries resume
+`PendingRead.Context` hands that reservation to the read layer and `Close`
+releases it; there is no separate pending-read executor. `ReadSource.FetchStream`
+publishes each complete 512 KiB plaintext block as immutable and independently
+ready while the same Range request continues through the tail; VFS lookahead and
+foreground window fetches both use it. A speculative window runs through that
+same `FetchStream` call under the admission `TryFetch` reserved, so executing it
+does not take a second permit. A foreground read therefore returns its target block
+as soon as that block arrives, while the rest of the window keeps filling in the
+background for later reads; merging or joining the window later is unaffected.
+The final block waits for EOF, response length and successful Close. Encryption
+authenticates its own blocks before returning plaintext. An incomplete block is
+never published; already published prefix blocks remain valid if a later block
+fails. A split foreground window is partitioned by the read layer itself: it
+chooses the worker count and part size, hands each part to `ReadSource.FetchPart`
+as a single admitted Range, and reassembles the parts' blocks in order, so part
+scheduling and cancellation stay in one place. Bulk downloads and `ReadStream`
+windows go through the same scheduler: the read layer translates the driver's
+bulk split policy into an explicit worker count and part size
+(`drive.WindowPartLayout`), so `RangePlan` carries only offset, size, workers and
+part and the source never interprets policy. `ReadStream` has no separate read
+engine: each refill calls the ordinary `Read` for one plan window, marked silent
+so the stream still reports a single read record, and keeps one lifetime scope
+so the lookahead scheduled by a refill survives until the handle is closed. Idle/truncation retries resume
 at the first unpublished block, under the original total deadline and retry
 limits, without replaying delivered bytes. Unknown-size objects retain buffered
 whole-window validation. Closing a running job cancels it; admission is released
-after its fetch has stopped. Crypt is charged at the outer source and invokes its raw driver without a second source admission.
+after its fetch has stopped.
+
+Range attempts have a single owner: the drive layer replays idle stalls,
+truncated bodies and retryable status codes, resuming at the first unpublished
+block under one fetch deadline, so a slow provider never forces the read layer
+to re-fetch bytes it already holds. The read layer does not retry a finished
+window; it re-enters the window registry at most twice — once when the window it
+joined finished without its block (it then owns a window shaped for that read)
+and once to adopt an abandoned prefetch. Anything beyond that surfaces the
+original error to the caller.
+
+Crypt is charged at the outer source and invokes its raw driver without a second source admission.
 
 Local bandwidth wait is excluded from remote idle detection and included in the
 fetch total bound. Drivers can inspect explicit cancellation causes. Idle stalls
@@ -51,12 +101,35 @@ caller's context. Shared reads retain their idle and total budgets; raw
 `Driver.Read` callers own cancellation, deadlines and closing the returned body.
 Closing a body stops its cancellation watcher without canceling its caller.
 
+Throttled single connections: the adaptive foreground split is on by
+default. A foreground window whose provider transfer rate (measured over the
+body, so a slow request open does not arm it) falls below 350 KiB/s makes the
+next window four Range requests over parallel streams, split evenly by the read
+layer (a 512 KiB window becomes four 128 KiB parts, a 2 MiB window four 512 KiB
+parts), bounded by the same admission and pausing speculative lookahead; one
+window at 900 KiB/s or more reverts to a single stream. For five minutes after such a sample, a file
+with no measurements of its own starts split as well, so opening the next file
+during the same throttled session does not pay the cold-start window again.
+Measured on the quark CDN with each connection paced at 150 KiB/s, a
+playback-shaped read sustained about 0.11 MB/s single-stream versus about
+0.33 MB/s split, a 2 MiB cold read dropped from 18.8 s to 9.2 s, and the first
+byte of a newly opened file dropped from 4.2 s to 1.5 s. On a healthy link the
+split does not arm, so the default stays neutral. `QRYPT_FG_SPLIT=0` disables
+it for one run when triaging.
+
+The runtime snapshot also carries lookahead accounting
+(`deduped_lookahead_chunks` and `overlapping_window_chunks`) so a scheduling
+regression shows up in a counter instead of only in the wire bytes: the
+scheduler skips ranges an in-flight window already covers, and a window that
+still overlaps another one increments the second counter.
+
 With debug logging enabled, `[READ]` lines retain initial/seek completion,
 window fetches, prefetches and foreground wait transitions even after the
 diagnostic history wraps. Match the operation ID, window range and session to
-follow `read_access` → `wait_window_begin` → `wait_window_done` or
-`wait_window_bypass` → `fetch_window`. Coalescing during window registration uses
-the corresponding `wait_window_load_*` phases.
+follow `read_access` → `wait_window_begin` → `wait_window_done`; a joined
+window that finishes without the target block is a miss and the read continues
+with its own `fetch_window`. Coalescing during window registration uses the
+corresponding `wait_window_load_*` phases.
 
 `source_range_begin` / `source_range_end` identify each observed driver call by
 `source_id` and `range_id`. `source_in_flight` counts active calls across the source,
@@ -68,27 +141,24 @@ their scheduler admission through executor completion, so admitted and active
 counts can briefly differ. The executor exposes an optional `ReadTrace` sink;
 VFS installs the diagnostic adapter. A caller without a sink still contributes
 to the source count but emits no pair, so missing pairs leave its timeline
-incomplete.
+incomplete. The trace accumulates typed counters (queue/open/body/wait/close
+timings, byte and progress frontiers, executed window shape, retry and failure
+facts); the diagnostic key map is rendered only in `Snapshot`, so execution
+code never keys a map to report what it did.
 
-Debug-only `prefetch_plan` snapshots report the consumed `cursor_chunk`, exclusive
-`horizon_end_chunk`, and contiguous memory-resident `ready_end_chunk`. They also
-project the session's dynamic plan beside the stage ceilings: `prefetch_mode`,
-`budget_bytes` (`H`), `credit_bytes`, `delivered_end`, `window_cap_bytes`
-(`Wcap`), `depth_cap` (`Dcap`) and `stage_ceiling_bytes` (`Hcap`). A separate
-`prefetch_credit` event records each budget transition with a constant
-`budget_change` reason (`seed`, `grow`, `cap`, `fixed`, `disabled`), so a trace
-can be reconciled without per-chunk history. Both are read-only projections:
-they do not count completed-but-evicted markers as ready data, do not change the
-hot-cache LRU, and never drive scheduling.
-Chunk readiness may advance during collection. `fill_stop` distinguishes a full
-horizon, depth, tail batching, failure, cancellation and unsuccessful admission;
+Debug-only `prefetch_plan` snapshots report the consumed `cursor_chunk`, the
+exclusive `horizon_end_chunk` and the contiguous memory-resident
+`ready_end_chunk`. They also record the fixed plan numbers
+`prefetch_window_chunks` (`W`) and `prefetch_depth` (`D`), and `fill_stop`,
+which distinguishes a full horizon, the depth
+gate, an EOF tail, a failure, a cancellation and unsuccessful admission;
 `not_admitted` can also mean another request filled the hole during selection.
-`source_admitted`, `object_admitted`, `prefetch_in_use` and `pending_windows` expose
-shared capacity and session work. These independently sampled counters are not
-an atomic snapshot. Correlate them with source range pairs and foreground waits
-before attributing a gap to queueing or a policy limit.
+`source_admitted`, `object_admitted`, `prefetch_in_use` and `pending_windows`
+expose shared capacity and session work. These independently sampled counters
+are not an atomic snapshot. Correlate them with source range pairs and
+foreground waits before attributing a gap to queueing or a policy limit.
 
-Wait events include the speculative window's age, stream count, budget and a
+Wait events include the speculative window's age and stream count plus a
 live trace snapshot under `window_*`. `body_bytes` counts plaintext returned by
 the wrapped driver, including canceled and retried attempts; it is not wire
 traffic. `first_body_us` measures from driver open start to the first returned
@@ -104,94 +174,49 @@ The old `ReadProfile`, resolver helpers, `ReadStageSuggestion`,
 `ParallelReadLimiter`, and `ReadParallel` entry points have been removed. User
 configuration migration is documented in [读取配置迁移](../for-user/read-policy-migration.md).
 
-Foreground waiters subscribe to their target block, rather than to the end of a
-speculative window. Multiple sessions may consume the same immutable block.
-A small initial/seek read may reuse an already published block or wait for the
-head block of a larger progressive window; a target deep in an unfinished
-lookahead still loads its own small range. The three-second takeover budget is
-an inactivity budget for a known-size progressive target block: new plaintext
-bytes inside that block
-renew it. Replayed bytes and progress in an unrelated prefix or tail do not.
-Both cache lookup and window-registration joins use this rule. Opening with no
-body progress and a stalled target still trigger bounded takeover; a progressing
-slow block keeps its original request instead of discarding partial bytes. The
-original executor total deadline and caller cancellation remain in force.
-Unknown-size loads retain whole-window validation and the original fixed
-wait budget, since a received prefix cannot be delivered early.
-Progress is a single-stream receive frontier, never a substitute for validated
-block readiness. Block readiness does not complete the window or release its
-admission early.
+Foreground waiters subscribe to their target block, not to the end of a
+speculative window: a joined window that publishes the block satisfies them,
+and one that finishes without it is a miss, so the reader loads its own small
+range. There is no separate foreground give-up budget and no cancel-and-reGET of
+in-flight work; the fetch's own idle and total deadlines remain the only bounds,
+together with caller cancellation. A waiter only joins another session's
+lookahead window for its head block or an already published block: a stalled
+lookahead from an unrelated handle must not delay this caller. Unknown-size loads keep whole-window
+validation.
 
-`ReadPlan` records the stage's prefetch mode beside its numbers, so a later
-stage never infers the rule from a value's provenance. For an adaptive stage the
-plan carries the stage ceilings: `Wcap` (largest single window) and `Dcap`
-(largest number of active windows), with `Hcap = Wcap × Dcap`. `recommended`
-versus `effective` remains the policy-resolution layer; the session's forward
-budget is a third, per-pass layer resolved on every fill.
+`ReadPlan` records the two shapes a read can take. Streaming plans resolve the
+confirmed sequential window from `Interactive.WindowBytes` (initial and seek
+reads keep the caller window), and the lookahead as `W = PrefetchWindowBytes`
+(or the read window when unset) times `D = max(1, min(PrefetchDepth,
+AdaptiveDepth))`; bulk plans execute their window, worker, part and threshold
+numbers literally. The resolved numbers are the whole rule: there is no mode to
+decode and no forward byte budget or credit controller between them and the
+scheduler.
 
-Known-size mounted reads carrying current session/request IDs maintain a
-`prefetchSession` inside their existing `ReadScope`. An adaptive session does not
-execute the ceilings literally. It holds a forward byte budget `H` that starts at
-`min(Hcap, Wcap, 1 MiB)` in whole cache chunks and a credit of unique delivered
-bytes. Each successful caller delivery advances the pass's delivered end; only a
-new positive suffix of the bytes the mount layer actually returned adds credit.
-Crediting counts bytes, not admitted requests, so the same range split into
-several smaller reads earns exactly the credit of one larger read.
-A repeated page, a failed read, a stale request, a background fill, a predicted
-request end and another session's delivery never do. When credit reaches `H` and
-`H < Hcap`, that `H` is deducted and `H` doubles, at most once per consumed
-budget; one large delivery may cross several steps. Spent credit is never reused,
-and credit is discarded at the ceiling so a later stage upgrade cannot replay it.
+Lookahead is scheduled by reads, not by a per-handle worker: after a foreground
+read, `pkg/vfs/read/prefetch.go` refreshes a fixed `W × D` horizon ahead of the
+consumed cursor, admitting contiguous windows nearest the cursor first. Blocks
+already ready, cached or in flight are skipped, and scheduling stops at the
+depth gate or EOF. The in-flight window count, bounded by `D` and the global
+prefetch capacity, is the only state; there is no cursor bookkeeping, idle timer
+or completion ledger, so a paused file stops growing its horizon and a later
+read simply tops it up. Only foreground consumption advances the horizon.
 
-Each fill derives `W = min(Wcap, H)`, `D = min(Dcap, ceil(H/W))` and admits only
-inside `cursor + H`, clamped to EOF. Ready chunks, in-flight ranges and the
-offset-zero warm-up all occupy that boundary, so skipping a covered prefix cannot
-push a request past it. Both consumption and request completion fill holes
-nearest the cursor, and a completion does not advance the cursor or authorize
-downloading the rest of a paused file. The warm-up uses the seed size and counts
-as the session's first active window instead of admitting a full stage window
-before the controller knows the budget. A hintless or unknown-size caller never
-creates this controller, so it keeps bounded batch scheduling. A non-zero seek
-also keeps the existing confirmation gate: it opens no lookahead until the
-following read proves a contiguous run.
+Read state travels with one context value: `pkg/vfs/read/request.go` stores a
+single `readRequest` with the resolved plan, the granted stream count, the
+prefetch marker, the caller intent, the access hint, the cache run and the
+per-call timing. The `With*` helpers rewrite that one value copy-on-write, so a
+stage that re-resolves the plan cannot leave a stale plan, stream count or
+prefetch marker behind. Cross-package callers keep the same constructor names
+(`WithReadPlan`, `WithGrantedStreams`, `WithReadIntent`, `WithAccessHint`,
+`WithCacheAccess`, `WithPriority`, `WithPrefetchRead`, `WithoutReadPrefetch`).
+Fetch timeouts and the stream scope stay on separate keys because drivers and
+the scope registry consume them outside the read request.
 
-Known sessions tolerate a terminal overlap smaller than one cache chunk when
-the read end does not move backward. This preserves a confirmed forward run
-when FUSE repeats an aligned page at an unaligned caller-block boundary. A
-duplicate page does not advance the horizon. Backward ends, forward gaps,
-whole-chunk overlaps and unidentified callers keep the original seek rules.
-Distant tail fills wait until `min(W, half of the current horizon)` chunks fit.
-The threshold follows this pass's budget rather than the stage maximum, so a
-reduced budget never waits for a batch it cannot fill. Cursor holes and EOF are
-filled immediately. Completed range references are cleared when collecting
-pending work; ready data remains subject to the existing shared cache limits.
-A fixed plan executes its window and depth literally and never earns credit;
-disabled, probe, explicit bulk, unknown-size, sessionless and `ReadStream`
-callers keep their original paths.
-
-Admission remains nonblocking. `Scheduler.CapacityChanged` broadcasts releases
-from foreground, direct and speculative reads; subscribe before attempting a
-fill to avoid lost wakeups. A full, idle horizon stops listening for capacity
-changes. Fixed depth and global/object limits still cap requests, including
-lookahead already started before the session controller. The controller keeps
-only bounded completion markers, not another data buffer. Hot-cache eviction
-does not trigger speculative redownload; foreground misses retain normal fetch
-semantics. A failed fill waits for new consumption before starting another
-executor attempt, preserving bounded retry behavior.
-
-A real seek, a mode switch, an idle retirement and a lowered stage ceiling all
-reset or clamp the budget instead of carrying it forward: a new pass starts from
-the seed, and a lowering drops the accumulated credit and stops new admission
-while letting useful in-flight loads finish. Raising a stage ceiling never
-expands `H` on its own; only new consumption can. Seek, handle release,
-concurrent hints, disabled prefetch, invalidation and cache clearing retire the
-matching scheduling work; dependent foreground readers keep the existing
-cancellation protection. Stale completions cannot recreate retired sessions.
-Workers expire after 30 seconds without consumption, and eviction from the
-bounded access history also retires their scope. Unidentified callers,
-unknown-size objects and `ReadStream` with its own close scope retain bounded
-batch scheduling. The new state is a constant number of session fields: there is
-no second chunk cache and no per-file ledger. This change does not tune driver
+A seek, a stage change, handle release, invalidation and cache clearing retire
+the matching read scope; dependent foreground readers keep cancellation
+protection. There is no
+second chunk cache and no per-file ledger, and this change does not tune driver
 defaults or infer a physical bandwidth ceiling from a configured request cap.
 
 For a mounted same-FD workload, use
@@ -202,8 +227,13 @@ clear the test mount before the run; the runner never clears between reads or
 owns the mount lifecycle.
 
 Reconcile the result with the mount's read trace using
-[analyze-read-traffic.py](../../scripts/dev/analyze-read-traffic.py). It reports
-executor `body_bytes`, caller deliveries (total and unique), the delivered bytes
+[analyze-read-traffic.py](../../scripts/dev/analyze-read-traffic.py). It
+classifies each window row by the stall its timings show (provider TTFB, slow
+body, local wait, retry, no body) and lists the slowest rows, counts chunk
+coverage (distinct chunks versus visits, so a lookahead that re-admits a range
+another window already fetches shows up as duplicate visits and estimated
+redundant bytes), then reports executor `body_bytes`, caller deliveries (total
+and unique), the delivered bytes
 inside each window, shared bytes another session reused, real unused tails of
 completed windows, and an explicit unknown residual for canceled windows whose
 received bytes cannot be split between a useful prefix and a dead tail. A
@@ -242,3 +272,18 @@ call opens and closes. A suppressed trace reports global delivery only. The
 [measurement reference](../../.agents/skills/qrypt-read-tuning/references/playback-measurements.md)
 describes cache boundaries, interleaving and interpretation. Keep raw JSON and
 reports local.
+
+## Measured driver profiles
+
+Every non-default policy number is a measurement, not an opinion. The table
+records what was measured, on which provider state, and with which command; add
+a row when a driver policy changes.
+
+| Driver | Interactive window | Lookahead | Bulk shape | Measurement evidence |
+|---|---|---|---|---|
+| quark | sequential fixed 2 MiB (initial/seek caller) | four 2 MiB windows | 4 MiB window, 3 streams, 8 MiB parts, min parallel 4 MiB | 32 MiB playback-shaped reads: 2 MiB sequential window 1.55× the one-chunk caller window (4/4 rounds, median); bulk 4-way aggregate optimum from `probe bench read` |
+| koofr | sequential fixed 4 MiB (initial/seek caller) | four default lookahead windows | 16 MiB window, 2×8 MiB parts, min parallel 8 MiB | 32 MiB cold mounted reads: interactive 2.0–2.5× the caller window; bulk 16 MiB/2 parts ~8% faster and more stable than 8 MiB single-stream; raw ceiling 3.7–4.5 MB/s at 1–4 connections |
+| drime | sequential fixed 4 MiB (initial/seek caller) | four default lookahead windows (16 MiB horizon) | 16 MiB window, 2×8 MiB parts | 16 MiB playback-shaped reads: caller 512 KiB window ~1.75 MB/s, 4 MiB window ~3.8–5.4 MB/s (fresh session ~5.5–7.1 MB/s); tune sweep median 4 MiB 5.9 MB/s > 8 MiB 5.6 > 2 MiB 4.1; bulk 16 MiB/2 parts ~5.3 MB/s vs 8 MiB single-stream ~4.2 MB/s; raw driver concurrency 1→4 streams 6.4→13.0 MB/s |
+
+Re-measure with `probe tune read` (interactive window and depth, then bulk
+window and streams) on a read-only mount; it prints the TOML block above.

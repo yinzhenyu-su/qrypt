@@ -56,7 +56,7 @@ func newScenarioReader(t *testing.T, size int, behavior drive.ReadBehavior) (*Re
 	}
 	state := NewState(nil)
 	profile := drive.DefaultReadPolicy()
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	profile.Bulk.WindowBytes = 4 * ChunkSize
 	reader := newTestReader(testReaderDeps{
 		Host:    &scenarioHost{driver: driver, entry: entry, cacheKey: "cache"},
@@ -204,29 +204,34 @@ func TestScenarioFakeDriverPrefetchCancelsOnInvalidate(t *testing.T) {
 	r := newStagedReader(t, 8<<20)
 	release := make(chan struct{})
 	defer close(release)
+	// Every lookahead Range is gated, not only the first window: the lookahead
+	// pipeline admits several windows and a busy machine can cancel the first
+	// one before it reaches the driver, so pinning one offset would be racy.
 	r.host.gateFn = func(offset, size int64) (<-chan struct{}, bool) {
-		if offset == ChunkSize {
+		if offset >= ChunkSize {
 			return release, true
 		}
 		return nil, false
 	}
 	r.read(t, sessionContext(7, 1), 0, ChunkSize)
+	// Wait for the first lookahead Range to be in flight before invalidating.
 	r.host.waitCall(t, 2)
 
 	r.state.InvalidateFile("cache")
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for {
 		for _, call := range r.host.recorded() {
-			if call.Offset == ChunkSize && call.Err != nil {
+			if call.Prefetch && call.Err != nil {
 				if !errors.Is(call.Err, context.Canceled) {
 					t.Fatalf("lookahead canceled with %v", call.Err)
 				}
 				return
 			}
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-r.host.changed:
+		case <-deadline:
 			t.Fatal("invalidate did not cancel the prefetch body")
 		}
-		time.Sleep(time.Millisecond)
 	}
 }

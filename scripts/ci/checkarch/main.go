@@ -29,26 +29,28 @@ type listedPackage struct {
 
 var packagePolicy = map[string]map[string]bool{
 	"buildinfo":    {},
+	"clock":        {},
 	"config":       allow("crypt", "drive", "util"),
 	"contracttest": allow("drive", "vfs"),
 	"control":      allow("buildinfo", "contracttest", "drive", "logging", "share", "task", "util", "vfs"),
 	"core":         allow("config", "control", "crypt", "drive", "limits", "logging", "media", "share", "task", "util", "vfs"),
 	"crypt":        allow("drive"),
-	"drive":        allow("readbudget", "util"),
-	"drivers":      allow("drive", "logging", "util"),
+	"drive":        allow("clock", "readbudget", "util"),
+	"drivers":      allow("drive", "logging", "testsupport", "util"),
 	"install":      allow("util"),
 	"limits":       {},
 	"logging":      allow("util"),
 	"media":        allow("limits"),
 	"mobile":       allow("core", "drive", "drivers", "logging"),
-	"mount":        allow("drive", "logging", "vfs"),
+	"mount":        allow("clock", "drive", "logging", "vfs"),
 	"readbudget":   {},
 	"selfupdate":   {},
 	"share":        allow("drive", "task"),
 	"syncer":       allow("drive", "util", "vfs"),
 	"task":         allow("util"),
+	"testsupport":  allow("crypt", "drive"),
 	"util":         {},
-	"vfs":          allow("drive", "logging", "readbudget", "task", "util"),
+	"vfs":          allow("clock", "drive", "logging", "readbudget", "task", "util"),
 }
 
 func allow(names ...string) map[string]bool {

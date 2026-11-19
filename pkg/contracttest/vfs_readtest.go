@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,10 @@ import (
 )
 
 const (
+	// vfsReadChunkSize mirrors the read layer's publication chunk so probe
+	// windows express bytes while PlanOverride carries chunk counts.
+	vfsReadChunkSize = vfsread.ChunkSize
+
 	DefaultMountedReadTestSize       int64 = 256 << 20
 	DefaultMountedReadTestBlockSize  int64 = 1 << 20
 	MaxMountedReadTestSize           int64 = 2 << 30
@@ -55,14 +60,84 @@ type MountedReadTestResult struct {
 	Duration         string                   `json:"duration"`
 	DurationMS       int64                    `json:"duration_ms"`
 	RetryCommand     string                   `json:"retry_command,omitempty"`
+	// ResolvedPlan describes the shape the read layer resolves from the driver
+	// policy plus the measurement override. It is configuration, not observation:
+	// the executed_* fields still come from the metric events.
+	ResolvedPlan *MountedReadPlan `json:"resolved_plan,omitempty"`
+}
+
+// MountedReadPlan is the resolved read plan for the measured intent and stage.
+type MountedReadPlan struct {
+	Stage               string `json:"stage"`
+	Intent              string `json:"intent"`
+	WindowBytes         int64  `json:"window_bytes"`
+	MaxStreams          int    `json:"max_streams"`
+	PartBytes           int64  `json:"part_bytes,omitempty"`
+	MinParallelBytes    int64  `json:"min_parallel_bytes,omitempty"`
+	PrefetchWindowBytes int64  `json:"prefetch_window_bytes,omitempty"`
+	PrefetchDepth       int    `json:"prefetch_depth"`
+}
+
+// readPlanDescriber lets the probe describe the resolved plan without running a
+// read. Production readers never implement DebugPlan differently.
+type readPlanDescriber interface {
+	DebugReadPlan(stage vfsread.ReadStage, intent vfsread.ReadIntent, callerChunks int) vfsread.ReadPlan
+}
+
+func describeMountedReadPlan(fs vfs.FileSystem, pattern string, blockSize int64) *MountedReadPlan {
+	describer, ok := fs.(readPlanDescriber)
+	if !ok {
+		return nil
+	}
+	stage := vfsread.StageSequential
+	switch strings.ToLower(strings.TrimSpace(pattern)) {
+	case "seek":
+		stage = vfsread.StageSeek
+	}
+	callerChunks := 1
+	if blockSize > 0 {
+		callerChunks = int((blockSize + vfsReadChunkSize - 1) / vfsReadChunkSize)
+	}
+	plan := describer.DebugReadPlan(stage, vfsread.ReadIntentInteractive, callerChunks)
+	return &MountedReadPlan{
+		Stage:               readStageName(plan.Stage),
+		Intent:              "interactive",
+		WindowBytes:         int64(plan.WindowChunks) * vfsReadChunkSize,
+		MaxStreams:          plan.MaxStreams,
+		PartBytes:           plan.PartBytes,
+		MinParallelBytes:    plan.MinParallelBytes,
+		PrefetchWindowBytes: int64(plan.PrefetchChunks) * vfsReadChunkSize,
+		PrefetchDepth:       plan.PrefetchDepth,
+	}
+}
+
+func readStageName(stage vfsread.ReadStage) string {
+	switch stage {
+	case vfsread.StageInitial:
+		return "initial"
+	case vfsread.StageSeek:
+		return "seek"
+	case vfsread.StageSequential:
+		return "sequential"
+	default:
+		return "unknown"
+	}
 }
 
 // readPlanOverrider lets a read benchmark pin the stream count and window
 // size for the duration of one measurement. The VFS implements it behind
 // probe test read; production paths never set an override.
 type readPlanOverrider interface {
-	SetReadPlanOverride(mount string, maxStreams int, windowBytes int64, idle, total time.Duration) error
+	SetReadPlanOverride(mount string, override vfs.ReadPlanOverride) error
 	ClearReadPlanOverride()
+}
+
+// MountedReadTick is one elapsed second of a sustained read: the bytes the
+// mount delivered in that second and their implied rate.
+type MountedReadTick struct {
+	Second          int   `json:"second"`
+	Bytes           int64 `json:"bytes"`
+	RateBytesPerSec int64 `json:"rate_bytes_per_sec"`
 }
 
 type MountedReadMeasurement struct {
@@ -81,9 +156,32 @@ type MountedReadMeasurement struct {
 	CacheHits      int64              `json:"cache_hits"`
 	CacheMisses    int64              `json:"cache_misses"`
 	CacheHitRate   float64            `json:"cache_hit_rate"`
-	VFSReadCalls   int                `json:"vfs_read_calls"`
-	TraversedVFS   bool               `json:"traversed_vfs"`
-	OSCacheControl string             `json:"os_cache_control"`
+	WireBytes      int64              `json:"wire_bytes,omitempty"`
+	// WireBytesTrusted and AmplificationTrusted are false when the metric log was
+	// truncated: the totals then miss events and cannot be trusted.
+	WireBytesTrusted     bool    `json:"wire_bytes_trusted"`
+	Amplification        float64 `json:"amplification,omitempty"`
+	AmplificationTrusted bool    `json:"amplification_trusted"`
+	// Executed shape of the windows this sample triggered. The event log is
+	// rate limited, so these come from the same rows the sample's own reads
+	// produced and answer "did the override actually execute".
+	ExecutedStreams      int   `json:"executed_streams,omitempty"`
+	ExecutedWindowChunks int   `json:"executed_window_chunks,omitempty"`
+	ExecutedWindowBytes  int64 `json:"executed_window_bytes,omitempty"`
+	ExecutedPartBytes    int64 `json:"executed_part_bytes,omitempty"`
+	// ExecutedPrefetchWindows counts speculative prefetch windows the read
+	// triggered, so `probe verify read` can prove --prefetch-depth reached the
+	// scheduler instead of silently clamping it.
+	ExecutedPrefetchWindows int `json:"executed_prefetch_windows,omitempty"`
+	// HoldOpen reports that this sample reused one mounted handle instead of
+	// opening the file itself.
+	HoldOpen bool `json:"hold_open,omitempty"`
+	// Timeline breaks a sustained read into per-second delivered bytes so a
+	// rate drop is visible without another measurement.
+	Timeline       []MountedReadTick `json:"timeline,omitempty"`
+	VFSReadCalls   int               `json:"vfs_read_calls"`
+	TraversedVFS   bool              `json:"traversed_vfs"`
+	OSCacheControl string            `json:"os_cache_control"`
 	// TimedOut reports that the probe's own read-call timeout fired. The VFS
 	// fetch timeout normally produces an I/O error first.
 	TimedOut      bool  `json:"timed_out,omitempty"`
@@ -197,6 +295,9 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 			if req.Size != "" && ParseXferSize(req.Size) != size {
 				optionErr = fmt.Errorf("read test size %q does not match %s (%d bytes)", req.Size, existingPath, size)
 			}
+			if err := ensureRemoteSettled(fs, mount, existingPath); err != nil {
+				optionErr = err
+			}
 		}
 	}
 	if req.Size != "" && existingPath == "" && (size < 1 || size > MaxMountedReadTestSize) {
@@ -236,6 +337,8 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	if samples <= 0 {
 		samples = 1
 	}
+	freshOffsets := req.FreshOffsets
+	freshStep := int64(0)
 	if samples > MaxMountedReadTestSamples {
 		optionErr = fmt.Errorf("read test samples must be between 1 and %d", MaxMountedReadTestSamples)
 	}
@@ -321,6 +424,22 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	if startOffset+rangeLength > size {
 		optionErr = fmt.Errorf("read test offset+length exceeds file size %d", size)
 	}
+	if freshOffsets {
+		if existingPath == "" {
+			optionErr = fmt.Errorf("read test --fresh-offsets requires --path")
+		}
+		freshStep = rangeLength
+		if req.OffsetStep != "" {
+			if parsed := ParseXferSize(req.OffsetStep); parsed > 0 {
+				freshStep = parsed
+			} else {
+				optionErr = fmt.Errorf("read test offset step must be a positive byte count")
+			}
+		}
+		if last := startOffset + int64(max(samples, 1)-1)*freshStep + rangeLength; last > size {
+			optionErr = fmt.Errorf("fresh offsets exceed file size: last sample ends at %d, file is %d bytes", last, size)
+		}
+	}
 	if readPattern != "sequential" && (req.Offset != "" || req.Length != "") {
 		optionErr = fmt.Errorf("read test offset/length only apply to --pattern sequential")
 	}
@@ -332,7 +451,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		optionErr = fmt.Errorf("read test seek scenario must be isolated, prefetch, or concurrent")
 	}
 	if seekScenario != "isolated" {
-		minimumSize := int64(2*(seekWarmup+vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks))*vfsread.ChunkSize + seekSize
+		minimumSize := int64(2*(seekWarmup+vfsread.PrefetchLimit*2*vfsread.PrefetchChunks))*vfsread.ChunkSize + seekSize
 		if size < minimumSize {
 			optionErr = fmt.Errorf("read test file size must be at least %d bytes for %s seek scenario", minimumSize, seekScenario)
 		}
@@ -346,6 +465,18 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	}
 	if req.WindowBytes > 0 {
 		retryCommand += fmt.Sprintf(" --window %d", req.WindowBytes)
+	}
+	if req.PrefetchWindowBytes > 0 {
+		retryCommand += fmt.Sprintf(" --prefetch-window %d", req.PrefetchWindowBytes)
+	}
+	if req.PrefetchDepth != nil {
+		retryCommand += fmt.Sprintf(" --prefetch-depth %d", *req.PrefetchDepth)
+	}
+	if req.PartBytes != nil {
+		retryCommand += fmt.Sprintf(" --part-size %d", *req.PartBytes)
+	}
+	if req.MinParallelBytes != nil {
+		retryCommand += fmt.Sprintf(" --min-parallel %d", *req.MinParallelBytes)
 	}
 	if req.Offset != "" || req.Length != "" {
 		retryCommand += fmt.Sprintf(" --offset %s --length %s", req.Offset, req.Length)
@@ -388,25 +519,42 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		err = optionErr
 	}
 	step := fsStep("validate")
-	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "offset": startOffset, "length": rangeLength, "streams": req.Streams, "window_bytes": req.WindowBytes, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String(), "fetch_idle_timeout": fetchIdleTimeout.String(), "fetch_total_timeout": fetchTotalTimeout.String()}
+	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "offset": startOffset, "length": rangeLength, "streams": req.Streams, "window_bytes": req.WindowBytes, "prefetch_window_bytes": req.PrefetchWindowBytes, "prefetch_depth": req.PrefetchDepth, "part_bytes": req.PartBytes, "min_parallel_bytes": req.MinParallelBytes, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String(), "fetch_idle_timeout": fetchIdleTimeout.String(), "fetch_total_timeout": fetchTotalTimeout.String()}
 	step.finish(time.Now(), err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
 		return result
 	}
 
-	if req.Streams > 0 || req.WindowBytes > 0 || fetchIdleTimeout > 0 || fetchTotalTimeout > 0 {
+	shape := vfs.ReadPlanOverride{
+		MaxStreams:        req.Streams,
+		PartBytes:         req.PartBytes,
+		MinParallelBytes:  req.MinParallelBytes,
+		PrefetchDepth:     req.PrefetchDepth,
+		FetchIdleTimeout:  fetchIdleTimeout,
+		FetchTotalTimeout: fetchTotalTimeout,
+	}
+	if req.WindowBytes > 0 {
+		shape.WindowChunks = int((req.WindowBytes + vfsReadChunkSize - 1) / vfsReadChunkSize)
+	}
+	if req.PrefetchWindowBytes > 0 {
+		shape.PrefetchChunks = int((req.PrefetchWindowBytes + vfsReadChunkSize - 1) / vfsReadChunkSize)
+	}
+	if shape.MaxStreams > 0 || shape.WindowChunks > 0 || shape.PrefetchChunks > 0 || shape.PrefetchDepth != nil ||
+		shape.PartBytes != nil || shape.MinParallelBytes != nil || fetchIdleTimeout > 0 || fetchTotalTimeout > 0 {
 		overrider, ok := fs.(readPlanOverrider)
 		if !ok {
 			result.Steps = append(result.Steps, failedFSStep("read_override", fmt.Errorf("this filesystem does not support read plan overrides")))
 			return result
 		}
-		if err := overrider.SetReadPlanOverride(mount, req.Streams, req.WindowBytes, fetchIdleTimeout, fetchTotalTimeout); err != nil {
+		if err := overrider.SetReadPlanOverride(mount, shape); err != nil {
 			result.Steps = append(result.Steps, failedFSStep("read_override", err))
 			return result
 		}
 		defer overrider.ClearReadPlanOverride()
 	}
+
+	result.ResolvedPlan = describeMountedReadPlan(fs, readPattern, blockSize)
 
 	expectedHash := ""
 	if existingPath == "" {
@@ -435,6 +583,25 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		expectedHash = ""
 	}
 
+	// readOffset advances each sample so a fresh-offsets run never measures
+	// bytes an earlier sample already fetched.
+	readOffset := func(sample int) int64 {
+		if !freshOffsets || sample <= 1 {
+			return startOffset
+		}
+		return startOffset + int64(sample-1)*freshStep
+	}
+
+	var held *os.File
+	if req.HoldOpen {
+		held, err = os.Open(mountedFile)
+		if err != nil {
+			result.Steps = append(result.Steps, failedFSStep("hold_open", err))
+			return result
+		}
+		defer held.Close()
+	}
+
 	if readPattern == "sequential" || readPattern == "both" {
 		for sample := 1; sample <= samples; sample++ {
 			if cacheMode == "cold" || cacheMode == "both" {
@@ -442,27 +609,31 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 					result.Steps = append(result.Steps, failedFSStep("clear_read_cache", err))
 					return result
 				}
-				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, startOffset, rangeLength, "cold", sample)
+				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "cold", sample, held, req.Timeline)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
 				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
+				measureAmplification(&measurement, events)
+				measureExecutedShape(&measurement, events)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
 					readErr = fmt.Errorf("mounted read did not traverse qrypt; verify --mount-point")
 				}
+				measurement.WireBytesTrusted = !truncated
+				measurement.AmplificationTrusted = !truncated
 				result.Measurements = append(result.Measurements, measurement)
 				result.Steps = append(result.Steps, mountedReadStep(measurement, readErr))
 				if readErr != nil {
 					return result
 				}
-				if expectedHash == "" {
+				if !freshOffsets && expectedHash == "" {
 					expectedHash = measurement.ContentHash
 				}
 			}
 			if cacheMode == "warm" || cacheMode == "both" {
 				if cacheMode == "warm" {
-					prime, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, startOffset, rangeLength, "prime", sample)
+					prime, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "prime", sample, held, req.Timeline)
 					primeEvents, _ := mountedReadEvents(fs, mount, file, primeStarted)
 					if primeErr == nil && !mountedReadTraversed(mountedVFSReadCalls(primeEvents), prime.CacheHits, prime.CacheMisses) {
 						primeErr = fmt.Errorf("mounted read did not traverse qrypt; verify --mount-point")
@@ -475,21 +646,25 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 						expectedHash = prime.ContentHash
 					}
 				}
-				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, startOffset, rangeLength, "warm", sample)
+				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, readOffset(sample), rangeLength, "warm", sample, held, req.Timeline)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
 				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
+				measureAmplification(&measurement, events)
+				measureExecutedShape(&measurement, events)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
 					readErr = fmt.Errorf("mounted read did not traverse qrypt; verify --mount-point")
 				}
+				measurement.WireBytesTrusted = !truncated
+				measurement.AmplificationTrusted = !truncated
 				result.Measurements = append(result.Measurements, measurement)
 				result.Steps = append(result.Steps, mountedReadStep(measurement, readErr))
 				if readErr != nil {
 					return result
 				}
-				if expectedHash == "" {
+				if !freshOffsets && expectedHash == "" {
 					expectedHash = measurement.ContentHash
 				}
 			}
@@ -539,7 +714,34 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 			}
 		}
 	}
+	if req.RequireParallel {
+		step := fsStep("require_parallel")
+		observed := mountedReadMaxStreams(result.Measurements)
+		step.Input = map[string]any{"require_parallel": true, "observed_max_streams": observed}
+		step.finish(time.Now(), mountedReadParallelError(result.Measurements))
+		result.Steps = append(result.Steps, step)
+	}
 	return result
+}
+
+// mountedReadMaxStreams is the widest provider concurrency any measurement
+// executed.
+func mountedReadMaxStreams(measurements []MountedReadMeasurement) int {
+	observed := 0
+	for _, measurement := range measurements {
+		observed = max(observed, measurement.ExecutedStreams)
+	}
+	return observed
+}
+
+// mountedReadParallelError is the --require-parallel gate: a driver that
+// declares parallel_range must be shown executing more than one provider range
+// in flight, otherwise the declaration is documentation, not behaviour.
+func mountedReadParallelError(measurements []MountedReadMeasurement) error {
+	if mountedReadMaxStreams(measurements) > 1 {
+		return nil
+	}
+	return fmt.Errorf("requested parallel reads but every window executed single-stream: the declared parallel_range capability did not reach the provider, check the driver read policy, bulk streams, and max_in_flight")
 }
 
 func mountedTestPath(mountPoint, virtualPath string) (string, error) {
@@ -558,6 +760,46 @@ func mountedTestPath(mountPoint, virtualPath string) (string, error) {
 		return "", fmt.Errorf("mount point is not a directory: %s", abs)
 	}
 	return filepath.Join(abs, filepath.FromSlash(strings.TrimPrefix(virtualPath, "/"))), nil
+}
+
+// ensureRemoteSettled rejects a read target whose bytes may still be local.
+// A just-written file is served from upload staging until the upload drains,
+// so measuring it reports the local disk as if it were the provider. This is
+// the guard that catches the "fake 28 MB/s" mistake instead of a benchmark
+// that silently reports staging speed.
+func ensureRemoteSettled(fs any, mount, virtualPath string) error {
+	snapshotter, ok := fs.(vfsDebugSnapshotter)
+	if !ok {
+		return nil
+	}
+	target := cleanVirtualPath(virtualPath)
+	for _, mountState := range snapshotter.DebugSnapshot().Mounts {
+		if !debugMountNameMatches(mountState.Identity.Name, mount) {
+			continue
+		}
+		for _, pending := range mountState.PendingUploads() {
+			if cleanVirtualPath(pending.Path) == target {
+				return fmt.Errorf("read target %q still has a pending upload; its bytes may come from local staging — wait for the upload to drain or measure another file", virtualPath)
+			}
+		}
+		for _, upload := range mountState.ActiveUploads() {
+			if cleanVirtualPath(upload.Path) == target {
+				return fmt.Errorf("read target %q is still uploading (%d/%d bytes); measuring now would read local staging — wait for the upload to drain or measure another file", virtualPath, upload.BytesUploaded, upload.BytesTotal)
+			}
+		}
+	}
+	return nil
+}
+
+func cleanVirtualPath(virtualPath string) string {
+	cleaned := strings.TrimSpace(virtualPath)
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = "/" + cleaned
+	}
+	for len(cleaned) > 1 && strings.HasSuffix(cleaned, "/") {
+		cleaned = strings.TrimSuffix(cleaned, "/")
+	}
+	return cleaned
 }
 
 func createMountedReadFixture(ctx context.Context, fs vfs.FileSystem, file, dir, mount string, size int64) (string, error) {
@@ -623,18 +865,26 @@ func parseMountedReadOffset(raw string) (int64, error) {
 	return value, nil
 }
 
-func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, expectedHash string, blockSize, startOffset, length int64, mode string, sample int) (MountedReadMeasurement, time.Time, error) {
+func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, expectedHash string, blockSize, startOffset, length int64, mode string, sample int, hold *os.File, timeline bool) (MountedReadMeasurement, time.Time, error) {
 	measurement := MountedReadMeasurement{Mode: mode, Sample: sample, StartOffset: startOffset}
 	before := fsMountState(fs, mount)
 	started := time.Now()
-	file, err := os.Open(path)
-	measurement.OpenMicros = elapsedMicros(started)
-	if err != nil {
-		return measurement, started, err
+	file := hold
+	if file != nil {
+		measurement.HoldOpen = true
+	} else {
+		opened, err := os.Open(path)
+		measurement.OpenMicros = elapsedMicros(started)
+		if err != nil {
+			return measurement, started, err
+		}
+		defer opened.Close()
+		file = opened
 	}
-	defer file.Close()
 	measurement.OSCacheControl = prepareColdMountedRead(file)
-	if startOffset > 0 {
+	// A held handle stays where the previous sample stopped, so every sample
+	// repositions it; a freshly opened handle is already at zero.
+	if startOffset > 0 || hold != nil {
 		if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
 			return measurement, started, err
 		}
@@ -684,6 +934,9 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 			}
 			measurement.Bytes += int64(n)
 			measurement.ReadCalls++
+			if timeline {
+				measurement.Timeline = addMountedReadTick(measurement.Timeline, int(time.Since(started)/time.Second), int64(n))
+			}
 			windowBytes += int64(n)
 			_, _ = hash.Write(buf[:n])
 			if elapsed := time.Since(windowStarted); elapsed >= time.Second {
@@ -734,6 +987,22 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 		return measurement, started, fmt.Errorf("mounted read content hash mismatch")
 	}
 	return measurement, started, nil
+}
+
+// addMountedReadTick folds delivered bytes into the elapsed second they
+// landed in. Reads complete in time order, so only the last tick can absorb
+// more bytes; a full second with no read stays absent rather than zero.
+func addMountedReadTick(ticks []MountedReadTick, second int, bytes int64) []MountedReadTick {
+	if bytes <= 0 {
+		return ticks
+	}
+	if len(ticks) == 0 || ticks[len(ticks)-1].Second != second {
+		ticks = append(ticks, MountedReadTick{Second: second})
+	}
+	tick := &ticks[len(ticks)-1]
+	tick.Bytes += bytes
+	tick.RateBytesPerSec = tick.Bytes
+	return ticks
 }
 
 type mountedReadResult struct {
@@ -803,7 +1072,7 @@ func mountedSeekOffsets(fileSize, probeSize int64, count int) []int64 {
 }
 
 func mountedSeekWarmupOffsets(fileSize, targetOffset, targetSize int64, chunks int) (int64, int64) {
-	loadSpan := int64(chunks+vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks) * vfsread.ChunkSize
+	loadSpan := int64(chunks+vfsread.PrefetchLimit*2*vfsread.PrefetchChunks) * vfsread.ChunkSize
 	maxStart := fileSize - loadSpan
 	if maxStart <= 0 {
 		return 0, 0
@@ -1401,6 +1670,116 @@ func mountedReadEvents(fs vfs.FileSystem, mount, path string, since time.Time) (
 		}
 	}
 	return nil, false
+}
+
+// measureAmplification records how many provider bytes a mounted read pulled
+// against the bytes it delivered. Wire bytes come from the window events the
+// read layer reports; the delivered side is the measurement itself.
+func measureAmplification(measurement *MountedReadMeasurement, events []drive.MetricEvent) {
+	wire := mountedReadWireBytes(events)
+	if wire <= 0 {
+		return
+	}
+	measurement.WireBytes = wire
+	if measurement.Bytes > 0 {
+		measurement.Amplification = float64(wire) / float64(measurement.Bytes)
+	}
+}
+
+// measureExecutedShape records the widest window shape the sample executed.
+// A plan override that never reached the provider shows up as the old shape,
+// which a rate-limited event log alone cannot prove.
+func measureExecutedShape(measurement *MountedReadMeasurement, events []drive.MetricEvent) {
+	var windowBytes int64
+	for _, event := range events {
+		if event.Phase != "fetch_window" && event.Phase != "prefetch_window" {
+			continue
+		}
+		streams := metricExtraInt(event.Extra, "read_streams")
+		if streams == 0 {
+			streams = metricExtraInt(event.Extra, "granted_streams")
+		}
+		if streams > measurement.ExecutedStreams {
+			measurement.ExecutedStreams = streams
+		}
+		chunks := metricExtraInt(event.Extra, "window_chunks")
+		if chunks > measurement.ExecutedWindowChunks {
+			measurement.ExecutedWindowChunks = chunks
+		}
+		bytes := metricExtraInt64(event.Extra, "window_bytes")
+		if bytes == 0 {
+			bytes = metricExtraInt64(event.Extra, "requested")
+		}
+		if bytes > windowBytes {
+			windowBytes = bytes
+		}
+		if part := metricExtraInt64(event.Extra, "part_bytes"); part > 0 {
+			measurement.ExecutedPartBytes = part
+		}
+		if event.Phase == "prefetch_window" {
+			measurement.ExecutedPrefetchWindows++
+		}
+	}
+	measurement.ExecutedWindowBytes = windowBytes
+}
+
+func metricExtraInt(extra map[string]any, key string) int {
+	switch v := extra[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+func metricExtraInt64(extra map[string]any, key string) int64 {
+	switch v := extra[key].(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// mountedReadWireBytes sums provider body bytes across the window events of one
+// mounted read. Both fetch and speculative prefetch events count: prefetch
+// bytes are wire cost whether or not the read consumed them.
+func mountedReadWireBytes(events []drive.MetricEvent) int64 {
+	var total int64
+	for _, event := range events {
+		switch event.Phase {
+		case "fetch_window", "prefetch_window":
+		default:
+			continue
+		}
+		switch v := event.Extra["body_bytes"].(type) {
+		case int64:
+			total += v
+		case int:
+			total += int64(v)
+		case float64:
+			total += int64(v)
+		case json.Number:
+			if n, err := v.Int64(); err == nil {
+				total += n
+			}
+		}
+	}
+	return total
 }
 
 func mountedVFSReadCalls(events []drive.MetricEvent) int {

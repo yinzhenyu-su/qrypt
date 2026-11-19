@@ -4,19 +4,21 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func TestVFSReadPlanOverrideAcceptsOnlyOwnMount(t *testing.T) {
 	t.Parallel()
 	fs, _, _ := newDebugReadFaultFixture(t)
 
-	if err := fs.SetReadPlanOverride("", 4, 8, 50*time.Millisecond, time.Second); err != nil {
+	if err := fs.SetReadPlanOverride("", vfs.ReadPlanOverride{MaxStreams: 4, WindowChunks: 8, FetchIdleTimeout: 50 * time.Millisecond, FetchTotalTimeout: time.Second}); err != nil {
 		t.Fatalf("SetReadPlanOverride for the only mount: %v", err)
 	}
-	if err := fs.SetReadPlanOverride("local", 2, 4, 0, 0); err != nil {
+	if err := fs.SetReadPlanOverride("local", vfs.ReadPlanOverride{MaxStreams: 2, WindowChunks: 4}); err != nil {
 		t.Fatalf("SetReadPlanOverride for the matching mount: %v", err)
 	}
-	if err := fs.SetReadPlanOverride("other", 2, 4, 0, 0); err == nil {
+	if err := fs.SetReadPlanOverride("other", vfs.ReadPlanOverride{MaxStreams: 2, WindowChunks: 4}); err == nil {
 		t.Fatal("expected an unknown mount to be rejected")
 	}
 	fs.ClearReadPlanOverride()
@@ -26,10 +28,10 @@ func TestNamespaceReadPlanOverrideRoutesToMount(t *testing.T) {
 	t.Parallel()
 	_, ns, _ := newDebugReadFaultFixture(t)
 
-	if err := ns.SetReadPlanOverride("local", 4, 8, 0, 0); err != nil {
+	if err := ns.SetReadPlanOverride("local", vfs.ReadPlanOverride{MaxStreams: 4, WindowChunks: 8}); err != nil {
 		t.Fatalf("SetReadPlanOverride: %v", err)
 	}
-	if err := ns.SetReadPlanOverride("missing", 4, 8, 0, 0); err == nil {
+	if err := ns.SetReadPlanOverride("missing", vfs.ReadPlanOverride{MaxStreams: 4, WindowChunks: 8}); err == nil {
 		t.Fatal("expected an unknown mount to be rejected")
 	}
 	ns.ClearReadPlanOverride()

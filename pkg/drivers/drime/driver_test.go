@@ -34,13 +34,23 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 	return false
 }
 
-func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
+func TestReadProfileWidensSequentialWindow(t *testing.T) {
 	d := New(Options{})
-	if got := d.ReadPolicy().Bulk.Streams; got != 1 {
-		t.Fatalf("BulkStreams = %d, want 1", got)
+	p := d.ReadPolicy()
+	if got, want := p.Interactive.WindowBytes, int64(4<<20); got != want {
+		t.Fatalf("InteractiveWindowBytes = %d, want %d", got, want)
+	}
+	if got, want := p.Interactive.PrefetchDepth, 4; got != want {
+		t.Fatalf("PrefetchDepth = %d, want %d", got, want)
+	}
+	if got, want := p.Bulk.WindowBytes, int64(16<<20); got != want {
+		t.Fatalf("BulkWindowBytes = %d, want %d", got, want)
+	}
+	if got, want := p.Bulk.Streams, 2; got != want {
+		t.Fatalf("BulkStreams = %d, want %d", got, want)
 	}
 	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
-		t.Fatal("parallel_range should stay declared for future tuning")
+		t.Fatal("parallel_range should stay declared for the split bulk window")
 	}
 }
 
@@ -596,6 +606,13 @@ func TestReadHasNoMetadataCall(t *testing.T) {
 }
 
 func TestClientErrorMappingAndLimiter(t *testing.T) {
+	// Collapse the retry backoff for every case: the 429 mapping below proves the
+	// status is retryable, and that must not cost the race build real exponential
+	// pauses.
+	oldWait := retryWait
+	retryWait = func(context.Context, int) error { return nil }
+	defer func() { retryWait = oldWait }()
+
 	f := newFakeProvider(t)
 	d := f.newDriver(t, Options{})
 	if err := d.Init(context.Background()); err != nil {
@@ -618,10 +635,7 @@ func TestClientErrorMappingAndLimiter(t *testing.T) {
 	}
 	delete(f.forceStatus, "/api/v1/drive/file-entries")
 
-	// Retryable 5xx is retried; collapse the backoff for the test.
-	oldWait := retryWait
-	retryWait = func(context.Context, int) error { return nil }
-	defer func() { retryWait = oldWait }()
+	// Retryable 5xx is retried.
 	f.forceStatus["/api/v1/drive/file-entries"] = 500
 	before := len(f.requestsFor("GET", "/api/v1/drive/file-entries"))
 	if _, err := d.List(context.Background(), ""); err == nil {

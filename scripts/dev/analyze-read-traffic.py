@@ -23,6 +23,13 @@ ratio:
    whether those bytes arrived, so they stay in ``unknown_residual_bytes``
    instead of being reported as waste.
 
+The report also classifies each window row by the stall its timings show
+(provider TTFB, slow body, local wait, retry, no body) and lists the slowest
+rows, so a run answers which layer was slow without rereading the trace.
+Chunk coverage counts distinct chunks against visits, so a scheduler that
+re-fetches ground another window already holds shows up as duplicate visits
+instead of hiding inside the body-byte total.
+
 Raw traces and reports stay outside Git; only sanitized summaries belong in a
 change's validation record. ``--self-check`` builds a small synthetic sample in
 a temporary directory (never in the repository) and asserts the reconciliation.
@@ -36,6 +43,11 @@ from pathlib import Path
 
 
 MIB = 1 << 20
+
+# Executor windows are chunk aligned in the read path, so coverage can be
+# counted at this granularity to spot a lookahead that re-fetches ground
+# another window is already transferring.
+READ_CHUNK_SIZE = 512 * 1024
 
 LINE_PATTERN = re.compile(
     r"^\[(?P<timestamp>[^\]]+)\]\s+(?P<level>\w+)\s+\[(?P<scope>[^\]]+)\]\s+(?P<body>.*)$"
@@ -57,6 +69,14 @@ SOURCE_BEGIN_PHASE = "source_range_begin"
 SOURCE_END_PHASE = "source_range_end"
 SOURCE_PHASES = (SOURCE_BEGIN_PHASE, SOURCE_END_PHASE)
 READ_PHASE = "read"
+
+# Stall classification thresholds for the window summary. A body below this
+# rate while taking at least half a second is a throttled connection; an open
+# above a second with a healthy body is provider TTFB, not local slowness.
+SLOW_BODY_RATE_KIB_S = 350
+SLOW_BODY_US = 500_000
+PROVIDER_TTFB_US = 1_000_000
+LOCAL_QUEUE_US = 100_000
 
 
 def parse_timestamp(value):
@@ -82,6 +102,16 @@ def extra_block(body):
     text = body[start + len(marker):]
     end = text.rfind("]")
     return text[:end] if end >= 0 else text
+
+
+def as_int(value, default=0):
+    """Return an integer extra value, or the default when it is absent."""
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def parse_extra(text):
@@ -195,6 +225,15 @@ def parse_trace(path):
                     "progress_end": extra.get("progress_end"),
                     "read_streams": streams if isinstance(streams, int) else 1,
                     "actual_in_flight": in_flight if isinstance(in_flight, int) else 0,
+                    "open_us": as_int(extra.get("open_us")),
+                    "body_us": as_int(extra.get("body_us")),
+                    "first_body_us": as_int(extra.get("first_body_us")),
+                    "local_wait_us": as_int(extra.get("local_wait_us")),
+                    "queue_us": as_int(extra.get("queue_us")),
+                    "fetch_attempts": max(1, as_int(extra.get("fetch_attempts", 1))),
+                    "read_intent": str(extra.get("read_intent", "")),
+                    "window_chunks": as_int(extra.get("window_chunks")),
+                    "part_bytes": as_int(extra.get("part_bytes")),
                 }
             )
     return {
@@ -531,6 +570,131 @@ def session_attribution(trace_deliveries, deliveries):
     return per_session, None
 
 
+def coverage_summary(windows):
+    """Count chunk coverage so duplicate lookahead work is visible.
+
+    ``distinct_chunks`` stays flat while ``chunk_visits`` grows when the
+    scheduler admits a range another window already fetches. Windows are chunk
+    aligned in the read path, so ``redundant_bytes_estimate`` is the wire
+    traffic spent on ground a previous window already covered.
+    """
+    visits = {}
+    for window in windows:
+        start = window["offset"]
+        size = window["size"]
+        if size <= 0:
+            continue
+        first = start // READ_CHUNK_SIZE
+        last = (start + size - 1) // READ_CHUNK_SIZE
+        for chunk in range(first, last + 1):
+            visits[chunk] = visits.get(chunk, 0) + 1
+    duplicate_visits = sum(value - 1 for value in visits.values() if value > 1)
+    top = sorted(
+        ((visits[chunk] - 1, chunk) for chunk in visits if visits[chunk] > 1),
+        key=lambda item: (-item[0], item[1]),
+    )[:5]
+    return {
+        "distinct_chunks": len(visits),
+        "chunk_visits": sum(visits.values()),
+        "duplicate_visits": duplicate_visits,
+        "max_chunk_visits": max(visits.values(), default=0),
+        "redundant_bytes_estimate": duplicate_visits * READ_CHUNK_SIZE,
+        "top_duplicates": [
+            {"chunk": chunk, "offset": chunk * READ_CHUNK_SIZE, "extra_visits": extra}
+            for extra, chunk in top
+        ],
+    }
+
+
+def intent_summary(windows):
+    """Group executed windows by read intent.
+
+    Playback and downloads share one executor, so the only per-intent evidence
+    in the log is what the window rows themselves recorded. Downloads report
+    few, wide windows while playback keeps one narrow window per read; a bulk
+    run that matches the playback shape is a policy that never took effect.
+    """
+    groups = {}
+    for window in windows:
+        intent = window.get("read_intent") or "unspecified"
+        group = groups.setdefault(
+            intent,
+            {"windows": 0, "chunks": 0, "body_bytes": 0, "max_window_chunks": 0, "part_bytes": 0},
+        )
+        group["windows"] += 1
+        chunks = window.get("window_chunks", 0)
+        group["chunks"] += chunks
+        group["max_window_chunks"] = max(group["max_window_chunks"], chunks)
+        group["body_bytes"] += window.get("body_bytes", 0)
+        if group["part_bytes"] == 0 and window.get("part_bytes", 0) > 0:
+            group["part_bytes"] = window["part_bytes"]
+    return groups
+
+
+def summarize_windows(windows):
+    """Classify window rows by the stall their own timings show.
+
+    The report reconciles bytes; this summary answers which layer was slow.
+    A long body at a low rate points at a throttled connection, a large open
+    with a healthy body points at provider TTFB, a large local wait or queue
+    points at the shared layer, and more than one attempt means a retry. Rows
+    without a body are reported separately instead of being counted as fast.
+    """
+    summary = {
+        "windows": len(windows),
+        "fetch_windows": 0,
+        "prefetch_windows": 0,
+        "body_bytes": 0,
+        "classification": {},
+        "slowest": [],
+        "coverage": coverage_summary(windows),
+        "intent": intent_summary(windows),
+    }
+    slowest = []
+    for window in windows:
+        body = window.get("body_bytes", 0)
+        summary["body_bytes"] += body
+        if window["phase"] == "fetch_window":
+            summary["fetch_windows"] += 1
+        else:
+            summary["prefetch_windows"] += 1
+        body_us = window.get("body_us", 0)
+        rate = body / (body_us / 1_000_000) if body_us > 0 and body > 0 else 0.0
+        open_us = window.get("open_us", 0)
+        local_wait = window.get("local_wait_us", 0)
+        queue = window.get("queue_us", 0)
+        if window.get("fetch_attempts", 1) > 1:
+            kind = "retry"
+        elif body_us >= SLOW_BODY_US and 0 < rate < SLOW_BODY_RATE_KIB_S * 1024:
+            kind = "slow_body"
+        elif open_us >= PROVIDER_TTFB_US:
+            kind = "provider_ttfb"
+        elif local_wait > body_us or queue >= LOCAL_QUEUE_US:
+            kind = "local_wait"
+        elif body <= 0:
+            kind = "no_body"
+        else:
+            kind = "healthy"
+        summary["classification"][kind] = summary["classification"].get(kind, 0) + 1
+        if body_us > 0:
+            slowest.append((body_us, window))
+    slowest.sort(key=lambda item: item[0], reverse=True)
+    for body_us, window in slowest[:5]:
+        body = window.get("body_bytes", 0)
+        summary["slowest"].append(
+            {
+                "phase": window["phase"],
+                "offset": window["offset"],
+                "bytes": body,
+                "body_us": body_us,
+                "rate_kib_s": round(body / (body_us / 1000) / 1024, 1),
+                "open_us": window.get("open_us", 0),
+                "attempts": window.get("fetch_attempts", 1),
+            }
+        )
+    return summary
+
+
 def reconcile(trace, runner):
     windows = trace["windows"]
     for window in windows:
@@ -832,8 +996,45 @@ def self_check():
         assert report["passes"]["seek-01"]["delivered_bytes_total"] == 262144, report["passes"]
         assert report["passes"]["seek-01"]["cross_pass_delivered_bytes"] == 0, report["passes"]
         assert totals["complete"] is True and totals["completeness_problems"] == [], totals
+    self_check_coverage()
+    self_check_intent()
     self_check_review()
     print("read-traffic self-check passed")
+
+
+def self_check_coverage():
+    """Pin the duplicate-coverage counter on a hand-written window set."""
+    windows = [
+        {"phase": "prefetch_window", "offset": 0, "size": 1024 * 1024},
+        {"phase": "prefetch_window", "offset": 512 * 1024, "size": 1024 * 1024},
+        {"phase": "prefetch_window", "offset": 1024 * 1024, "size": 512 * 1024},
+    ]
+    coverage = coverage_summary(windows)
+    assert coverage["distinct_chunks"] == 3, coverage
+    assert coverage["chunk_visits"] == 5, coverage
+    assert coverage["duplicate_visits"] == 2, coverage
+    assert coverage["redundant_bytes_estimate"] == 2 * READ_CHUNK_SIZE, coverage
+    assert coverage["max_chunk_visits"] == 2, coverage
+    assert coverage["top_duplicates"][0]["chunk"] == 1, coverage
+
+
+def self_check_intent():
+    """Pin the per-intent shape summary that replaces rate-limited event rows."""
+    windows = [
+        {"phase": "fetch_window", "offset": 0, "size": 2 * 1024 * 1024,
+         "read_intent": "interactive", "window_chunks": 4, "body_bytes": 1000, "part_bytes": 524288},
+        {"phase": "prefetch_window", "offset": 2 * 1024 * 1024, "size": 512 * 1024,
+         "read_intent": "interactive", "window_chunks": 1, "body_bytes": 100},
+        {"phase": "fetch_window", "offset": 4 * 1024 * 1024, "size": 16 * 1024 * 1024,
+         "read_intent": "bulk", "window_chunks": 32, "body_bytes": 5000, "part_bytes": 8 * 1024 * 1024},
+        {"phase": "fetch_window", "offset": 0, "size": 1024 * 1024, "window_chunks": 2, "body_bytes": 10},
+    ]
+    groups = intent_summary(windows)
+    assert groups["interactive"]["windows"] == 2, groups
+    assert groups["interactive"]["chunks"] == 5, groups
+    assert groups["bulk"]["windows"] == 1 and groups["bulk"]["max_window_chunks"] == 32, groups
+    assert groups["bulk"]["part_bytes"] == 8 * 1024 * 1024, groups
+    assert groups["unspecified"]["windows"] == 1 and groups["unspecified"]["chunks"] == 2, groups
 
 
 def self_check_review():
@@ -1114,7 +1315,9 @@ def main():
         parser.error("--output is required")
     if args.output.exists():
         parser.error("output already exists; preserve previous reports")
-    report = reconcile(parse_trace(args.trace), parse_runner(args.runner))
+    trace = parse_trace(args.trace)
+    report = reconcile(trace, parse_runner(args.runner))
+    report["summary"] = summarize_windows(trace["windows"])
     args.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     totals = report["totals"]
@@ -1126,6 +1329,37 @@ def main():
         f"unknown={totals['unknown_residual_bytes']} "
         f"amplification={ratio(totals.get('amplification_over_unique'))}"
     )
+    summary = report["summary"]
+    classes = " ".join(
+        f"{name}={value}" for name, value in sorted(summary["classification"].items())
+    )
+    print(
+        f"windows={summary['windows']} "
+        f"fetch={summary['fetch_windows']} prefetch={summary['prefetch_windows']} "
+        f"body_bytes={summary['body_bytes']} {classes}"
+    )
+    coverage = summary["coverage"]
+    print(
+        f"coverage distinct_chunks={coverage['distinct_chunks']} "
+        f"visits={coverage['chunk_visits']} duplicates={coverage['duplicate_visits']} "
+        f"redundant_bytes={coverage['redundant_bytes_estimate']}"
+    )
+    for row in coverage["top_duplicates"]:
+        print(
+            f"duplicate offset={row['offset']} extra_visits={row['extra_visits']}"
+        )
+    for intent, group in sorted(summary["intent"].items()):
+        print(
+            f"intent={intent} windows={group['windows']} chunks={group['chunks']} "
+            f"max_window_chunks={group['max_window_chunks']} "
+            f"part_bytes={group['part_bytes']} body_bytes={group['body_bytes']}"
+        )
+    for row in summary["slowest"][:3]:
+        print(
+            f"slowest {row['phase']} offset={row['offset']} bytes={row['bytes']} "
+            f"body_us={row['body_us']} rate_kib_s={row['rate_kib_s']} "
+            f"open_us={row['open_us']} attempts={row['attempts']}"
+        )
     if not totals["complete"]:
         # An incomplete report is not a passing measurement; say why instead of
         # printing a ratio that the report deliberately withheld.

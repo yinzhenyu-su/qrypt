@@ -2,8 +2,11 @@ package mount
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -67,6 +70,38 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
   qrypt mount cloud --mount-point /mnt/qrypt`,
 		Args: cliruntime.MaxArgs(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			isolated, _ := cmd.Flags().GetBool("isolated")
+			isolatedKeep, _ := cmd.Flags().GetBool("isolated-keep")
+			isolatedRoot := ""
+			var isolatedMountPoint string
+			if isolated {
+				root, err := os.MkdirTemp("", "qrypt-isolated-")
+				if err != nil {
+					return fmt.Errorf("create isolated qrypt home: %w", err)
+				}
+				isolatedRoot = root
+				previousHome, hadHome := os.LookupEnv("QRYPT_HOME")
+				if err := os.Setenv("QRYPT_HOME", root); err != nil {
+					return fmt.Errorf("set QRYPT_HOME: %w", err)
+				}
+				defer func() {
+					// Unmounting is deferred later, so it runs before this
+					// cleanup and the mount point is no longer in use.
+					if hadHome {
+						_ = os.Setenv("QRYPT_HOME", previousHome)
+					} else {
+						_ = os.Unsetenv("QRYPT_HOME")
+					}
+					if isolatedKeep {
+						fmt.Fprintf(cmd.ErrOrStderr(), "isolated home kept: %s\n", root)
+						return
+					}
+					if err := removeIsolatedHome(root, isolatedMountPoint); err != nil {
+						logging.L.Warnf("[CLI] remove isolated home: %v", err)
+					}
+				}()
+			}
+
 			state, err := rt.CommandConfig(cmd)
 			if err != nil {
 				return err
@@ -74,11 +109,30 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			if state.Cfg == nil {
 				return rt.ConfigNotFoundError()
 			}
+			mountPointFlag, _ := cmd.Flags().GetString("mount-point")
+			isolatedMounts := make([]string, 0, len(state.Cfg.Mounts))
+			if isolated {
+				cache, _ := cmd.Flags().GetString("isolated-cache")
+				logLevel, _ := cmd.Flags().GetString("isolated-log-level")
+				logFile, _ := cmd.Flags().GetString("isolated-log-file")
+				// The core is opened from this configuration below, so the
+				// override must land before the mount options and read cache
+				// are derived.
+				if err := applyIsolatedOverrides(state.Cfg, cache, logLevel, logFile); err != nil {
+					return err
+				}
+				if err := cliutil.InitLogging(state.Cfg); err != nil {
+					return err
+				}
+				mountPointFlag = filepath.Join(isolatedRoot, "mnt")
+				if err := os.MkdirAll(mountPointFlag, 0o755); err != nil {
+					return fmt.Errorf("create isolated mount point: %w", err)
+				}
+			}
 			ctx, stop := rt.ShutdownContext(cmd)
 			defer stop()
 
 			debugListen := ""
-			mountPointFlag, _ := cmd.Flags().GetString("mount-point")
 			nameFlag, _ := cmd.Flags().GetString("name")
 			selectedMount := ""
 			switch {
@@ -88,6 +142,13 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 				selectedMount = nameFlag
 			case len(args) == 1:
 				selectedMount = args[0]
+			}
+			if isolated {
+				for _, m := range state.Cfg.Mounts {
+					if selectedMount == "" || m.Name == selectedMount {
+						isolatedMounts = append(isolatedMounts, m.Name)
+					}
+				}
 			}
 
 			coreHost, err := rt.OpenCoreForMount(ctx, state.Cfg, state.Path, selectedMount, debugListen, "")
@@ -121,6 +182,9 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			}
 
 			mountPointExpanded := util.ExpandHome(mountPoint)
+			if isolated {
+				isolatedMountPoint = mountPointExpanded
+			}
 			loc := i18n.FromCommand(cmd)
 			logging.L.Infof("Mounting at %s ...", mountPointExpanded)
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.mount.mounting", mountPointExpanded))
@@ -130,6 +194,20 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			if err != nil {
 				logging.L.Errorf("Mount failed: %v", err)
 				return err
+			}
+			if isolated {
+				info := isolatedMountInfo{
+					MountPoint: mountPointExpanded,
+					QryptHome:  isolatedRoot,
+					Config:     state.Path,
+					Mounts:     isolatedMounts,
+					Keep:       isolatedKeep,
+				}
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				if err := encoder.Encode(info); err != nil {
+					logging.L.Warnf("[CLI] write isolated info: %v", err)
+				}
 			}
 			// Unmount exactly once on every exit path. The signal path below
 			// calls unmount() explicitly; the deferred call covers panics and
@@ -167,6 +245,11 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	rt.WithRuntimeConfigFlag(cmd)
 	cmd.Flags().String("mount-point", "", "local FUSE mount point (defaults to config mount_point)")
 	cmd.Flags().String("name", "", "mount this configured drive (use when its name collides with a subcommand)")
+	cmd.Flags().Bool("isolated", false, "mount into a temporary home and mount point, read-only with probe tests enabled")
+	cmd.Flags().String("isolated-cache", "2G", "read cache size for an --isolated mount")
+	cmd.Flags().String("isolated-log-level", "info", "log level for an --isolated mount")
+	cmd.Flags().String("isolated-log-file", "", "write an --isolated mount's log to this file instead of the temporary home")
+	cmd.Flags().Bool("isolated-keep", false, "keep the temporary home of an --isolated mount after it stops")
 	cmd.AddCommand(newAddCmd(rt))
 	cmd.AddCommand(newSetCmd(rt))
 	cmd.AddCommand(newRemoveCmd(rt))
@@ -478,4 +561,63 @@ func newListCmd(rt cliruntime.Runtime) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// removeIsolatedHome deletes an --isolated temporary home. The unmount defer
+// runs first, but it can fail (a busy mount) or the mount helper can be
+// already dead, and deleting the tree while a FUSE filesystem is attached
+// under it would walk into the mounted filesystem instead. Detach such a
+// leftover mount first and report the home as kept when even that fails.
+func removeIsolatedHome(root, mountPoint string) error {
+	if mountPoint != "" {
+		if _, mounted := mount.FuseMountRoot(mountPoint); mounted {
+			if err := mount.DetachMount(mountPoint); err != nil {
+				return fmt.Errorf("detach leftover mount at %s: %w", mountPoint, err)
+			}
+		}
+	}
+	return os.RemoveAll(root)
+}
+
+// isolatedMountInfo is printed once an --isolated mount is serving, so test
+// harnesses do not have to guess where the temporary home, socket and mount
+// point ended up.
+type isolatedMountInfo struct {
+	MountPoint string   `json:"mount_point"`
+	QryptHome  string   `json:"qrypt_home"`
+	Config     string   `json:"config"`
+	Mounts     []string `json:"mounts"`
+	Keep       bool     `json:"keep"`
+}
+
+// applyIsolatedOverrides turns the loaded configuration into a disposable
+// measurement target: no user data is writable and every mount accepts
+// read-only probes, so `qrypt mount --isolated` never needs a hand-written
+// temporary config with credentials or test_enabled.
+func applyIsolatedOverrides(cfg *config.Config, cache, logLevel, logFile string) error {
+	if cfg == nil {
+		return errors.New("isolated mount requires a loaded config")
+	}
+	readOnly := true
+	cfg.ReadOnly = true
+	cfg.Mount.ReadOnly = &readOnly
+	cfg.MountPoint = ""
+	cfg.Mount.MountPoint = ""
+	cfg.VolumeName = "QryptIsolated"
+	if cache = strings.TrimSpace(cache); cache != "" {
+		cfg.ReadCache.MaxSize = cache
+	}
+	if logLevel = strings.TrimSpace(logLevel); logLevel == "" {
+		logLevel = "info"
+	}
+	cfg.Logging.LogLevel = logLevel
+	cfg.Logging.LogFile = logFile
+	cfg.Logging.ErrorFile = ""
+	if logFile != "" {
+		cfg.Logging.ErrorFile = logFile + ".error"
+	}
+	for i := range cfg.Mounts {
+		cfg.Mounts[i].TestEnabled = true
+	}
+	return nil
 }

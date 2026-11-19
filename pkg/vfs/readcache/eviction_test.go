@@ -13,14 +13,13 @@ import (
 )
 
 // testAccess is the read run that admits chunks in tests that do not care about
-// run identity. Using the same run on both sides keeps those chunks unproven,
-// which is what a test that only exercises storage layering wants.
+// run identity. Using the same run on both sides keeps those chunks
+// probationary, which is what a test that only exercises storage layering wants.
 var testAccess = Access{Run: 1}
 
 // checkInvariants cross-checks the store's byte accounting after a mutation.
 // DebugSnapshot sums the chunk index independently of the readBytes counter, so
-// comparing them catches a total that a lifecycle path let drift — the failure
-// mode the derived-only policy avoids by construction.
+// comparing them catches a total that a lifecycle path let drift.
 func checkInvariants(t *testing.T, c *Store) {
 	t.Helper()
 	var summed int64
@@ -43,151 +42,20 @@ func checkInvariants(t *testing.T, c *Store) {
 	if snapshot.Bytes != summed {
 		t.Fatalf("snapshot bytes = %d, chunks sum to %d", snapshot.Bytes, summed)
 	}
-	if snapshot.Bytes != snapshot.UnprovenBytes+snapshot.ProvenBytes {
-		t.Fatalf("unproven %d + proven %d != total %d",
-			snapshot.UnprovenBytes, snapshot.ProvenBytes, snapshot.Bytes)
+	if snapshot.ProbationaryBytes+snapshot.ProtectedBytes != snapshot.Bytes {
+		t.Fatalf("probationary %d + protected %d != total %d",
+			snapshot.ProbationaryBytes, snapshot.ProtectedBytes, snapshot.Bytes)
 	}
-	if snapshot.ProvenBytes != snapshot.ProbationaryBytes+snapshot.ProtectedBytes {
-		t.Fatalf("probationary %d + protected %d != proven %d",
-			snapshot.ProbationaryBytes, snapshot.ProtectedBytes, snapshot.ProvenBytes)
-	}
-	if snapshot.Bytes != snapshot.LargeFileBytes+snapshot.SmallFileBytes {
-		t.Fatalf("large %d + small %d != total %d",
-			snapshot.LargeFileBytes, snapshot.SmallFileBytes, snapshot.Bytes)
-	}
-	if snapshot.StreamBytes > snapshot.UnprovenBytes {
-		t.Fatalf("stream bytes %d exceed unproven bytes %d",
-			snapshot.StreamBytes, snapshot.UnprovenBytes)
+	if snapshot.PinnedBytes > snapshot.Bytes {
+		t.Fatalf("pinned %d exceeds total %d", snapshot.PinnedBytes, snapshot.Bytes)
 	}
 	if snapshot.Bytes > snapshot.MaxBytes {
 		t.Fatalf("occupancy %d exceeds max_size %d", snapshot.Bytes, snapshot.MaxBytes)
 	}
 }
 
-// A one-pass stream is bounded by the unproven sub-budget of the large-file
-// class, so while the flow is over capacity the small-file class keeps its
-// content and the stream gives up its own oldest chunks.
-func TestEvictionKeepsSmallClassWhileLargeClassIsOverBudget(t *testing.T) {
-	t.Parallel()
-	cache := newTestStore(t, t.TempDir(), 4*readChunkSize)
-	chunk := bytes.Repeat([]byte("x"), readChunkSize)
-	smallKey := strings.Repeat("a", sha256.Size*2)
-	largeKey := strings.Repeat("b", sha256.Size*2)
-
-	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk, testAccess); err != nil {
-		t.Fatal(err)
-	}
-	for i := range int64(5) {
-		if err := cache.PutChunk(largeKey, 20<<20, i, chunk, testAccess); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if _, ok, err := cache.GetChunk(smallKey, 0, testAccess); err != nil {
-		t.Fatal(err)
-	} else if !ok {
-		t.Fatal("small-class chunk was evicted while the large class was over budget")
-	}
-	var largeChunks int
-	for i := range int64(5) {
-		if _, ok, err := cache.GetChunk(largeKey, i, testAccess); err != nil {
-			t.Fatal(err)
-		} else if ok {
-			largeChunks++
-		}
-	}
-	if largeChunks >= 5 {
-		t.Fatalf("large-class chunks were not evicted, still have %d", largeChunks)
-	}
-	checkInvariants(t, cache)
-}
-
-// A file whose size was never learned still counts as large once its cached
-// bytes reach the large-file threshold, so it is subject to the class budget.
-func TestEvictionTreatsUnknownSizeCachedFileAsLarge(t *testing.T) {
-	t.Parallel()
-	cache := newTestStore(t, t.TempDir(), 17*1024*1024)
-	chunk := bytes.Repeat([]byte("x"), readChunkSize)
-	smallKey := strings.Repeat("a", sha256.Size*2)
-	unknownKey := strings.Repeat("b", sha256.Size*2)
-
-	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk, testAccess); err != nil {
-		t.Fatal(err)
-	}
-	unknownChunks := int64(17*1024*1024/readChunkSize + 1)
-	for i := range unknownChunks {
-		if err := cache.PutChunk(unknownKey, 0, i, chunk, testAccess); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if _, ok, err := cache.GetChunk(smallKey, 0, testAccess); err != nil {
-		t.Fatal(err)
-	} else if !ok {
-		t.Fatal("small-class chunk was evicted before the unknown-size cached file")
-	}
-	var kept int64
-	for i := range unknownChunks {
-		if _, ok, err := cache.GetChunk(unknownKey, i, testAccess); err != nil {
-			t.Fatal(err)
-		} else if ok {
-			kept++
-		}
-	}
-	if kept >= unknownChunks {
-		t.Fatalf("unknown-size cached file was not treated as large, still have %d chunks", kept)
-	}
-	checkInvariants(t, cache)
-}
-
-// The unproven sub-budget is what bounds a sequential pass: when a drain runs,
-// unproven content is cut back to half of the large class's ceiling and the
-// small class keeps its floor. A cache with free space is allowed to hold more
-// than the budget — the budget decides who gives way, not what may be kept.
-func TestEvictionCapsUnprovenSubBudget(t *testing.T) {
-	t.Parallel()
-	const maxSize = 8 << 20
-	cache := newTestStore(t, t.TempDir(), maxSize)
-	chunk := bytes.Repeat([]byte("x"), readChunkSize)
-	smallKey := strings.Repeat("a", sha256.Size*2)
-	streamKey := strings.Repeat("d", sha256.Size*2)
-
-	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk, testAccess); err != nil {
-		t.Fatal(err)
-	}
-	// Put until the first drain runs, then inspect its immediate result.
-	var index int64
-	for ; index < 200; index++ {
-		if err := cache.PutChunk(streamKey, 64<<20, index, chunk, testAccess); err != nil {
-			t.Fatal(err)
-		}
-		if cache.DebugSnapshot().Evicted > 0 {
-			break
-		}
-	}
-	if index == 200 {
-		t.Fatal("a 20MiB sequential pass never triggered a drain")
-	}
-
-	snapshot := cache.DebugSnapshot()
-	// The large class may use what the small class is not holding, but never so
-	// much that the small class could not still reach its floor.
-	largeCeiling := int64(maxSize) - min(snapshot.SmallFileBytes, int64(maxSize)/readCacheSmallReserveDiv)
-	if want := largeCeiling / readCacheStreamShare; snapshot.StreamBytes > want {
-		t.Fatalf("stream bytes = %d, want at most %d (large ceiling %d): %+v",
-			snapshot.StreamBytes, want, largeCeiling, snapshot)
-	}
-	if _, ok, err := cache.GetChunk(smallKey, 0, Access{Run: 99}); err != nil {
-		t.Fatal(err)
-	} else if !ok {
-		t.Fatal("small-class chunk did not survive the sequential pass")
-	}
-	checkInvariants(t, cache)
-}
-
-// A hit carrying the admitting run is the stream reading back its own read-ahead
-// and must not promote; a hit from a later run means the content was reached
-// again and must.
+// A chunk is admitted probationary; only a hit from another read run protects
+// it, because the admitting run reading back its own read-ahead is not reuse.
 func TestEvictionPromotesOnlyOnALaterRun(t *testing.T) {
 	t.Parallel()
 	cache := newTestStore(t, t.TempDir(), 8<<20)
@@ -202,7 +70,7 @@ func TestEvictionPromotesOnlyOnALaterRun(t *testing.T) {
 	} else if !ok {
 		t.Fatal("chunk missed")
 	}
-	if got := cache.DebugSnapshot(); got.UnprovenBytes != int64(readChunkSize) || got.Promotions != 0 {
+	if got := cache.DebugSnapshot(); got.ProbationaryBytes != int64(readChunkSize) || got.Promotions != 0 {
 		t.Fatalf("a same-run hit promoted the chunk: %+v", got)
 	}
 
@@ -211,16 +79,14 @@ func TestEvictionPromotesOnlyOnALaterRun(t *testing.T) {
 	} else if !ok {
 		t.Fatal("chunk missed")
 	}
-	if got := cache.DebugSnapshot(); got.UnprovenBytes != 0 || got.ProtectedBytes != int64(readChunkSize) || got.Promotions != 1 {
+	if got := cache.DebugSnapshot(); got.ProbationaryBytes != 0 || got.ProtectedBytes != int64(readChunkSize) || got.Promotions != 1 {
 		t.Fatalf("a later-run hit did not promote the chunk: %+v", got)
 	}
 	checkInvariants(t, cache)
 }
 
 // A caller that carries no run identity cannot be compared against the run that
-// admitted a chunk, so the hit counts as reuse. Retention then degrades to
-// "promote on first hit", which is the safe direction: the alternative — never
-// promoting — would leave such a caller's content permanently evictable.
+// admitted a chunk, so the hit counts as reuse.
 func TestEvictionTreatsAnUnknownRunAsReuse(t *testing.T) {
 	t.Parallel()
 	cache := newTestStore(t, t.TempDir(), 8<<20)
@@ -241,10 +107,9 @@ func TestEvictionTreatsAnUnknownRunAsReuse(t *testing.T) {
 	checkInvariants(t, cache)
 }
 
-// The unproven bucket is drained by two phases when the stream sub-budget and
-// the class ceiling both have to give: a plan must not select the same chunk
-// twice, or the view's byte totals would be reduced twice for one chunk and the
-// drain would stop short of the budget it was asked to reach.
+// A plan must not select the same chunk twice, or the view's byte totals would
+// be reduced twice for one chunk and the drain would stop short of the budget it
+// was asked to reach.
 func TestEvictionPlanSelectsEachChunkOnce(t *testing.T) {
 	t.Parallel()
 	const maxSize = 16 << 20
@@ -266,16 +131,13 @@ func TestEvictionPlanSelectsEachChunkOnce(t *testing.T) {
 		fc.mu.Unlock()
 		cache.readBytes.Add(readChunkSize)
 	}
-	// 9MiB of unproven content (over the 8MiB sub-budget once the small class
-	// holds nothing) plus 10MiB of proven content: the class is then over its
-	// own ceiling too, so phase 2 drains the unproven bucket a second time.
-	unproven := strings.Repeat("u", sha256.Size*2)
-	proven := strings.Repeat("p", sha256.Size*2)
+	probationary := strings.Repeat("u", sha256.Size*2)
+	protected := strings.Repeat("p", sha256.Size*2)
 	for i := range int64(18) {
-		add(unproven, 512<<20, i, stateUnproven)
+		add(probationary, 512<<20, i, stateProbationary)
 	}
 	for i := range int64(20) {
-		add(proven, 512<<20, i, stateProtected)
+		add(protected, 512<<20, i, stateProtected)
 	}
 
 	plan := cache.planEviction(maxSize)
@@ -300,6 +162,12 @@ func TestEvictionPlanSelectsEachChunkOnce(t *testing.T) {
 		t.Fatalf("plan frees %d of %d, leaving %d above the low watermark %d",
 			planned, cache.readBytes.Load(), cache.readBytes.Load()-planned, lowWatermark)
 	}
+	// Probationary content is cheaper to lose than protected reuse.
+	for v := range seen {
+		if v.fid == protected {
+			t.Fatalf("plan took protected content while probationary content was left")
+		}
+	}
 }
 
 // A drain stops at the low watermark rather than at the cap, so the writes that
@@ -309,12 +177,11 @@ func TestEvictionDrainsToTheLowWatermark(t *testing.T) {
 	const maxSize = 8 << 20
 	cache := newTestStore(t, t.TempDir(), maxSize)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
-	// A small-class file has no sub-budget, so its growth reaches the capacity
-	// edge and the low watermark is what stops the drain.
 	fid := strings.Repeat("5", sha256.Size*2)
 	var index int64
 	for ; index < 200; index++ {
-		if err := cache.PutChunk(fid, 1<<20, index, chunk, testAccess); err != nil {
+		// A fresh run per chunk keeps every chunk probationary and evictable.
+		if err := cache.PutChunk(fid, 1<<20, index, chunk, Access{Run: uint64(index) + 1}); err != nil {
 			t.Fatal(err)
 		}
 		if cache.DebugSnapshot().Evicted > 0 {
@@ -333,10 +200,10 @@ func TestEvictionDrainsToTheLowWatermark(t *testing.T) {
 	checkInvariants(t, cache)
 
 	// Everything the drain freed beyond the minimum, down to the cap, is
-	// hysteresis: four more chunks fit without another pass.
+	// hysteresis: the next few chunks fit without another pass.
 	before := snapshot.Evicted
 	for i := range int64(4) {
-		if err := cache.PutChunk(fid, 1<<20, index+1+i, chunk, testAccess); err != nil {
+		if err := cache.PutChunk(fid, 1<<20, index+1+i, chunk, Access{Run: uint64(index) + 100 + uint64(i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -344,6 +211,149 @@ func TestEvictionDrainsToTheLowWatermark(t *testing.T) {
 		t.Fatalf("eviction re-ran %d times inside the hysteresis band", after-before)
 	}
 	checkInvariants(t, cache)
+}
+
+// The per-file pin keeps the file that is being read: while another file is
+// pinned, the drain takes its victims from the unpinned files only. A pin never
+// suspends the capacity bound, so a cache that holds nothing but pinned chunks
+// still drains.
+func TestEvictionPinsTheFileBeingRead(t *testing.T) {
+	t.Parallel()
+	maxSize := int64(3 * readChunkSize)
+	cache := &Store{maxSize: maxSize, activity: map[string]time.Time{}}
+	for i := range cache.shards {
+		cache.shards[i].chunks = map[string]*fileChunks{}
+	}
+	at := time.Now()
+	add := func(fid string, index int64) {
+		fc := cache.fileChunks(fid, 512<<20)
+		fc.mu.Lock()
+		fc.chunks[index] = chunkInfo{
+			file:     fid + ".batch",
+			offset:   index * readChunkSize,
+			size:     readChunkSize,
+			accessAt: at,
+		}
+		fc.mu.Unlock()
+		cache.readBytes.Add(readChunkSize)
+	}
+	active := strings.Repeat("a", sha256.Size*2)
+	idle := strings.Repeat("b", sha256.Size*2)
+	for i := range int64(2) {
+		add(active, i)
+	}
+	for i := range int64(3) {
+		add(idle, i)
+	}
+	cache.touchActivity(active)
+
+	plan := cache.planEviction(maxSize)
+	if len(plan.victims) == 0 {
+		t.Fatal("over-budget cache produced no victims")
+	}
+	for _, v := range plan.victims {
+		if v.fid == active {
+			t.Fatalf("drain took the pinned file while the unpinned file had chunks")
+		}
+	}
+
+	// Pinned-only: the pin does not suspend the capacity bound.
+	drop := func(fid string) {
+		sh := cache.shardFor(fid)
+		sh.mu.Lock()
+		fc := sh.chunks[fid]
+		delete(sh.chunks, fid)
+		sh.mu.Unlock()
+		fc.mu.Lock()
+		defer fc.mu.Unlock()
+		for _, info := range fc.chunks {
+			cache.readBytes.Add(-info.size)
+		}
+	}
+	drop(idle)
+	add(active, 2)
+	add(active, 3)
+	plan = cache.planEviction(maxSize)
+	if len(plan.victims) == 0 {
+		t.Fatal("pinned-only cache produced no victims")
+	}
+	if got := cache.readBytes.Load() - int64(len(plan.victims))*readChunkSize; got > maxSize {
+		t.Fatalf("pinned-only cache was not drained to the cap: %d bytes left", got)
+	}
+}
+
+// A pin expires: activity older than the pin window no longer protects the
+// file, so a stream that stopped reading does not hold the cache.
+func TestEvictionPinExpires(t *testing.T) {
+	t.Parallel()
+	maxSize := int64(readChunkSize)
+	cache := &Store{maxSize: maxSize, activity: map[string]time.Time{}}
+	for i := range cache.shards {
+		cache.shards[i].chunks = map[string]*fileChunks{}
+	}
+	at := time.Now()
+	add := func(fid string, index int64) {
+		fc := cache.fileChunks(fid, 512<<20)
+		fc.mu.Lock()
+		fc.chunks[index] = chunkInfo{
+			file:     fid + ".batch",
+			offset:   index * readChunkSize,
+			size:     readChunkSize,
+			accessAt: at,
+		}
+		fc.mu.Unlock()
+		cache.readBytes.Add(readChunkSize)
+	}
+	active := strings.Repeat("a", sha256.Size*2)
+	idle := strings.Repeat("b", sha256.Size*2)
+	add(active, 0)
+	add(idle, 0)
+	cache.activity[active] = time.Now().Add(-2 * readCachePinWindow)
+	cache.activity[idle] = time.Now()
+
+	plan := cache.planEviction(maxSize)
+	if len(plan.victims) == 0 {
+		t.Fatal("over-budget cache produced no victims")
+	}
+	if got := plan.victims[0].fid; got != active {
+		t.Fatalf("first victim belongs to %q, want the file whose pin expired", got)
+	}
+}
+
+// Protected content is demoted once it exceeds its share of the cache, so the
+// next drain always has probationary chunks to take first.
+func TestEvictionDemotesProtectedOverflow(t *testing.T) {
+	t.Parallel()
+	// Ten protected chunks (5MiB) in a cache capped at 4MiB: over capacity and
+	// with protected over its share of the total.
+	maxSize := int64(8 * readChunkSize)
+	cache := &Store{maxSize: maxSize}
+	for i := range cache.shards {
+		cache.shards[i].chunks = map[string]*fileChunks{}
+	}
+	at := time.Now()
+	fid := strings.Repeat("d", sha256.Size*2)
+	fc := cache.fileChunks(fid, 512<<20)
+	for i := range int64(10) {
+		fc.chunks[i] = chunkInfo{
+			file:     "batch",
+			offset:   i * readChunkSize,
+			size:     readChunkSize,
+			accessAt: at.Add(time.Duration(i) * time.Millisecond),
+			state:    stateProtected,
+		}
+		cache.readBytes.Add(readChunkSize)
+	}
+	plan := cache.planEviction(maxSize)
+	if len(plan.demote) == 0 {
+		t.Fatal("a fully protected cache over its protected share was not demoted")
+	}
+	if len(plan.victims) == 0 {
+		t.Fatal("over-capacity cache produced no victims")
+	}
+	if plan.victims[0].fid != fid {
+		t.Fatalf("victim belongs to %q, want %q", plan.victims[0].fid, fid)
+	}
 }
 
 // Among equally old candidates the policy takes from the batch file closest to
@@ -382,7 +392,6 @@ func TestEvictionPrefersTheBatchThatIsNearlyEmpty(t *testing.T) {
 	if got := plan.victims[0].fid; got != sparseKey {
 		t.Fatalf("first victim belongs to %q, want the sparse batch %q", got, sparseKey)
 	}
-	// The full batch is still referenced, so its file must stay on disk.
 	if got := plan.victims[0].expected.file; got != "sparse.batch" {
 		t.Fatalf("first victim file = %q, want sparse.batch", got)
 	}
@@ -397,7 +406,7 @@ func TestEvictionReleasesBatchFileWithItsLastChunk(t *testing.T) {
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
 	const chunks = 4
 	for i := range int64(chunks) {
-		if err := cache.PutChunk(fid, 64<<20, i, chunk, testAccess); err != nil {
+		if err := cache.PutChunk(fid, 64<<20, i, chunk, Access{Run: uint64(i) + 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -448,17 +457,17 @@ func TestReadCacheIndexFormatIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, banned := range []string{"admit_run", "segment", "proven", "\"state\""} {
+	for _, banned := range []string{"admit_run", "segment", "proven", "\"state\"", "pinned"} {
 		if bytes.Contains(raw, []byte(banned)) {
 			t.Fatalf("persisted index carries replacement state %q: %s", banned, raw)
 		}
 	}
 }
 
-// Content loaded back from disk starts unproven, and the first run that comes
-// back for it promotes it. That is what lets the index stay format-stable: the
-// replacement state is rebuilt by use instead of migrated.
-func TestReadCacheRestartStartsContentUnproven(t *testing.T) {
+// Content loaded back from disk starts probationary, and the first run that
+// comes back for it protects it. That is what lets the index stay
+// format-stable: the replacement state is rebuilt by use instead of migrated.
+func TestReadCacheRestartStartsContentProbationary(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
@@ -473,16 +482,16 @@ func TestReadCacheRestartStartsContentUnproven(t *testing.T) {
 	}
 
 	second := newTestStore(t, dir, 10<<20)
-	if got := second.DebugSnapshot(); got.UnprovenBytes != int64(len(chunk)) {
-		t.Fatalf("loaded content is not unproven: %+v", got)
+	if got := second.DebugSnapshot(); got.ProbationaryBytes != int64(len(chunk)) {
+		t.Fatalf("loaded content is not probationary: %+v", got)
 	}
 	if _, ok, err := second.GetChunk(key, 0, Access{Run: 9}); err != nil {
 		t.Fatal(err)
 	} else if !ok {
 		t.Fatal("loaded chunk missed")
 	}
-	if got := second.DebugSnapshot(); got.UnprovenBytes != 0 || got.Promotions != 1 {
-		t.Fatalf("a later run did not promote loaded content: %+v", got)
+	if got := second.DebugSnapshot(); got.ProtectedBytes != int64(len(chunk)) || got.Promotions != 1 {
+		t.Fatalf("a later run did not protect loaded content: %+v", got)
 	}
 	checkInvariants(t, second)
 }

@@ -14,6 +14,7 @@ func NewReadMemoryCmd(rt cliruntime.Runtime) *cobra.Command {
 	var since string
 	var limit int
 	var watch time.Duration
+	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:               "read-memory",
 		Short:             "Inspect read-path memory diagnostics",
@@ -32,6 +33,10 @@ func NewReadMemoryCmd(rt cliruntime.Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if jsonOutput {
+					envelope := newDiagnosticsEnvelope("debug read-memory", debugSocketFromContext(cmd.Context()), body)
+					return writeDiagnosticsEnvelope(cmd.OutOrStdout(), envelope, true)
+				}
 				_, err = cmd.OutOrStdout().Write(body)
 				return err
 			}
@@ -42,11 +47,20 @@ func NewReadMemoryCmd(rt cliruntime.Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if _, err := cmd.OutOrStdout().Write(body); err != nil {
-					return err
-				}
-				if _, err := cmd.OutOrStdout().Write([]byte("\n")); err != nil {
-					return err
+				if jsonOutput {
+					// Watch mode emits one compact envelope per poll so a
+					// consumer can stream the output line by line.
+					envelope := newDiagnosticsEnvelope("debug read-memory", debugSocketFromContext(cmd.Context()), body)
+					if err := writeDiagnosticsEnvelope(cmd.OutOrStdout(), envelope, false); err != nil {
+						return err
+					}
+				} else {
+					if _, err := cmd.OutOrStdout().Write(body); err != nil {
+						return err
+					}
+					if _, err := cmd.OutOrStdout().Write([]byte("\n")); err != nil {
+						return err
+					}
 				}
 				select {
 				case <-cmd.Context().Done():
@@ -61,6 +75,7 @@ func NewReadMemoryCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&since, "since", "2m", "read metric lookback duration or RFC3339 timestamp")
 	cmd.Flags().IntVar(&limit, "limit", 30, "recent read metric limit")
 	cmd.Flags().DurationVar(&watch, "watch", 0, "repeat at this interval")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "print stable JSON instead of the raw response body")
 	return cmd
 }
 

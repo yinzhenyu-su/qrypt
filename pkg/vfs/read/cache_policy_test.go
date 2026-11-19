@@ -16,27 +16,27 @@ func TestCachePolicyAdmit(t *testing.T) {
 	policy := newCachePolicy(state)
 	entry := drive.Entry{ID: "id", Size: 1}
 
-	policy.Admit(WithReadPlan(context.Background(), ReadPlan{CacheWrites: false}), entry, "cache", 0, []byte("chunk"))
-	if len(cache.puts) != 0 {
-		t.Fatalf("durable puts = %d, want 0", len(cache.puts))
+	policy.Admit(WithReadPlan(context.Background(), ReadPlan{Intent: ReadIntentBulk}), entry, "cache", 0, []byte("chunk"))
+	if cache.putCount() != 0 {
+		t.Fatalf("durable puts = %d, want 0", cache.putCount())
 	}
 	if _, ok := state.hotChunk("cache", 0); !ok {
 		t.Fatal("hot chunk missing for a no-durable admit")
 	}
 
-	policy.Admit(WithReadPlan(context.Background(), ReadPlan{CacheWrites: true}), entry, "cache", 1, []byte("chunk"))
-	if len(cache.puts) != 1 {
-		t.Fatalf("durable puts = %d, want 1", len(cache.puts))
+	policy.Admit(WithReadPlan(context.Background(), ReadPlan{Intent: ReadIntentInteractive}), entry, "cache", 1, []byte("chunk"))
+	if cache.putCount() != 1 {
+		t.Fatalf("durable puts = %d, want 1", cache.putCount())
 	}
 
 	policy.Admit(context.Background(), entry, "cache", 2, []byte("chunk"))
-	if len(cache.puts) != 2 {
-		t.Fatalf("durable puts without a plan = %d, want 2", len(cache.puts))
+	if cache.putCount() != 2 {
+		t.Fatalf("durable puts without a plan = %d, want 2", cache.putCount())
 	}
 
-	policy.Admit(WithReadPlan(context.Background(), ReadPlan{CacheWrites: true}), entry, "", 3, []byte("chunk"))
-	if len(cache.puts) != 2 {
-		t.Fatalf("empty cache key wrote durable cache: %d", len(cache.puts))
+	policy.Admit(WithReadPlan(context.Background(), ReadPlan{Intent: ReadIntentInteractive}), entry, "", 3, []byte("chunk"))
+	if cache.putCount() != 2 {
+		t.Fatalf("empty cache key wrote durable cache: %d", cache.putCount())
 	}
 }
 
@@ -50,7 +50,7 @@ func TestParallelCacheAdmissionKeepsHotOnly(t *testing.T) {
 	}
 	profile := drive.DefaultReadPolicy()
 	profile.Bulk.Streams = 2
-	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.MinParallelBytes = 0
 	reader := newTestReader(testReaderDeps{Host: host, State: NewState(cache), Profile: profile})
 
 	ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentBulk))
@@ -65,8 +65,8 @@ func TestParallelCacheAdmissionKeepsHotOnly(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	if len(cache.puts) != 0 {
-		t.Fatalf("parallel bulk wrote durable cache %d times, want 0", len(cache.puts))
+	if cache.putCount() != 0 {
+		t.Fatalf("parallel bulk wrote durable cache %d times, want 0", cache.putCount())
 	}
 	for index := int64(0); index < 4; index++ {
 		if _, ok := reader.hotChunk("cache", index); !ok {

@@ -22,10 +22,16 @@ const (
 	quarkSharePublic  = 1
 	quarkSharePrivate = 2
 
-	quarkSharePollInterval = 300 * time.Millisecond
-	quarkSharePollTimeout  = 30 * time.Second
 	quarkShareListPageSize = 50
 	quarkShareMaxPages     = 20
+)
+
+// The synchronous share-link task is polled at this interval for at most this
+// long. They are variables so tests (and the fasttest build) can shorten the
+// bounded poll; production values are 300ms and 30s.
+var (
+	quarkSharePollInterval = 300 * time.Millisecond
+	quarkSharePollTimeout  = 30 * time.Second
 )
 
 // SharePolicy declares what Quark can do with links.

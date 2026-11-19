@@ -127,8 +127,14 @@ type ReadCacheConfig struct {
 
 // ReadConfig is the optional mount override. Nil fields inherit recommendations.
 type ReadConfig struct {
-	MaxInFlight *int            `toml:"max_in_flight"`
-	Bulk        *BulkReadConfig `toml:"bulk"`
+	MaxInFlight *int                   `toml:"max_in_flight"`
+	Interactive *InteractiveReadConfig `toml:"interactive"`
+	Bulk        *BulkReadConfig        `toml:"bulk"`
+}
+type InteractiveReadConfig struct {
+	Window         *string `toml:"window"`
+	PrefetchWindow *string `toml:"prefetch_window"`
+	PrefetchDepth  *int    `toml:"prefetch_depth"`
 }
 type BulkReadConfig struct {
 	Streams         *int    `toml:"streams"`
@@ -142,6 +148,33 @@ func (c *ReadConfig) Override() (*drive.ReadOverride, error) {
 		return nil, nil
 	}
 	o := &drive.ReadOverride{MaxInFlight: c.MaxInFlight}
+	if c.Interactive != nil {
+		for _, field := range []struct {
+			name   string
+			value  *string
+			target **int64
+		}{
+			{"window", c.Interactive.Window, &o.InteractiveWindowBytes},
+			{"prefetch_window", c.Interactive.PrefetchWindow, &o.InteractivePrefetchWindowBytes},
+		} {
+			if field.value == nil {
+				continue
+			}
+			v := strings.TrimSpace(*field.value)
+			n, err := ParseSize(v)
+			if err != nil || v == "" || n <= 0 || n > drive.MaxReadWindowBytes {
+				return nil, fmt.Errorf("read.interactive.%s: require a size up to 32 MiB", field.name)
+			}
+			*field.target = &n
+		}
+		if c.Interactive.PrefetchDepth != nil {
+			depth := *c.Interactive.PrefetchDepth
+			if depth < 0 || depth > 4 {
+				return nil, fmt.Errorf("read.interactive.prefetch_depth: require 0..4 (0 disables lookahead)")
+			}
+			o.InteractivePrefetchDepth = &depth
+		}
+	}
 	if c.Bulk == nil {
 		return o, nil
 	}

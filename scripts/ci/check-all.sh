@@ -97,6 +97,7 @@ scripts/ci/install-tools.sh
 TOOLS_DIR="${QRYPT_TOOLS_DIR:-${HOME}/.cache/qrypt-tools}"
 export PATH="$TOOLS_DIR:$PATH"
 step "Repo hygiene" scripts/ci/check-hygiene.sh
+step "Machine-specific paths" scripts/ci/check-paths.sh --tree
 step "Staticcheck" "$TOOLS_DIR/staticcheck" ./...
 step "Golangci-lint" "$TOOLS_DIR/golangci-lint" run ./...
 step "Architecture boundaries" scripts/ci/check-arch.sh
@@ -151,6 +152,7 @@ step "Generated docs in sync" bash -c '
   fi
 '
 
+step "Docs links and whitespace" scripts/ci/check-docs.sh
 step "Install script" scripts/install/check-install.sh
 step "Fast suite" scripts/ci/test-layers.sh fast
 step "Race suite" scripts/ci/test-layers.sh race

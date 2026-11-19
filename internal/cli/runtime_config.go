@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/cli/cliutil"
 	"github.com/yinzhenyu/qrypt/pkg/config"
-	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
@@ -28,24 +28,7 @@ func applyQryptHomeOverride(cfg *config.Config) {
 }
 
 func initLogger(cfg *config.Config) error {
-	if cfg == nil {
-		return nil
-	}
-	level := cfg.Logging.LogLevel
-	logFile := util.ExpandHome(cfg.EffectiveLogFile())
-	errFile := util.ExpandHome(cfg.EffectiveErrorFile())
-	if level == "" && logFile == "" && errFile == "" {
-		return nil
-	}
-	if level == "" {
-		level = "info"
-	}
-	newLogger, err := logging.New(level, logFile, errFile, nil)
-	if err != nil {
-		return fmt.Errorf("initialize logging: %w", err)
-	}
-	logging.ReplaceDefault(newLogger)
-	return nil
+	return cliutil.InitLogging(cfg)
 }
 
 func initTime(ctx context.Context, loaded *config.Config) error {

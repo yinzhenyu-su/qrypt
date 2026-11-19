@@ -154,6 +154,14 @@ qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH]
 
 `Ctrl+C`、`SIGTERM`、关闭终端或断开 SSH（`SIGHUP`）都会触发优雅卸载。如果上一次挂载进程被强行结束，qrypt 会在下次挂载时自动识别并清理残留挂载点；仍失败时参见[挂载点残留](troubleshooting.md#挂载点残留)。
 
+测量吞吐时可以用隔离挂载，它把挂载点、运行目录和缓存都放在临时目录，强制只读，并自动为该作用域开启探针测试：
+
+```sh
+qrypt mount --isolated --name quark-encrypt --isolated-log-level debug
+```
+
+挂载成功后会向标准输出打印一段 JSON（`mount_point`、`qrypt_home`、`config`、`mounts`），供脚本定位临时挂载点；正常退出（`Ctrl+C`、`SIGTERM`、`SIGHUP`）或出错返回时自动卸载并删除临时目录。进程被 `SIGKILL` 或机器断电时来不及清理，会留下临时目录和失联的挂载点，可用 `./scripts/ci/test-layers.sh clean-temp` 回收（残留挂载需要 `QRYPT_TEMP_FORCE_UNMOUNT=1` 才强制卸载）。`--isolated-cache` 调整读缓存大小（默认 `2G`），`--isolated-log-file` 把结构化日志写到指定文件，`--isolated-keep` 保留临时目录以便排查。也可以在隔离挂载上运行 `qrypt probe tune read`、`qrypt probe test read --path` 等只读探针，不需要修改配置文件里的 `test_enabled`。
+
 ## 文件系统操作
 
 ```sh
@@ -303,11 +311,13 @@ qrypt probe cache invalidate --path REMOTE
 qrypt probe fault read --path REMOTE --kind KIND [flags]
 qrypt probe fault list
 qrypt probe fault clear [--id ID]
+qrypt probe tune read --mount NAME --mount-point DIR --path REMOTE [--size SIZE] [--rounds N]
+qrypt probe ab read --mount NAME --mount-point DIR --path REMOTE [--a SHAPE] [--b SHAPE] [--rounds N] [--json]
 ```
 
 `collect`、`watch` 和 `bundle` 需要用 `--mount NAME` 指定挂载；`--mount` 可重复传入，确需检查全部挂载时使用 `--all-mounts`。`debug watch --jsonl` 适合管道式消费。
 
-`probe test` / `probe bench` 只使用配置中设置了 `test_enabled = true` 的挂载。`probe cache clear` 清空指定挂载的持久化和内存读缓存，`probe cache invalidate --path` 只清理单个文件；两者都保持挂载运行，适合脚本测量缓存未命中的加载速度。`probe fault read` 在运行中的挂载上注入一次读故障（`stall`、`truncate`、`status` 或 `delay`），用于验证超时、重放和状态重试，规则用 `probe fault list/clear` 查看和清除。测试项、输出含义和完整调试流程见[调试文档](../for-developer/debug.md)。
+`probe test` / `probe bench` 只使用配置中设置了 `test_enabled = true` 的挂载。`probe cache clear` 清空指定挂载的持久化和内存读缓存，`probe cache invalidate --path` 只清理单个文件；两者都保持挂载运行，适合脚本测量缓存未命中的加载速度。`probe fault read` 在运行中的挂载上注入一次读故障（`stall`、`truncate`、`status`、`delay` 或 `rate`），用于验证超时、重放和状态重试，规则用 `probe fault list/clear` 查看和清除。`probe tune read` 对一个已存在的文件扫描交互窗口、预读深度和批量下载形状，输出最快形状和可直接粘贴的 `qrypt.toml` 配置；它只读文件，不需要写权限。`probe ab read` 对同一文件做交替顺序的 A/B 读测（默认 A 是驱动默认策略），输出每轮吞吐/TTFB、中位数比值和胜者，两侧各自的 `resolved_plan` 一并打印；形状用 `window=4m,prefetch-window=4m` 这样的键值串描述，适合验证某个读策略覆盖是否真的比默认更快。测试项、输出含义和完整调试流程见[调试文档](../for-developer/debug.md)。
 
 任务控制：
 

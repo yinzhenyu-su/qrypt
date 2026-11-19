@@ -67,6 +67,7 @@ install_shellcheck() {
     darwin.aarch64) checksum=bbd2f14826328eee7679da7221f2bc3afb011f6a928b848c80c321f6046ddf81 ;;
   esac
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/qrypt-shellcheck.XXXXXX")
+  trap 'rm -rf "$tmp"' EXIT
   archive="$tmp/shellcheck.tar.xz"
   curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${shellcheck_version}/shellcheck-v${shellcheck_version}.${asset}.tar.xz" -o "$archive"
   if command -v sha256sum >/dev/null 2>&1; then

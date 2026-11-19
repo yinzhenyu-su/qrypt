@@ -67,7 +67,7 @@ func TestReadPolicySnapshotAndSourceIdentity(t *testing.T) {
 }
 func TestInvalidCompleteReadPolicyFailsMountConstruction(t *testing.T) {
 	p := drive.DefaultReadPolicy()
-	p.Interactive.Seek.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 1 << 20, Depth: 0}
+	p.Interactive.PrefetchDepth = 5
 	d := limitedPolicyDriver{drive.NewFakeDriver(), p, 2}
 	if fs, err := vfs.New(d, vfs.Options{StorageDir: t.TempDir()}); err == nil {
 		_ = fs.Close(context.Background())

@@ -170,7 +170,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
 	switch testType {
-	case "auth", "contract", "crud", "instantupload", "multipart", "upload", "fs", "read", "resume", "batchupload", "batchmove":
+	case "auth", "contract", "crud", "instantupload", "multipart", "upload", "fs", "read", "resume", "batchupload", "batchmove", "tuneread":
 		spec, ok := contracttest.Specs()[testType]
 		if !ok {
 			http.Error(w, fmt.Sprintf("unknown driver test: %s", testType), http.StatusBadRequest)
@@ -205,7 +205,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			matched = true
-			if !nd.TestEnabled {
+			if !nd.TestEnabled && !contracttest.ReadOnlyProbe(testType, req) {
 				if req.Mount != "" {
 					http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
 					return
@@ -293,7 +293,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func debugTestDisabledError(mount string) string {
-	return fmt.Sprintf("mount %q is not enabled for probe tests; set test_enabled = true in [[mounts]]", mount)
+	return fmt.Sprintf("mount %q is not enabled for probe tests; set test_enabled = true in [[mounts]] (read-only probes such as read/tune --path do not need it)", mount)
 }
 
 func findDebugTestDriver(drivers []diagnostics.NamedDriver, mount string) (diagnostics.NamedDriver, bool) {
@@ -446,6 +446,10 @@ func (s *Server) writeReadBenchmark(w http.ResponseWriter, r *http.Request, prov
 		return
 	}
 	size := contracttest.ParseXferSize(req.Size)
+	if path := strings.TrimSpace(req.Path); path != "" {
+		s.writeReadBenchmarkPath(w, r, provider, req, path, size, levels, samples, interval)
+		return
+	}
 	var reports []contracttest.ReadBenchReport
 	matched := false
 	for _, nd := range provider.Drivers() {
@@ -471,6 +475,51 @@ func (s *Server) writeReadBenchmark(w http.ResponseWriter, r *http.Request, prov
 		return
 	}
 	writeJSON(w, reports)
+}
+
+// writeReadBenchmarkPath benchmarks an existing file through its driver, without
+// uploading a fixture. Read-only mounts and read-only drivers can be measured,
+// which the fixture-based benchmark cannot do.
+func (s *Server) writeReadBenchmarkPath(w http.ResponseWriter, r *http.Request, provider diagnostics.DriverProvider, req contracttest.DriverTestRequest, path string, size int64, levels []int, samples int, interval time.Duration) {
+	if req.Mount == "" {
+		http.Error(w, "read benchmark --path requires --mount", http.StatusBadRequest)
+		return
+	}
+	var driver drive.Driver
+	matched := false
+	for _, nd := range provider.Drivers() {
+		if nd.Name != req.Mount {
+			continue
+		}
+		matched = true
+		// A benchmark of an existing path only reads provider data, so it does
+		// not require test_enabled the way fixture-creating benchmarks do.
+		driver = nd.Driver
+	}
+	if !matched {
+		http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+		return
+	}
+	filesys, ok := s.source.(vfs.FileSystem)
+	if !ok {
+		http.Error(w, "VFS read benchmark not available: source does not implement FileSystem", http.StatusNotImplemented)
+		return
+	}
+	targeter, ok := filesys.(contracttest.MountedBenchTarget)
+	if !ok {
+		http.Error(w, "read benchmark --path is not available on this VFS", http.StatusNotImplemented)
+		return
+	}
+	target, err := targeter.BenchTarget(r.Context(), req.Mount, path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if driver == nil {
+		driver = target.Driver
+	}
+	report := contracttest.RunDriverReadBenchmarkEntry(r.Context(), req.Mount, driver, target.Entry, size, levels, samples, interval)
+	writeJSON(w, []contracttest.ReadBenchReport{*report})
 }
 
 func (s *Server) writeUploadBenchmark(w http.ResponseWriter, r *http.Request, provider diagnostics.DriverProvider, req contracttest.DriverTestRequest, samples int, interval time.Duration) {

@@ -10,37 +10,67 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
+// ReadOnlyProbe reports whether a probe request only reads provider data.
+// Probes that create fixtures, upload, or mutate the mount are not read-only
+// and still require a mount with test_enabled.
+func ReadOnlyProbe(test string, req DriverTestRequest) bool {
+	switch strings.ToLower(strings.TrimSpace(test)) {
+	case "tuneread", "read":
+		// --path measures an existing file; without it the read test creates a
+		// fixture, which is a write.
+		return strings.TrimSpace(req.Path) != ""
+	}
+	return false
+}
+
 // DriverTestRequest is the JSON body for the local probe endpoints.
 type DriverTestRequest struct {
-	Test               string `json:"test"`
-	Mount              string `json:"mount,omitempty"`
-	Source             string `json:"source,omitempty"`
-	Dest               string `json:"dest,omitempty"`
-	Size               string `json:"size,omitempty"`
-	Count              int    `json:"count,omitempty"`
-	VFS                bool   `json:"vfs,omitempty"`
-	Samples            int    `json:"samples,omitempty"`
-	SampleInterval     string `json:"sample_interval,omitempty"`
-	MountPoint         string `json:"mount_point,omitempty"`
-	Path               string `json:"path,omitempty"`
-	Offset             string `json:"offset,omitempty"`
-	Length             string `json:"length,omitempty"`
-	Streams            int    `json:"streams,omitempty"`
-	WindowBytes        int64  `json:"window_bytes,omitempty"`
-	BlockSize          string `json:"block_size,omitempty"`
-	CacheMode          string `json:"cache_mode,omitempty"`
-	ReadPattern        string `json:"read_pattern,omitempty"`
-	SeekCount          int    `json:"seek_count,omitempty"`
-	SeekSize           string `json:"seek_size,omitempty"`
-	SeekScenario       string `json:"seek_scenario,omitempty"`
-	SeekWarmup         int    `json:"seek_warmup_chunks,omitempty"`
-	SeekOverlapTimeout string `json:"seek_overlap_timeout,omitempty"`
-	FetchIdleTimeout   string `json:"fetch_idle_timeout,omitempty"`
-	FetchTotalTimeout  string `json:"fetch_total_timeout,omitempty"`
-	Fault              string `json:"fault,omitempty"`
-	FaultAfter         string `json:"fault_after,omitempty"`
-	Concurrency        string `json:"concurrency,omitempty"`
-	ChunkSize          string `json:"chunk_size,omitempty"`
+	Test         string `json:"test"`
+	Mount        string `json:"mount,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Dest         string `json:"dest,omitempty"`
+	Size         string `json:"size,omitempty"`
+	Count        int    `json:"count,omitempty"`
+	VFS          bool   `json:"vfs,omitempty"`
+	Samples      int    `json:"samples,omitempty"`
+	FreshOffsets bool   `json:"fresh_offsets,omitempty"`
+	OffsetStep   string `json:"offset_step,omitempty"`
+
+	// HoldOpen keeps one mounted file handle across read samples, so a
+	// sustained run measures a session instead of a sequence of cold opens.
+	HoldOpen bool `json:"hold_open,omitempty"`
+	// Timeline records delivered bytes per elapsed second during a read.
+	Timeline       bool   `json:"timeline,omitempty"`
+	SampleInterval string `json:"sample_interval,omitempty"`
+	MountPoint     string `json:"mount_point,omitempty"`
+	Path           string `json:"path,omitempty"`
+	Offset         string `json:"offset,omitempty"`
+	Length         string `json:"length,omitempty"`
+	Streams        int    `json:"streams,omitempty"`
+	WindowBytes    int64  `json:"window_bytes,omitempty"`
+	// Prefetch* widen the lookahead shape for one measurement; nil/zero
+	// fields keep the resolved shape.
+	PrefetchWindowBytes int64  `json:"prefetch_window_bytes,omitempty"`
+	PrefetchDepth       *int   `json:"prefetch_depth,omitempty"`
+	PartBytes           *int64 `json:"part_bytes,omitempty"`
+	MinParallelBytes    *int64 `json:"min_parallel_bytes,omitempty"`
+	BlockSize           string `json:"block_size,omitempty"`
+	CacheMode           string `json:"cache_mode,omitempty"`
+	ReadPattern         string `json:"read_pattern,omitempty"`
+	SeekCount           int    `json:"seek_count,omitempty"`
+	SeekSize            string `json:"seek_size,omitempty"`
+	SeekScenario        string `json:"seek_scenario,omitempty"`
+	SeekWarmup          int    `json:"seek_warmup_chunks,omitempty"`
+	SeekOverlapTimeout  string `json:"seek_overlap_timeout,omitempty"`
+	FetchIdleTimeout    string `json:"fetch_idle_timeout,omitempty"`
+	FetchTotalTimeout   string `json:"fetch_total_timeout,omitempty"`
+	// RequireParallel fails a mounted read when every window executed
+	// single-stream, proving the declared parallel shape reached the provider.
+	RequireParallel bool   `json:"require_parallel,omitempty"`
+	Fault           string `json:"fault,omitempty"`
+	FaultAfter      string `json:"fault_after,omitempty"`
+	Concurrency     string `json:"concurrency,omitempty"`
+	ChunkSize       string `json:"chunk_size,omitempty"`
 }
 
 // NormalizeMountName accepts either a configured mount name or the same name
@@ -100,6 +130,7 @@ type TestRun struct {
 	Duration         string                  `json:"duration"`
 	DurationMS       int64                   `json:"duration_ms"`
 	Read             *MountedReadTestDetails `json:"read,omitempty"`
+	Tune             *ReadTuneDetails        `json:"tune,omitempty"`
 	Upload           *UploadTestDetails      `json:"upload,omitempty"`
 }
 
@@ -111,6 +142,7 @@ type MountedReadTestDetails struct {
 	Summary          MountedReadSummary       `json:"summary"`
 	SeekMeasurements []MountedSeekMeasurement `json:"seek_measurements,omitempty"`
 	SeekSummary      *MountedSeekSummary      `json:"seek_summary,omitempty"`
+	ResolvedPlan     *MountedReadPlan         `json:"resolved_plan,omitempty"`
 }
 
 // TestEnv carries the objects a spec runner may need, resolved once by the
@@ -188,6 +220,13 @@ var driverTestSpecs = map[string]TestSpec{
 		RequiresVFS: true,
 		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
 			return fromMountedReadTestResult(*RunVFSMountedReadTest(env.Ctx, env.FileSys, mount, env.Req))
+		},
+	},
+	"tuneread": {
+		Name:        "tuneread",
+		RequiresVFS: true,
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return RunVFSReadTune(env.Ctx, env.FileSys, mount, env.Req)
 		},
 	},
 	"contract": {
@@ -339,6 +378,7 @@ func fromMountedReadTestResult(r MountedReadTestResult) TestRun {
 		Read: &MountedReadTestDetails{
 			OpID: r.OpID, Measurements: r.Measurements, Summary: r.Summary,
 			SeekMeasurements: r.SeekMeasurements, SeekSummary: r.SeekSummary,
+			ResolvedPlan: r.ResolvedPlan,
 		},
 	}
 	tr.Steps = make([]TestStep, len(r.Steps))

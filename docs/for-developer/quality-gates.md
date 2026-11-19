@@ -1,16 +1,17 @@
 # 质量门禁（CI Workflows）
 
-qrypt 用四个 GitHub Actions workflow 组成质量体系：每 PR 的快速检查、
-每夜的全量门禁、真实网盘 contract 套件，以及 tag 触发的发布。本地开发时
+qrypt 用五个 GitHub Actions workflow 组成质量体系：每 PR 的快速检查、
+每夜的读路径与全量门禁、真实网盘 contract 套件，以及 tag 触发的发布。本地开发时
 对应的脚本见文末。
 
 ## Workflow 总览
 
 | Workflow | 触发 | 内容 | 状态徽章 |
 | --- | --- | --- | --- |
-| `CI` (ci.yaml) | PR / push main | vet、staticcheck、golangci-lint、govulncheck、gofmt、**repo hygiene**（`go mod tidy -diff`、actionlint、shellcheck、空白/冲突标记）、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；push main 时先由 `detect` 判断能否复用 PR 的 CI（见下） | README |
+| `CI` (ci.yaml) | PR / push main | vet、staticcheck、golangci-lint、govulncheck、gofmt、**repo hygiene**（`go mod tidy -diff`、actionlint、shellcheck、空白/冲突标记）、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race（PR 只跑 diff 可达包的 `race-changed`，push main 跑全量 `race`）、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；push main 时先由 `detect` 判断能否复用 PR 的 CI（见下） | README |
 | `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测；nightly 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的无人值守子集 | README |
-| `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
+| `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、全量 race（backstop）、**拆成 4 个 `race-shard` 并行跑**、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
+| `Read Gates` (read-gates.yaml) | PR / nightly cron | **读路径确定性门禁**：自适应前台分片、lookahead 去重、范围重试/截断重放，全部跑在 `pkg/testsupport/simread` 模拟 provider 上（无网络、无凭证）；真实网盘持续读探测只在配置了可选 secret 时运行，缺失时跳过而非失败 | —（未挂徽章） |
 | `Release` (release.yaml) | push `v*` tag / 手动 dispatch | `verify` 校验 tag 在 main 上且对应 tree 的 CI 已全绿，然后生成 changelog PR、构建 linux/windows/darwin 产物、跑 Windows 发布包挂载冒烟并发布 | README |
 
 ## 合并后复用 PR 检查（ci.yaml `detect`）
@@ -68,6 +69,9 @@ gh workflow run "Contract Tests"
 # Nightly Quality Gates（fuzz + coverage gate + race + all）
 gh workflow run "Nightly Quality Gates"
 
+# Read Gates（读路径确定性门禁；配置了真实网盘 secret 时额外跑持续读探测）
+gh workflow run "Read Gates"
+
 # Release：重跑失败的发布（tag 已存在；verify 会重新校验它仍指向已绿的提交）
 gh workflow run release.yaml -f version=vX.Y.Z
 ```
@@ -81,6 +85,55 @@ nightly cron 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的子集。定时任务�
 该 cookie 几天内就会过期，之后每次定时任务都会以 `mount "X" not found` 失败
 （`/v1/health` 仍返回 OK，因为失败的 mount 在启动时就被跳过了）。这类 mount
 请手动 dispatch，并在跑之前先按下面的步骤重建 secret。
+
+## 读路径门禁（read-gates.yaml）
+
+`Read Gates` 守住读取路径上两个反直觉的行为，两者都通过
+`pkg/testsupport/simread` 的确定性模拟 provider 验证：不碰网络、不需要凭证，
+也不会因为机器快慢而抖动。
+
+- **自适应前台分片默认开启**：单连接模拟 150 KiB/s 时，第一个窗口按单流测量
+  （约 300 KiB/s，低于 350 KiB/s 的进入阈值），下一个窗口切为 4 路范围并发，
+  聚合吞吐达到单流的 1.5 倍以上（本机实测约 3.4 倍、峰值 4 路并发）。
+  `pkg/vfs/read/simread_split_test.go` 直接使用生产默认阈值与默认 ReadPolicy，
+  不改任何测试开关，因此默认值本身被钉住。
+- **lookahead 不重复抓取在途窗口的尾部**：窗口 4..6 仍在途时，下一次 lookahead
+  调度必须跳过已被覆盖的 chunk，落点为 7/9/11；模拟 provider 的 Range 请求日志
+  按字节做「无空隙、无重叠、恰好铺满」断言，即 chunk 4..12 各被抓取一次
+  （对应 ce70c14 的 `windowCoverage` 修复）。
+- **重试与截断重放可复现**：同一份脚本化故障（503 → 429 → 截断 body → 重放）
+  连跑两遍，请求序列（offset/size/attempt/status/truncated/delivered）与交付
+  字节完全一致。
+
+模拟 provider 包住真实驱动（测试里是临时目录上的 localfs），按
+`Config.TimeScale` 把模拟时间压缩成真实时间：150 KiB/s、open 延迟、TTFB 和中途
+stall 都按配置的模拟值发生，只有 `模拟时长 / TimeScale` 才是真实 sleep 时长。
+确定性用例的时序来自 sim/replay 的时间缩放，因此生产超时逻辑无需为测试改动；
+测试保持快的方式是缩放模拟 provider，而不是缩短真实 deadline。例如
+`TestSimAdaptiveForegroundSplitUnderBandwidth` 在 TimeScale 2 下约 3 秒跑完，
+生产侧的 350 KiB/s 进入阈值和 900 KiB/s 退出阈值保持原值。
+
+workflow 有三个 job：
+
+- `setup`：只把可选的 secret/variable 转成布尔 `enabled` 输出，值本身不打印、
+  不导出；secret 无法用在 job 级 `if` 里，所以需要这一步中转。
+- `hermetic`（PR + nightly）：运行 `scripts/ci/read-gate.sh`；纯 Go，不需要 FUSE
+  头文件，是合并前必须为绿的检查。
+- `real-cloud`（手动 / nightly，可选）：仅当 secret `READ_GATE_CONFIG_TOML_B64`
+  与 repository variable `READ_GATE_MOUNT` 都存在且当前不是 PR 时运行，通过
+  `scripts/dev/debug-mount.sh ... read` 对真实挂载做一次持续顺序读探测；两者缺失
+  时 job 被跳过而不是失败，因此无凭证的贡献者和维护者不会看到红灯。
+
+本地等价命令：
+
+```bash
+# 只跑确定性读路径门禁（与 workflow 的 hermetic job 相同，秒级完成）
+scripts/ci/read-gate.sh
+
+# 有真实 mount 时运行同一个持续读探测；`--` 之后原样传给 probe test read
+scripts/ci/read-gate.sh --real-cloud <mount> --config ./qrypt.toml -- \
+  --size 64m --block-size 1m --samples 2 --cache-mode cold
+```
 
 ## Coverage 门禁
 
@@ -127,6 +180,10 @@ nightly cron 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的子集。定时任务�
 
 - `CONTRACT_CONFIG_TOML_B64`（secret）：Contract Tests 使用的
   `qrypt.toml` 的 base64。内容含真实凭证，只进 secret，绝不进日志。
+- `READ_GATE_CONFIG_TOML_B64`（secret，可选）：Read Gates 真实网盘持续读探测
+  使用的 `qrypt.toml` 的 base64；未配置时 `real-cloud` job 自动跳过。
+- `READ_GATE_MOUNT`（repository **variable**，可选）：上述配置里要探测的 mount
+  名称；与 secret 同时存在才会运行 `real-cloud`。
 - `CONTRACT_MOUNTS_JSON`（repository **variable**）：默认跑 contract 的
   mount 列表（JSON 数组）。**必须用 variable 而不是 secret**：GitHub
   会把含 secret 的 job output 脱敏为 `***`，导致
@@ -334,8 +391,17 @@ mkdir/upload/read 的 entry id 带 `ext:<mountId>` 前缀；主存储 ↔ 外挂
 ## 本地等价命令
 
 ```bash
-./scripts/ci/check-all.sh                 # 本地 CI 全量等价（静态检查 + 全部测试层）
-./scripts/ci/test-layers.sh                # 分层测试（fast/changed/race/vfs-stability/smoke/all/integration）
+# 本地 CI 全量等价（静态检查 + 全部测试层）。先把 pinned 工具目录放到 PATH
+# 最前：check-all.sh 自己也会安装并前置，但单独跑子门禁时不会，PATH 里其它
+# 版本的 shellcheck 等会触发版本不一致。
+PATH="$HOME/.cache/qrypt-tools:$PATH" ./scripts/ci/check-all.sh
+./scripts/ci/test-layers.sh                # 分层测试（fast/changed/race/race-changed/race-shard/race-shard-all/vfs-stability/smoke/all/integration）
+./scripts/ci/test-layers.sh race-changed   # PR 等价：只跑 diff 可达包的 -race，diff 无法落到包上时自动回退全量 race
+./scripts/ci/test-layers.sh race-shard 1/4 # nightly 等价：只跑一个 race 分片（1..4）
+./scripts/ci/test-layers.sh race-shard-all # 本机一次跑完 1..4 全部分片
+./scripts/ci/test-layers.sh clean-temp    # 清理被杀/超时测试留下的临时目录与残留挂载（默认只清 10 分钟前的）
+./scripts/ci/check-paths.sh --tree         # 本机绝对路径门禁（工作树）
+./scripts/ci/check-paths.sh --refs         # 全引用路径审计（含历史）
 ./scripts/ci/check-hygiene.sh              # 仓库卫生：tidy -diff、actionlint、pinned shellcheck、空白/冲突标记
 ./scripts/ci/check-coverage.sh -print      # 覆盖率快照（不 gate）
 ./scripts/ci/fuzz-nightly.sh 10s           # 本地 fuzz（每 fuzzer 10s）
@@ -348,6 +414,25 @@ pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟
 
 脚本按用途分目录（`ci/`、`schema/`、`install/`、`release/`、`dev/`），
 命名约定和每个目录的职责见 [`scripts/README.md`](../../scripts/README.md)。
+
+### 何时可以跳过全量门禁
+
+`check-all.sh` 是默认门禁：提交到 `main` 或合并前必须全绿。以下情况允许跳过，
+但要在提交信息或 PR 里写明原因，并给出最近一次全量通过的时间：
+
+- 只改文档、注释、示例等不影响运行时的内容。此时至少跑
+  `scripts/ci/check-docs.sh`，并确认 `git diff --check` 干净。
+- 只做历史重写、路径/引用脱敏、tag 重指等不改变工作树代码的操作（例如重写
+  已发布历史后再强推）。
+- 维护者明确允许某个版本带已知失败发布，并把修复顺延到下一个版本（例如
+  v0.7.0 的已知问题留到 v0.7.1）。
+
+`pre-push` 钩子对 `main` 和 `v*` tag 默认跑 `check-all.sh`，但会先检查这次推送
+实际改动的文件：如果整个推送范围只修改 `*.md`，就自动降级为
+`scripts/ci/check-docs.sh`（生成文档回归、相对链接、`git diff --check`），无需
+人工声明；`QRYPT_FULL_PUSH_CHECK=1` 可强制回到全量检查。需要完全跳过钩子时可使用
+`git push --no-verify` 或 `QRYPT_SKIP_HOOKS=1`，这属于上述豁免情形，跳过要在
+推送说明里记录。普通分支只跑受影响包的检查，不受此限制。
 
 `check-install.sh` 在 `ci.yaml` 的 `static` 任务中运行；`smoke-install.sh --docker`
 在 `stability` 任务中运行。`scripts/install/install.sh`（Linux / macOS）与
@@ -368,8 +453,66 @@ pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟
 `pkg/vfs/read` 约 6.5s、`pkg/vfs/upload` 约 3.6s；fast 层并行争用下分别约
 7s/8s/8s）。fast 层在本机 8 核 darwin/arm64 上约 18s（加速前约 26s），GitHub
 共享 runner 更慢，因此 `test-layers.sh` 的 `BUDGET=25` 只打印警告、不做硬失败。
-race 层已覆盖 `./pkg/vfs/...` 全部子包，本机约 50s；vfs-stability 并行跑 3 次
-`./pkg/vfs/...`，本机约 20s，超预算同样只是提示。
+race 层已覆盖 `./pkg/vfs/...` 全部子包，本机 8 核 darwin/arm64 上约 39s（47 个包，
+`-p 32`；单包 Elapsed 之和 218s，`pkg/vfs/read` 一个包就占 26.5s）；vfs-stability
+并行跑 3 次 `./pkg/vfs/...`，本机约 20s，超预算同样只是提示。
+
+race 层的墙钟由最慢的几个包决定，因此拆成 `n` 个分片：`race-shard i/n` 把具体包
+列表按本机实测的单包耗时切成 `n` 份，四个重包（`pkg/vfs/read`、`internal/cli`、
+`pkg/crypt`、`pkg/drive`）各钉在一个分片的第一位，其余包按「最贵优先、装到当前
+最轻分片」 cheapest-fit 分配，划分是确定性的（同一棵树重复跑得到同一分片）。
+夜间的 `Nightly race shard (i/4)` 在各自的 runner 上并行跑，全量 `race` 仍保留为
+backstop；PR 则用 `race-changed`：复用 `changed` 层的 import-closure 选择，只对
+diff 可达的包加 `-race`（本机实测：改一个 driver 文件可达 11 个包、约 14s；改
+`pkg/vfs/read` 这类被大量包依赖的文件则可达 28/47 个包、约 42s），diff 落不到包上
+（改脚本、`go.mod`、文档、无 git checkout）时同样 fail-safe 回退全量 race，绝不
+静默跳过。本地跑
+`race-shard-all` 时四个分片共用一台机器，脚本会把 `RACE_P` 按分片数下调，避免
+把本机 CPU 超额订阅；它只用于本机自检，不是 CI 的墙钟预期。任何 `go test -json`
+层加 `QRYPT_TEST_TIMINGS=1` 会额外打印最慢的 10 个单测（并写进 CI step summary），
+用来区分「包变慢」是哪个用例造成的。
+
+### 临时目录与残留挂载
+
+测试二进制被 kill 或撞上 `-timeout` 时不会执行 `t.Cleanup`，于是 `$TMPDIR` 下的
+isolated CLI home、session 日志目录、`qrypt-receive-test-*`/`qrypt-share-test-*`/
+`qrypt-offline-test-*`/`qrypt-isolated-*` 工作目录和 debug socket 会留到下一次运行；
+`debug-mount.sh` 的 helper 被 SIGKILL 时还会留下一个仍然挂着的 FUSE 目录。
+`test-layers.sh` 在**每个** layer 开头调用 `clean_orphan_temp` 自愈上一次运行：
+只清 `qrypt-` 前缀、且 mtime 早于 `QRYPT_TEMP_MAX_AGE_MIN`（默认 10 分钟）的条目，
+避免误删并发运行的目录。`$TMPDIR` 和 `/tmp` 都会扫（`debug-mount.sh` 在 socket
+路径过长时会回退到 `/tmp`）。`qrypt-mount-test.*` 和 `qrypt-isolated-*` 里若有活跃
+挂载，默认打印 `clean-orphan-temp: leaving still-mounted temp dir` 并**保留**——自动
+清理从不卸载可能属于活跃会话的挂载，也绝不在活挂载上 `rm -rf`（那会顺着挂载删
+云盘条目）；确认挂载属主已退出后，可用 `QRYPT_TEMP_FORCE_UNMOUNT=1` 先强制卸载
+再清理。脚本自己创建的临时路径（`measure` 的 JSON 文件、`run_repeated`/
+`race-shard-all`/diff-closure 的工作目录）登记在 registry 里，由 EXIT/INT/TERM trap
+清理，Ctrl-C 不再留目录。`clean-temp` 可在不跑层的情况下手动执行；
+`QRYPT_TEMP_MAX_AGE_MIN=0` 会连新条目一起清（仅在确认无其它测试进程时用）。
+注意 `check-all.sh` 为稳定复用把 `GOCACHE` 固定到 `/tmp/qrypt-go-build`（可用
+`GOCACHE` 覆盖），它是有意保留的构建缓存，涨大时手动删除即可。
+
+### 本地负载与失败重试
+
+定时器密集的测试在 CPU 被别的进程占满时会超时，这轮红灯和 diff 无关。
+`test-layers.sh` 启动时先报告一次系统负载（仅在负载超过 1.5×CPU 时），
+`go test -json` 层（fast/changed/race-changed/race-shard）或 `vfs-stability`
+失败后，本地会**只**把失败的包串行重跑一次（失败包多于 4 个时放弃，避免把
+真实回归也吞掉）：同样的包确定性失败仍是红灯，调度抖动则通过。CI 环境
+（`CI`/`GITHUB_ACTIONS` 存在）和显式 `QRYPT_STRICT_FLAKES=1` 会禁用重试，
+发布前自检也应按严格模式跑。重试不改变覆盖率：它只重跑失败包，不跳过任何包。
+
+### 本机路径门禁
+
+`scripts/ci/check-paths.sh` 拦截仓库里出现操作者本机绝对路径（home、macOS
+`/Users/<name>`、`/home/<name>`、`/private/tmp/qrypt-` 子树）。`--tree` 查工作树、
+`--range A..B` 查一段提交、`--refs` 做全引用审计；通用示例（`/Users/me`、
+`/Users/someone`、`/Volumes/Qrypt`、`/tmp/qrypt-`）和 CI 通用 runner 家目录会被
+放行。它已接进 `.githooks/pre-commit`（工作树）、`.githooks/pre-push`（推送范围）
+和 `check-all.sh`。历史里的泄漏用 `scripts/dev/scrub-paths.sh` 修复：默认只演练，
+`--push` 才会在重写后 force-push 所有变化的引用（先写 bundle 备份，再
+`filter-branch` + `reflog expire` + `gc`，最后用 `check-paths` 复核）。完整处置
+流程见 skill `qrypt-path-scrub`。
 
 两类进程级状态让测试不能并行，且都看不出自测试自身：
 

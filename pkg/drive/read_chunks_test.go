@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -41,10 +42,15 @@ func TestPendingReadDeliversPrefixBeforeTailWithOnePermit(t *testing.T) {
 	if job == nil {
 		t.Fatal("admission failed")
 	}
-	defer job.Close()
+	jobCtx, ctxErr := job.Context(ctx)
+	if ctxErr != nil {
+		t.Fatal(ctxErr)
+	}
 	chunks := make(chan []byte, 3)
 	done := make(chan error, 1)
-	go func() { done <- job.RunChunks(ctx, func(_ int64, b []byte) { chunks <- b }) }()
+	go func() {
+		done <- s.FetchStream(jobCtx, e, RangePlan{Size: int64(len(data))}, func(_ int64, b []byte) { chunks <- b })
+	}()
 	select {
 	case b := <-chunks:
 		if !bytes.Equal(b, data[:ReadChunkSize]) {
@@ -63,6 +69,9 @@ func TestPendingReadDeliversPrefixBeforeTailWithOnePermit(t *testing.T) {
 	}
 	close(release)
 	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := job.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if s.scheduler.PerFileInUse(e.ID) != 0 {
@@ -84,90 +93,92 @@ func TestProgressiveRangeFailureBoundaries(t *testing.T) {
 	data := bytes.Repeat([]byte("x"), 3*ReadChunkSize+17)
 	for _, scenario := range []string{"short", "empty-tail", "idle", "overlong", "close", "cancel", "total"} {
 		t.Run(scenario, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			var offsets, sizes []int64
-			var got []byte
-			publishCount := 0
-			delivery := &rangeDelivery{emit: func(offset int64, b []byte) {
-				if offset != int64(len(got)) {
-					t.Errorf("duplicate or missing delivery: %d vs %d", offset, len(got))
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var offsets, sizes []int64
+				var got []byte
+				publishCount := 0
+				delivery := &rangeDelivery{emit: func(offset int64, b []byte) {
+					if offset != int64(len(got)) {
+						t.Errorf("duplicate or missing delivery: %d vs %d", offset, len(got))
+					}
+					got = append(got, b...)
+					publishCount++
+					if scenario == "cancel" {
+						cancel()
+					}
+				}}
+				terminal := errors.New("close failure")
+				open := func(attemptCtx context.Context, _ Entry, offset, size int64) (io.ReadCloser, error) {
+					offsets = append(offsets, offset)
+					sizes = append(sizes, size)
+					if len(offsets) == 1 {
+						switch scenario {
+						case "short":
+							return io.NopCloser(bytes.NewReader(data[:ReadChunkSize+123])), nil
+						case "empty-tail":
+							return io.NopCloser(bytes.NewReader(data[:ReadChunkSize])), nil
+						case "idle", "total":
+							return &gatedChunkBody{ctx: attemptCtx, head: bytes.NewReader(data[:ReadChunkSize]), tail: bytes.NewReader(nil), release: make(chan struct{})}, nil
+						case "overlong":
+							return io.NopCloser(bytes.NewReader(append(append([]byte{}, data...), 1))), nil
+						case "close":
+							return closeErrorChunkBody{Reader: bytes.NewReader(data), err: terminal}, nil
+						}
+					}
+					return io.NopCloser(bytes.NewReader(data[offset : offset+size])), nil
 				}
-				got = append(got, b...)
-				publishCount++
-				if scenario == "cancel" {
-					cancel()
+				// The bounds only have to separate the timeout kinds from the
+				// classification under test; they are not what makes an attempt
+				// slow. Keep them far from any plausible scheduling delay: a 20ms
+				// idle limit tripped while a race-enabled CI runner drained an
+				// in-memory body, which silently turned every scenario into an
+				// idle-replay case before the intended path ran. Only the two
+				// scenarios that wait for a bound to expire use the tighter
+				// 300ms limit (15x the flake that bit us); the rest stay wide
+				// because they never wait on the timer.
+				bounds := FetchTimeouts{Idle: time.Second, Total: 15 * time.Second}
+				switch scenario {
+				case "idle":
+					bounds = FetchTimeouts{Idle: 300 * time.Millisecond, Total: 15 * time.Second}
+				case "total":
+					// The gated body publishes its head immediately and then
+					// stalls, so a wide total budget still expires during the
+					// fetch while the prefix is already delivered.
+					bounds = FetchTimeouts{Idle: 15 * time.Second, Total: 300 * time.Millisecond}
 				}
-			}}
-			terminal := errors.New("close failure")
-			open := func(attemptCtx context.Context, _ Entry, offset, size int64) (io.ReadCloser, error) {
-				offsets = append(offsets, offset)
-				sizes = append(sizes, size)
-				if len(offsets) == 1 {
-					switch scenario {
-					case "short":
-						return io.NopCloser(bytes.NewReader(data[:ReadChunkSize+123])), nil
-					case "empty-tail":
-						return io.NopCloser(bytes.NewReader(data[:ReadChunkSize])), nil
-					case "idle", "total":
-						return &gatedChunkBody{ctx: attemptCtx, head: bytes.NewReader(data[:ReadChunkSize]), tail: bytes.NewReader(nil), release: make(chan struct{})}, nil
-					case "overlong":
-						return io.NopCloser(bytes.NewReader(append(append([]byte{}, data...), 1))), nil
-					case "close":
-						return closeErrorChunkBody{Reader: bytes.NewReader(data), err: terminal}, nil
+				_, extra, err := fetchRange(ctx, Entry{Size: int64(len(data))}, 0, int64(len(data)), bounds, open, delivery)
+				switch scenario {
+				case "short", "empty-tail", "idle":
+					if err != nil || !bytes.Equal(got, data) || len(offsets) != 2 || offsets[1] != ReadChunkSize || sizes[1] != int64(len(data)-ReadChunkSize) {
+						t.Fatalf("resume failed: err=%v offsets=%v sizes=%v bytes=%d extra=%v", err, offsets, sizes, len(got), extra)
+					}
+					if publishCount != 4 {
+						t.Fatalf("publish count=%d", publishCount)
+					}
+				default:
+					if err == nil {
+						t.Fatal("terminal failure accepted")
+					}
+					if len(offsets) != 1 {
+						t.Fatalf("terminal failure retried: %v", offsets)
+					}
+					want := 3 * ReadChunkSize
+					if scenario == "cancel" || scenario == "total" {
+						want = ReadChunkSize
+					}
+					if len(got) != want {
+						t.Fatalf("unsafe or missing prefix: %d want %d", len(got), want)
+					}
+					if scenario == "cancel" && !errors.Is(err, context.Canceled) {
+						t.Fatal(err)
+					}
+					if scenario == "total" && !IsFetchTimeout(err) {
+						t.Fatal(err)
 					}
 				}
-				return io.NopCloser(bytes.NewReader(data[offset : offset+size])), nil
-			}
-			// The bounds only have to separate the timeout kinds from the
-			// classification under test; they are not what makes an attempt
-			// slow. Keep them far from any plausible scheduling delay: a 20ms
-			// idle limit tripped while a race-enabled CI runner drained an
-			// in-memory body, which silently turned every scenario into an
-			// idle-replay case before the intended path ran. Only the two
-			// scenarios that wait for a bound to expire use the tighter
-			// 300ms limit (15x the flake that bit us); the rest stay wide
-			// because they never wait on the timer.
-			bounds := FetchTimeouts{Idle: time.Second, Total: 15 * time.Second}
-			switch scenario {
-			case "idle":
-				bounds = FetchTimeouts{Idle: 300 * time.Millisecond, Total: 15 * time.Second}
-			case "total":
-				// The gated body publishes its head immediately and then
-				// stalls, so a wide total budget still expires during the
-				// fetch while the prefix is already delivered.
-				bounds = FetchTimeouts{Idle: 15 * time.Second, Total: 300 * time.Millisecond}
-			}
-			_, extra, err := fetchRange(ctx, Entry{Size: int64(len(data))}, 0, int64(len(data)), bounds, open, delivery)
-			switch scenario {
-			case "short", "empty-tail", "idle":
-				if err != nil || !bytes.Equal(got, data) || len(offsets) != 2 || offsets[1] != ReadChunkSize || sizes[1] != int64(len(data)-ReadChunkSize) {
-					t.Fatalf("resume failed: err=%v offsets=%v sizes=%v bytes=%d extra=%v", err, offsets, sizes, len(got), extra)
-				}
-				if publishCount != 4 {
-					t.Fatalf("publish count=%d", publishCount)
-				}
-			default:
-				if err == nil {
-					t.Fatal("terminal failure accepted")
-				}
-				if len(offsets) != 1 {
-					t.Fatalf("terminal failure retried: %v", offsets)
-				}
-				want := 3 * ReadChunkSize
-				if scenario == "cancel" || scenario == "total" {
-					want = ReadChunkSize
-				}
-				if len(got) != want {
-					t.Fatalf("unsafe or missing prefix: %d want %d", len(got), want)
-				}
-				if scenario == "cancel" && !errors.Is(err, context.Canceled) {
-					t.Fatal(err)
-				}
-				if scenario == "total" && !IsFetchTimeout(err) {
-					t.Fatal(err)
-				}
-			}
+			})
 		})
 	}
 }
@@ -177,12 +188,12 @@ func TestProgressiveRangeDoesNotPublishIncompleteTailAfterRetryLimit(t *testing.
 	var offsets []int64
 	var got []byte
 	delivery := &rangeDelivery{emit: func(_ int64, b []byte) { got = append(got, b...) }}
-	_, extra, err := fetchRange(context.Background(), Entry{Size: int64(len(data))}, 0, int64(len(data)), FetchTimeouts{Idle: time.Second, Total: time.Second}, func(_ context.Context, _ Entry, off, size int64) (io.ReadCloser, error) {
+	_, stats, err := fetchRange(context.Background(), Entry{Size: int64(len(data))}, 0, int64(len(data)), FetchTimeouts{Idle: time.Second, Total: time.Second}, func(_ context.Context, _ Entry, off, size int64) (io.ReadCloser, error) {
 		offsets = append(offsets, off)
 		return io.NopCloser(bytes.NewReader(data[off : int64(len(data))-1])), nil
 	}, delivery)
-	if !errors.Is(err, io.ErrUnexpectedEOF) || len(offsets) != 2 || offsets[1] != ReadChunkSize || len(got) != ReadChunkSize || extra["fetch_attempts"] != 2 {
-		t.Fatalf("unbounded retry or unsafe tail: offsets=%v bytes=%d extra=%v err=%v", offsets, len(got), extra, err)
+	if !errors.Is(err, io.ErrUnexpectedEOF) || len(offsets) != 2 || offsets[1] != ReadChunkSize || len(got) != ReadChunkSize || stats.attempts != 2 {
+		t.Fatalf("unbounded retry or unsafe tail: offsets=%v bytes=%d stats=%+v err=%v", offsets, len(got), stats, err)
 	}
 }
 
@@ -194,8 +205,12 @@ func TestPendingReadUnknownSizeRemainsBuffered(t *testing.T) {
 		t.Fatal("admission failed")
 	}
 	defer job.Close()
+	ctx, ctxErr := job.Context(context.Background())
+	if ctxErr != nil {
+		t.Fatal(ctxErr)
+	}
 	var got []byte
-	err := job.RunChunks(context.Background(), func(off int64, b []byte) {
+	err := s.FetchStream(ctx, Entry{ID: "0/file.bin"}, RangePlan{Size: int64(len(data)) + 100}, func(off int64, b []byte) {
 		if off != int64(len(got)) {
 			t.Errorf("unexpected offset=%d", off)
 		}

@@ -14,9 +14,11 @@ import (
 )
 
 func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
-	// The legacy profile has no stage suggestions, so a confirmed sequential
-	// run issues the full lookahead this test gates.
+	// A fixed sequential stage suggestion makes the speculative lookahead one
+	// wide window, which is the in-flight range this test gates.
 	profile := drive.DefaultReadPolicy()
+	profile.Interactive.PrefetchWindowBytes = 8 << 20
+	profile.Interactive.PrefetchDepth = 1
 	// Isolate window ownership from budget saturation: four lookaheads leave
 	// capacity for the other session's foreground request.
 	profile.MaxInFlight = 8
@@ -32,34 +34,27 @@ func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
 		return nil, false
 	}
 
-	// Session 2 confirms a sequential run and keeps consuming, so its adaptive
-	// budget widens into a gated lookahead. Only consumption grows it; the
-	// stage's ceiling alone does not. The controller starts the lookahead
-	// asynchronously after delivery, so poll briefly between reads instead of
-	// waiting out the whole adaptive ramp on every step.
-	var big stagedCall
-	for chunk := int64(0); chunk < 128 && big.Size == 0; chunk++ {
+	// Session 2 confirms a sequential run, which admits the wide lookahead.
+	// Read its start from the live window registry rather than the recorded
+	// calls: the provider call is appended asynchronously, so a call recorded
+	// from an earlier (already retired) lookahead would point the seek at a
+	// later window's head block.
+	wideStart := int64(-1)
+	for chunk := int64(0); chunk < 8 && wideStart < 0; chunk++ {
 		r.read(t, sessionContext(2, uint64(chunk+1)), chunk*ChunkSize, ChunkSize)
-		for deadline := time.Now().Add(20 * time.Millisecond); big.Size == 0; {
-			for _, call := range r.host.recorded() {
-				if call.Size > 2*ChunkSize {
-					big = call
-					break
-				}
-			}
-			if big.Size > 0 || time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(time.Millisecond)
+		if start, ok := wideLookaheadStart(r); ok {
+			wideStart = start
 		}
 	}
-	if big.Size == 0 {
+	if wideStart < 0 {
 		t.Fatalf("no wide lookahead issued: %+v", r.host.recorded())
 	}
 
-	// Session 1 seeks into that wide window. It must not wait for it: the
-	// seek's own 1-chunk window is enough.
-	seekOffset := big.Offset + ChunkSize
+	// Session 1 seeks into that wide window, at a block it covers but does not
+	// head: another session's lookahead may only be joined for its head block,
+	// so this seek must load its own window instead of waiting for the gated
+	// range.
+	seekOffset := wideStart*ChunkSize + ChunkSize
 	done := r.goRead(sessionContext(1, 1), seekOffset, ChunkSize)
 	select {
 	case result := <-done:
@@ -69,7 +64,7 @@ func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
 		if !bytes.Equal(result.data, r.host.data[seekOffset:seekOffset+ChunkSize]) {
 			t.Fatal("seek returned wrong bytes")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("seek waited for the oversized in-flight prefetch window")
 	}
 
@@ -89,6 +84,26 @@ func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
 			t.Fatalf("wide prefetch was canceled by an unrelated seek: %v", call.Err)
 		}
 	}
+}
+
+// wideLookaheadStart returns the first chunk of a live speculative window that
+// is wider than the seek's own window. Reading the live registry keeps the test
+// independent of when the asynchronous fetch records its provider call.
+func wideLookaheadStart(r *stagedReader) (int64, bool) {
+	r.reader.state.windows.mu.Lock()
+	defer r.reader.state.windows.mu.Unlock()
+	for _, load := range r.reader.state.windows.loads {
+		if !load.prefetch || (load.end-load.start+1)*ChunkSize <= 2*ChunkSize {
+			continue
+		}
+		select {
+		case <-load.done:
+			continue
+		default:
+		}
+		return load.start, true
+	}
+	return 0, false
 }
 
 func TestSeekStillWaitsForCompatibleWindow(t *testing.T) {

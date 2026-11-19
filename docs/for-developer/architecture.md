@@ -416,10 +416,22 @@ with a deadline.
   (`drive.ReadSource`), and drivers bound the response-header
   phase through their HTTP transport.
 - Read events carry `cancel_reason=timeout`, `wait_us`, and `fetch_us`; a
-  replayed range reports `fetch_status_retries`, `fetch_status_reason`
-  (`status_5xx`, `rate_limited`, `request_timeout`), and `fetch_backoff_ms`
-  next to the existing `fetch_attempts`/`fetch_retried`. The mount debug
-  snapshot exposes `read_timeouts`, `prefetch_timeouts`, and `last_timeout`.
+  replayed range reports `fetch_attempts` and the last `fetch_retry_reason`
+  (`timeout`, `truncated_body`, `status_5xx`, `rate_limited`,
+  `request_timeout`). The mount debug
+  snapshot exposes `read_timeouts`, `prefetch_timeouts`, and `last_timeout`,
+  plus lookahead accounting: `deduped_lookahead_chunks` counts lookahead chunks
+  the scheduler skipped because an in-flight window already covers them, and
+  `overlapping_window_chunks` counts chunks a newly admitted window shared with
+  one already in flight. The dedupe should keep the latter at zero; a nonzero
+  value means duplicate provider work. Window shape counters split by intent
+  (`interactive_window_loads`/`interactive_window_chunks` and
+  `bulk_window_loads`/`bulk_window_chunks`) show what shape playback and
+  downloads actually admitted; read events are rate limited, so a download's
+  window shape would otherwise not appear in the log at all. The resolved read
+  policy in the same snapshot carries `warnings` for shapes that cannot execute
+  as written (bulk streams or lookahead depth above `max_in_flight`, a minimum
+  parallel size wider than the bulk window).
 
 ## Upload State Flow
 

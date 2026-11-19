@@ -174,8 +174,12 @@ for the default same-user local workflow.
 | Verify VFS upload behavior | `probe test fs --mount NAME` |
 | Measure full mounted-file read latency and throughput | `probe test read --mount NAME --mount-point PATH` |
 | Clear one mount's read cache for a cold run | `probe cache clear --mount NAME` |
-| Drop one file's read cache | `probe cache invalidate --path REMOTE` |
+| Drop one file's read cache | `probe cache invalidate --mount NAME --path REMOTE` |
+| Warm one file's read cache through the mount | `probe cache fill --mount NAME --path REMOTE --bytes 64m` |
+| Verify the read shape the provider actually executed | `probe verify read --mount NAME --path REMOTE --window 4MiB --streams 3` |
+| Print stable diagnostics JSON | `debug events --json`, `debug ops --json`, `debug read-memory --json` |
 | Reproduce a stalled or truncated provider read | `probe fault read --path REMOTE --kind stall` |
+| Emulate a per-connection provider throttle | `probe fault read --path REMOTE --kind rate --rate 150k` |
 | Verify same-directory batch upload caching | `probe test batchupload --mount NAME` |
 | Measure same-mount batch moves | `probe test batchmove --mount NAME` |
 | Verify resumable upload recovery | `probe test resume --mount NAME` |
@@ -193,6 +197,43 @@ runs nightly against real providers.
 Use `collect` first when you are unsure. Use `raw` when you already know which
 endpoint you need. Use `watch` when the issue only appears during a time window,
 for example upload retries or stale reads.
+
+### Read Structured Diagnostics JSON
+
+The read-only diagnostics commands also print one stable JSON object when you
+pass `--json`. The object keeps the raw endpoint payload under `data` and adds
+the fields a log pipeline can key on:
+
+```json
+{
+  "schema_version": 1,
+  "command": "debug events",
+  "generated_at": "2026-11-19T05:00:00Z",
+  "socket": "/Users/me/.qrypt/run/debug.sock",
+  "data": { "schema_version": 2, "generated_at": "...", "events": [] }
+}
+```
+
+`debug read-memory --json` follows the same shape. With `--watch` it prints one
+compact envelope per poll as JSON Lines, so `--json --watch` can be piped into
+`jq` or a log shipper. Without `--json` the default output is unchanged: the raw
+endpoint body for `read-memory`, and one line per event or operation for the new
+commands.
+
+```sh
+# Warnings and errors, filtered like /v1/events supports.
+qrypt debug events --level warn --limit 200 --mount quark-encrypt --json
+qrypt debug events --component QUARK --path /quark-encrypt/videos/movie.mp4
+
+# In-flight read, chunk, window, and prefetch operations.
+qrypt debug ops --mount quark-encrypt --json
+```
+
+`debug events` accepts `--level` (default `warn`), `--limit` (default 100),
+`--path` (substring over the message), `--component`, and repeated `--mount`.
+`debug ops` accepts repeated `--mount`. Human output prints one operation per
+line with `op=`, `id=`, requested bytes, offset, background flag, wait reason,
+and age in milliseconds.
 
 ## Inspect Uploads And Upload
 
@@ -251,13 +292,22 @@ then reads it with `os.Open` through the supplied mount point. Setup and cleanup
 are excluded from the read measurements. `cold` clears qrypt's durable and
 in-memory read caches; every measured read requests OS cache bypass/drop where
 supported, while `warm` keeps qrypt's read-cache state from the preceding read.
-`both` reports both modes. Each measurement includes open and time-to-first-byte
+`both` reports both modes. A multi-sample run re-reads the same range, so
+later samples can hit bytes an earlier sample fetched; add `--fresh-offsets`
+(with `--path`) to advance every sample by one read length, or clear the cache
+between samples. `--hold-open` and `--timeline` switch the run to sustained-session
+shape and per-second delivery detail. Each measurement includes open and time-to-first-byte
 latency, total and steady throughput, peak throughput over a one-second window,
 data-bearing read-call latency percentiles, cache hit/miss deltas, VFS read-call
 count, byte count, and content-hash validation. The test fails when the supplied
 path bypasses qrypt (for example, when `--mount-point` names the backing
 directory instead of the FUSE mount). `metrics_truncated` marks a measurement
-whose phase-level history exceeded the bounded runtime history. The test does
+whose phase-level history exceeded the bounded runtime history. `resolved_plan`
+reports the plan the read layer resolved from the driver policy and the
+measurement override (stage, intent, window/streams/part/prefetch fields), so a
+shape can be checked before any bytes move; `wire_bytes_trusted` and
+`amplification_trusted` say whether those derived numbers are complete for that
+measurement (both are false when `metrics_truncated` is true). The test does
 not use a fixed network-speed threshold.
 
 `--pattern sequential` preserves the full-file test above and remains the
@@ -343,11 +393,102 @@ scripts/dev/playback-sim.py --path ~/Qrypt/quark-encrypt/movie.mp4   --max-speed
 
 The summary reports median/p95 read latency, seek latency, stalls, and (with
 `--mount`) the matching `/v1/reads` window events split into
-`driver_open_ms` and `driver_body_ms`. That split distinguishes provider
+`open_us`, `body_us` and `close_us` (microseconds, summed over attempts). That split distinguishes provider
 time-to-first-byte from body throughput, and the event count shows whether a
 stall came from the remote read or from the cache. `--warm` keeps the OS page
 cache instead of bypassing it with `F_NOCACHE`; `--json FILE` stores the
 per-second series for comparison between runs.
+
+### Compare Two Builds On The Same File
+
+`scripts/dev/read-ab.py` measures a control build against the working tree
+with `qrypt mount --isolated` mounts: each side gets its own temporary mount
+point, `QRYPT_HOME`, read cache and log file, so the production mount, its
+cache, and its logs never affect the numbers. The script builds the control from a git ref in a
+temporary worktree (uncommitted changes stay untouched), mounts both sides with
+quiet logging and no bandwidth limit, and interleaves playback-shaped reads
+with rotating order. Each round reads a fresh region; samples where the
+provider stalls on TTFB or where qrypt's cache serves the read are excluded and
+retried at a shifted offset.
+
+```sh
+scripts/dev/read-ab.py --mount quark-encrypt \
+  --path "/videos/sample.mp4" \
+  --offsets 200,450,650,850 --length 2MiB --rounds 2
+```
+
+The table reports each sample's throughput and TTFB plus the candidate/control
+ratio; the summary gives the median over clean pairs, which is the number to
+decide on (individual pairs move with CDN variance). `--amplify` adds a second
+debug-logging pass that reports provider wire bytes per delivered byte for both
+sides, and `--min-ratio` / `--max-amplification` turn the run into a gate: the
+process exits nonzero when the clean median ratio or the candidate amplification
+misses the threshold, so a nightly or pre-merge check needs no hand-written
+comparison. For sustained playback shape, add `--length 64MiB` and one offset;
+the per-second timeline comes from `probe test read --hold-open --timeline` when
+a single read's rate drop is the question. The script needs a client config with
+credentials (default: repository `qrypt.toml`) and Python 3.11+. The control
+build must include `qrypt mount --isolated`, so compare against a revision at
+or after the isolated mount landed. `--keep` keeps the temporary binaries,
+logs, and results for inspection.
+
+### Tune A Read Shape
+
+`probe tune read` sweeps read shapes against one existing mounted file and
+prints the fastest one as a TOML block. It needs the running mount's control
+socket and the mount point, writes nothing remote, and therefore also works on
+a read-only mount:
+
+```sh
+qrypt probe tune read --mount quark-encrypt \
+  --mount-point /mnt/qrypt/quark-encrypt \
+  --path /videos/sample.mp4 --size 32m --rounds 3
+```
+
+The run measures playback-shaped cold reads for the interactive window
+(`caller`, 1, 2, 4, 8 MiB), then lookahead depth at the best window, then bulk
+downloads (`8`/`16` MiB window with one or two streams). Every variant is
+measured with the same block size and fresh region, and the order rotates per
+round so a provider rate change cannot favour one shape. The table reports the
+median/min/max of each variant; the evidence lines name the winner of each
+phase, and the config block is ready to paste under the mount in `qrypt.toml`.
+Add `--json` to keep the raw result (including every sample) for a report.
+
+`scripts/dev/tune.py` wraps the common case: it builds the working tree (or
+reuses `--binary`), starts a read-only `qrypt mount --isolated` mount from the
+client config, runs the same sweep and removes the temporary mount on exit, so
+no rewritten credential config is left behind:
+
+```sh
+scripts/dev/tune.py --mount quark-encrypt --path /videos/sample.mp4 \
+  --size 32m --rounds 3
+```
+
+Use `--json` for the raw result, `--keep` to inspect the temporary mount and
+`--log-level debug` when a window shape needs to be checked in the log (the
+mount writes it to `runtime.log` under the temporary root).
+
+The measurement uses the same plan override as `probe test read`, which is
+also reachable through its individual flags: `--window`, `--prefetch-window`,
+`--prefetch-depth` (`--no-prefetch` for depth 0), `--streams`, `--part-size`
+and `--min-parallel` set the executed shape for one measurement, with `0`
+keeping the resolved value for `--streams` and `auto` meaning an even split for
+`--part-size`. The override is applied through the mount's read layer, so it
+affects the same code path a real playback read takes; the same flags are
+covered by `probe test read` when a single shape needs confirmation.
+
+### Benchmark An Existing File
+
+`probe bench read` uploads a generated fixture by default, which needs a
+writable mount. Add `--path` to read an existing virtual file through the
+driver instead, so read-only mounts and read-only drivers can be measured:
+
+```sh
+qrypt probe bench read --mount koofr --path "/My videos/movie.mp4" --size 32m --concurrency 1,2,4,8
+```
+
+The benchmark still bypasses the VFS and encryption layers; `--size` defaults
+to the smaller of the file and 32 MiB and is clamped to the file length.
 
 ### Measure Cache-Miss Load Time
 
@@ -361,7 +502,9 @@ qrypt probe cache clear --mount quark-encrypt
 
 The command talks to the running mount's probe socket, drops the durable
 chunks, hot chunks, range-hit state, and sequential-read state, and returns
-JSON. In-flight reads finish normally; the next read starts cold. Add `--cold`
+JSON. It needs the mount to have `test_enabled = true` (or an isolated
+`QRYPT_HOME` test mount); otherwise the probe socket rejects the request with
+`mount "NAME" is not enabled for probe tests`. In-flight reads finish normally; the next read starts cold. Add `--cold`
 to `playback-sim.py` to run the clear immediately before the measurement:
 
 ```sh
@@ -375,8 +518,29 @@ To make one file cold without clearing the whole mount, invalidate just that
 path:
 
 ```sh
-qrypt probe cache invalidate --path /quark-encrypt/videos/movie.mp4
+qrypt probe cache invalidate --mount quark-encrypt --path /quark-encrypt/videos/movie.mp4
 ```
+
+`--mount` is optional but recommended when the virtual path spelling matters:
+the probe socket resolves the mount from the path, so a path that belongs to a
+different mount fails the command instead of silently dropping another mount's
+chunks. `probe cache invalidate --json` prints the stable diagnostics envelope.
+
+To warm one file instead, read it through the mount before measuring. The fill
+command goes through the same VFS read path as a player, so it populates the
+durable chunks and hot chunks a mount actually serves:
+
+```sh
+qrypt probe cache fill --mount quark-encrypt --path /quark-encrypt/videos/movie.mp4 --bytes 64m
+qrypt probe cache fill --mount quark-encrypt --path /quark-encrypt/videos/movie.mp4 --bytes 0 --json
+```
+
+`--bytes 0` fills the whole file up to the server cap (1 GiB); `--block-size`
+controls the per-read granularity (default 1 MiB, 4 KiB–16 MiB). The command
+returns the file size, the bytes actually read, the read-call count, the
+duration, and the read-cache byte count before and after, so a warm-up can be
+confirmed in the same JSON. `probe cache clear` and `probe cache invalidate` also
+accept `--json` and emit the same stable envelope as the diagnostics commands.
 
 For seek tests where every jump should start cold, pass `--cold-every-seek`
 instead of clearing the whole mount on each seek:
@@ -396,7 +560,78 @@ run can still hit what that run already fetched; run the script again, or seek
 far away, when every sample must be a cache miss. `probe test read --cache-mode
 cold` remains the benchmark-native option: it clears the cache before every
 cold sample and also reports mounted read latency, throughput, and seek
-behavior.
+behavior. When measuring an existing file with `--path`, add
+`--fresh-offsets` to advance every sample by one read length (or
+`--offset-step` bytes) instead of re-reading the same range; each sample then
+lands in a region no earlier sample fetched. Each measurement also reports
+`wire_bytes` and `amplification` (provider bytes per delivered byte) computed
+from the window events of that read, so over-fetch on a slow link shows up in
+the same output as the latency and throughput numbers. `executed_streams`,
+`executed_window_chunks`, `executed_window_bytes` and `executed_part_bytes`
+report the shape the provider actually ran, so a plan override or a driver
+default can be checked against what executed instead of what was requested.
+When `--path` points at a file that is still uploading, the command refuses to
+measure it: reads of a pending file can come from local staging, so the run
+waits for the upload to drain instead of reporting local disk speed as a
+provider result. `--require-parallel` turns the executed shape into a gate: the
+run fails when every window ran single-stream, which is how a declared
+`parallel_range` capability or a bulk stream policy is proven to reach the
+provider instead of only being configured.
+
+### Interleaved A/B Reads
+
+`qrypt probe ab read` compares two read shapes on the same file without
+relying on provider state staying quiet between runs: rounds alternate A/B and
+B/A, both sides measure the same offsets with the cold reader, and the report
+carries per-round throughput/TTFB, the median ratio, a winner with a 5 %
+threshold, and each side's `resolved_plan`. Shape strings reuse the
+`probe test read` flags as `key=value` tokens (`window=4m`,
+`prefetch-window=2m`, `prefetch-depth=4`, `no-prefetch`, `part-size=auto`,
+`min-parallel=8m`, `streams=2`); the default control side is the driver
+default, so one command answers "does this override beat what the policy
+already does":
+
+```sh
+qrypt probe ab read --mount drime --mount-point ~/Qrypt \
+  --path /movie.mp4 --size 16m --rounds 3 --a control --b "window=4m,prefetch-window=4m"
+```
+
+### Verify The Executed Read Shape
+
+Plan overrides and driver defaults describe intent; `probe verify read` checks
+the shape the provider actually executed. It clears the mount's read cache,
+reads the file once with the requested window, streams, prefetch depth, and
+optional part size, then compares the executed window/stream/prefetch shape
+against the request:
+
+```sh
+qrypt probe verify read --mount quark-encrypt \
+  --path /quark-encrypt/videos/movie.mp4 \
+  --window 4MiB --streams 3 --prefetch-depth 2 --length 16m
+```
+
+The command resolves the mount point from the config, clamps `--length` to the
+file size, and runs `probe test read` internally with a cold cache and one
+sample. It exits `0` when the executed shape matches and `4` when it does not;
+use `4` as the regression signal in scripts. `--json` prints the flat report
+(`requested`, `executed`, `counters`, `measurements`, `mismatches`, `warnings`)
+instead of the human summary.
+
+The comparison covers four facts:
+
+- window bytes must equal the requested window rounded up to the 512 KiB read
+  chunk, and the executed chunk count must match;
+- requested streams greater than one must run multi-stream (a single-stream
+  execution is a mismatch; adaptive split above the request is only a warning);
+- a requested part size must be the executed part size (an executed zero is a
+  warning, not a mismatch);
+- a prefetch depth greater than zero must produce prefetch windows, read from
+  `executed_prefetch_windows` or the `/v1/read-memory` prefetch counter delta.
+
+Cache hits and read or prefetch timeouts add warnings instead of mismatches.
+Each measurement still carries the `executed_streams`,
+`executed_window_chunks`, `executed_window_bytes`, `executed_part_bytes`, and
+`executed_prefetch_windows` fields documented for `probe test read`.
 
 ### Inject Read Faults
 
@@ -416,6 +651,11 @@ qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind status --st
 # Delay the body's first byte so open latency is visible.
 qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind delay --delay 2s
 
+# Pace the body at 150 KiB/s: every Range read behaves like a throttled
+# per-connection CDN link, which is how parallel fan-out and first-byte
+# latency changes are measured without a real throttled provider.
+qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind rate --rate 150k --times 10000
+
 qrypt probe fault list
 qrypt probe fault clear            # all rules
 qrypt probe fault clear --id ID    # one rule
@@ -425,8 +665,10 @@ Rules fire once by default, so the first attempt fails and the replay succeeds.
 `--times N` keeps the fault active for more attempts; `--offset` and `--length`
 scope it to a byte range. Rules skip background prefetch windows by default so
 a canceled speculative read cannot swallow the rule; add `--include-prefetch`
-when the prefetch path itself is under test. Faults live in the running mount
-and disappear on restart.
+when the prefetch path itself is under test. `--kind rate` paces the body
+instead of failing it, and needs enough `--times` to cover every read in the
+measurement (a cold playback read issues several windows). Faults live in the
+running mount and disappear on restart.
 
 Quark's driver snapshot (`/v1/driver?mount=NAME`) now includes
 `download_rotations`, `last_download_rotate_reason`, and `penalized_edges`
@@ -539,28 +781,26 @@ Useful fields:
 ### Reading The Read-Cache Replacement State
 
 `cache.mounts[].cache` carries the counters visible to the eviction policy, and
-they answer two different questions:
+they answer three different questions:
 
-- `unproven_bytes` / `proven_bytes` split the cache by **state**: a chunk is
-  unproven until a read run other than the one that admitted it touches it. A
-  sequential stream consuming its own read-ahead only ever produces unproven
-  content, which is why a one-pass scan shows up here rather than as hits.
-- `stream_bytes` is the **budget** view: the unproven bytes that live in the
-  large-file class, i.e. what the sequential sub-budget is currently charging.
-  It is bounded by a share of the large-class ceiling whenever a drain runs.
-  Small-class unproven content has no sub-budget, so `stream_bytes` is normally
-  smaller than `unproven_bytes`.
-- `protected_bytes` / `probationary_bytes` split the proven content by segment.
-  A drain empties probationary before touching protected, so a cache whose
-  protected bytes hold steady across a large scan is working as intended.
+- `probationary_bytes` / `protected_bytes` split the cache by **state**: a chunk
+  is probationary until a read run other than the one that admitted it touches
+  it. A sequential stream consuming its own read-ahead only ever produces
+  probationary content, which is why a one-pass scan shows up here rather than as
+  hits.
+- `pinned_bytes` is the **budget** view: chunks of files that saw a read or write
+  in the last minute. A drain takes unpinned content first, so the file being
+  read keeps its read-ahead while the rest of the cache pays.
 - `evicted_bytes` and `promotions` are event counters: how much the cache has
   released, and how many chunks a later run has confirmed as reused.
 
-Expect the disk footprint to look different from older builds: content read once
-in a single pass is held in the sub-budget rather than filling the whole
-large-class ceiling, so a cache serving only streaming reads will settle below
-its `max_size` instead of at it. Content that is read again is promoted and
-released from that sub-budget, so repeatedly used files still fill the cache.
+A drain empties probationary before touching protected, so a cache whose
+protected bytes hold steady across a large scan is working as intended. The
+first pass skips pinned chunks; only when unpinned content cannot satisfy the
+drain are pinned chunks evicted too, so the pin never suspends the `max_size`
+bound.
+
+Expect the disk footprint to settle just under `max_size`: one-pass streaming content is admitted probationary and drained as it ages, so a cache serving only streaming reads does not pin at the cap. Content that is read again is promoted to protected and is drained only after the probationary segment empties.
 
 Read events are kept in two bounded rings and merged into one append-ordered
 list: **summaries** (one per read: offset, bytes, cache hits/misses, duration,
@@ -722,6 +962,7 @@ Common endpoints:
 | `/v1/staging?mount=NAME` | Staging files and orphan staging files | Grows with staging files |
 | `/v1/cache?mount=NAME` | Read cache and pending journal health | Grows with cache files |
 | `/v1/events?level=warn&limit=100&mount=NAME&component=CACHE` | Recent warnings/errors, filtered by mount and component fields | Limited by `limit` |
+| `/v1/debug/cache/fill?mount=NAME&path=PATH&bytes=N&block_size=N` | Warms one file through the mount read path (probe socket only) | Bounded by `bytes`/1 GiB cap |
 | `/v1/driver?mount=NAME&limit=200&since=2m` | Driver debug snapshot and metrics | Driver dependent, metrics filtered server-side |
 | `/v1/mounts/health?mount=NAME` | Recent operation health | Small |
 | `/v1/resolve?path=PATH` | Resolve a virtual path | Small |
@@ -770,11 +1011,28 @@ Mount state is reported as `vfs.MountSnapshot`:
 - `read_policy`: complete recommended/effective policy, hard limits, and field
   origins; bulk sizes are bytes and fetch bounds use explicit nanosecond keys
 
-Read event extras distinguish planned workers and actual grants, stage,
-foreground/lookahead windows, part ceiling, retries, and cancellation. Timing
-fields separate `queue_us`, `open_us`, `body_us`, `local_wait_us`, and
-`validate_us`; local wait overlaps body time and must not be added to it.
-Driver open is not CDN TTFB. Player first-frame latency requires player telemetry.
+Two events carry the read path's diagnostics, with a deliberately small fixed
+field set each.
+
+The summary `phase=read` event describes the whole read: `read_intent`,
+`read_stage`, `read_streams` (granted workers), `planned_streams`, the window
+(`window_chunks`), the prefetch shape (`prefetch_chunks`, `prefetch_depth`),
+the split thresholds (`part_bytes`, `min_parallel_bytes`),
+`cache_writes`, and both fetch bounds (`fetch_idle_timeout_ms`,
+`fetch_total_timeout_ms`). These are plan-level facts; they do not repeat on
+every window of the same read.
+
+A `phase=fetch_window` / `phase=prefetch_window` detail event carries only what
+explains that window: identity (`session_id`, `request_id`, `chunk_index`), shape
+(`window_chunks`, `window_bytes`, `part_bytes`, `read_streams` /
+`granted_streams`, `range_tasks`, `actual_in_flight`), the two shape flags
+(`read_intent`, `read_stage`) plus `prefetch_chunks`/`prefetch_depth` while a
+lookahead is armed, and timing (`queue_us`,
+`open_us`, `body_us`, `close_us`, `local_wait_us`, `validate_us`,
+`first_body_us`, `fetch_us`) with progress (`body_bytes`, `progress_end`).
+The window bounds are not repeated: `chunk_index` and `window_chunks` imply them.
+Local wait overlaps body time and must not be added to it. Driver open is not CDN
+TTFB. Player first-frame latency requires player telemetry.
 
 
 Events use `drive.MetricEvent`. `op_id`, `step`, and `name` are correlation

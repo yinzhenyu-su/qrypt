@@ -27,6 +27,7 @@ import (
 	cryptpkg "github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
+	"github.com/yinzhenyu/qrypt/pkg/testsupport/testknobs"
 )
 
 func TestResolvePathRootUsesConfiguredRootID(t *testing.T) {
@@ -330,10 +331,10 @@ func TestDriverReadPolicyPreservesLegacyReadShape(t *testing.T) {
 	if !drive.HasCapability(d, drive.CapabilityParallelRange) || drive.HasCapability(d, drive.CapabilityInternalParallelRead) {
 		t.Fatal("invalid read capability")
 	}
-	if p.Bulk.WindowBytes != 4<<20 || p.Bulk.Streams != 3 || p.Bulk.Split.PartBytes != 8<<20 || p.Bulk.Split.MinParallelBytes != 4<<20 {
+	if p.Bulk.WindowBytes != 4<<20 || p.Bulk.Streams != 3 || p.Bulk.PartBytes != 8<<20 || p.Bulk.MinParallelBytes != 4<<20 {
 		t.Fatalf("bulk=%+v", p.Bulk)
 	}
-	if p.Interactive.Sequential.Window.Mode != drive.WindowCaller || p.Interactive.Sequential.Prefetch != (drive.PrefetchPolicy{Mode: drive.PrefetchAdaptive}) {
+	if p.Interactive.WindowBytes != 2<<20 || p.Interactive.PrefetchDepth != 4 {
 		t.Fatalf("interactive=%+v", p.Interactive)
 	}
 	if p.MaxInFlight != 7 {
@@ -613,8 +614,9 @@ func TestDriverKeepsSlowBodyWithoutRotation(t *testing.T) {
 func TestDriverLowDownloadLimitDoesNotRotate(t *testing.T) {
 	// The limiter paces strictly at the configured rate, so the request size
 	// sets the wall time (total / 8KiB/s). Keep it just large enough to show
-	// the cap in effect without spending seconds asleep.
-	const total = 8 << 10
+	// the cap in effect without spending seconds asleep; the fasttest build
+	// shrinks the fixture further.
+	total := int64(testknobs.FixtureBytes(8 << 10))
 	driver := New("k=v", Options{})
 	driver.limiter = drive.NewBandwidthLimiter(drive.BandwidthLimits{DownloadBytesPerSecond: 8 << 10})
 	driver.setURL("fid-cap", "https://download.test/cap.bin")
@@ -639,7 +641,7 @@ func TestDriverLowDownloadLimitDoesNotRotate(t *testing.T) {
 	if err := rc.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(data) != total {
+	if int64(len(data)) != total {
 		t.Fatalf("capped read bytes = %d, want %d", len(data), total)
 	}
 	if rotations, reason := driver.cl.downloadDebugSnapshot(); rotations != 0 {

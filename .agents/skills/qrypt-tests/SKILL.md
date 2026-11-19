@@ -14,6 +14,12 @@ description: Run qrypt tests manually — local hygiene/unit/race/coverage/fuzz 
 | 只跑工作区 diff 能覆盖的包 | `scripts/ci/test-layers.sh changed` |
 | 单包 / 单个测试 | `go test ./pkg/vfs -run TestName -count=1` |
 | 并发敏感包 | `scripts/ci/test-layers.sh race` |
+| 只跑 diff 覆盖的并发敏感包 | `scripts/ci/test-layers.sh race-changed` |
+| 单 -race 分片 / 本地分片矩阵 | `scripts/ci/test-layers.sh race-shard 1/4`、`race-shard-all 4` |
+| 回收被杀测试留下的临时残留 | `scripts/ci/test-layers.sh clean-temp` |
+| 高负载下失败包是否正确重试 | 失败包会串行隔离重跑一次（≤4 个）；`QRYPT_STRICT_FLAKES=1` 关闭 |
+| 读形状 A/B 对比（交替顺序） | `qrypt probe ab read --mount NAME --mount-point DIR --path REMOTE --a control --b "window=4m" --rounds 3` |
+| 定位层耗时（最慢 10 个测试） | `QRYPT_TEST_TIMINGS=1 scripts/ci/test-layers.sh race` |
 | 覆盖率门禁（只查看不判定） | `scripts/ci/check-coverage.sh -print` |
 | fuzz | `scripts/ci/fuzz-nightly.sh 10s` |
 | 真实网盘单次测试（隔离临时挂载） | `scripts/dev/debug-mount.sh <mount> <test>` |
@@ -38,9 +44,10 @@ description: Run qrypt tests manually — local hygiene/unit/race/coverage/fuzz 
 ## 1. 本地单元 / 门禁
 
 ```bash
-# 与 CI check job 等价的本地门禁（提交 main 前必须跑，结束时打印
-# "== local CI check passed =="）
-scripts/ci/check-all.sh
+# 与 CI check job 等价的本地门禁（提交 main 前默认必跑，结束时打印
+# "== local CI check passed =="；文档/历史重写等豁免情形见 AGENTS.md）。
+# 前置 pinned 工具目录，避免 PATH 里其它版本的 shellcheck 等：
+PATH="$HOME/.cache/qrypt-tools:$PATH" scripts/ci/check-all.sh
 
 # 分层跑，避免每次都全量
 scripts/ci/test-layers.sh changed        # 工作区 diff 可达的包
@@ -56,6 +63,16 @@ scripts/ci/test-layers.sh all            # 默认套件 + race(vfs/core) + smoke
 race 层与 vfs-stability 层覆盖的是整个 `./pkg/vfs/...`（含 `read`、`readcache`、
 `scheduler`、`upload` 等子包），不只是 `pkg/vfs` 主包。新门禁暴露的时序用例
 要按竞争条件修复，不要放松断言强度或加 `t.Skip` 来变绿。
+
+### 1a-0. 层耗时超预算时
+
+不要删测试或放宽断言。先 `QRYPT_TEST_TIMINGS=1` 找到最慢的 10 个用例，再按
+[qrypt-test-speed](../qrypt-test-speed/SKILL.md) 的顺序处理：可控时钟 →
+状态原语（`Quiesce`/`Flush`/`WaitIdle`）→ 参数注入/夹具。驱动重试与分页等待可用
+`go test -tags fasttest ./pkg/drivers/...`（`pkg/testsupport/testknobs`）。
+PR 上只跑 diff 覆盖的包用 `race-changed`；被杀或 `-timeout` 的测试留下的
+`qrypt-*` 临时目录（以及死 FUSE 挂载）用 `test-layers.sh clean-temp` 回收，
+细节见 [qrypt-temp-hygiene](../qrypt-temp-hygiene/SKILL.md)。
 
 ### 1a. 仓库卫生门禁
 

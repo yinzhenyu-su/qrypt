@@ -236,13 +236,25 @@ func TestObserverReceivesLifecycle(t *testing.T) {
 	if err := rc.Close(); err != nil {
 		t.Fatal(err)
 	}
-	begins, finishes, reads := obs.counts()
-	if begins == 0 || begins != finishes {
-		t.Fatalf("lifecycle counts: begins=%d finishes=%d, want paired and >=1", begins, finishes)
+	// Window fetches now run in their own goroutine so the reader can serve a
+	// published block before the window tail arrives; the fetch's active
+	// operation may therefore finish just after the read returns.
+	var begins, finishes, reads int
+	deadline := time.Now().Add(time.Second)
+	for {
+		begins, finishes, reads = obs.counts()
+		if begins > 0 && begins == finishes {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle counts: begins=%d finishes=%d, want paired and >=1", begins, finishes)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if reads != 1 {
 		t.Fatalf("read records = %d, want 1", reads)
 	}
+
 	// The second Close must be a no-op for the observer.
 	b2, f2, r2 := obs.counts()
 	if b2 != begins || f2 != finishes || r2 != reads {
@@ -308,7 +320,14 @@ func TestHostWithoutObserverStillObservable(t *testing.T) {
 		t.Fatal(err)
 	}
 	rc.Close()
+	// The window fetch publishes the block and may finish its active operation
+	// just after the read returns, so let the pair settle before asserting.
+	deadline := time.Now().Add(time.Second)
 	begins, finishes, _ := obs.counts()
+	for begins != finishes && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		begins, finishes, _ = obs.counts()
+	}
 	if begins == 0 || begins != finishes {
 		t.Fatalf("explicit observer counts: begins=%d finishes=%d, want paired and >=1", begins, finishes)
 	}
@@ -333,9 +352,19 @@ func TestObserverStreamPath(t *testing.T) {
 	if err := rc.Close(); err != nil {
 		t.Fatal(err)
 	}
-	begins, finishes, reads := obs.counts()
-	if begins == 0 || begins != finishes {
-		t.Fatalf("stream lifecycle: begins=%d finishes=%d, want paired and >=1", begins, finishes)
+	// A window fetch runs in its own goroutine and may record its finish just
+	// after the stream is closed, so settle before asserting the pairing.
+	deadline := time.Now().Add(time.Second)
+	var begins, finishes, reads int
+	for {
+		begins, finishes, reads = obs.counts()
+		if begins > 0 && begins == finishes {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream lifecycle: begins=%d finishes=%d, want paired and >=1", begins, finishes)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if reads != 1 {
 		t.Fatalf("stream read records = %d, want 1", reads)

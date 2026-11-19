@@ -30,7 +30,7 @@ func TestSeekCancelsOnlyItsOwnSessionLookahead(t *testing.T) {
 	// leaves its own gated lookahead.
 	r.read(t, sessionContext(2, 1), 40*ChunkSize, ChunkSize)
 	r.read(t, sessionContext(2, 2), 41*ChunkSize, ChunkSize)
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for {
 		gated := 0
 		for _, call := range r.host.recorded() {
@@ -41,16 +41,17 @@ func TestSeekCancelsOnlyItsOwnSessionLookahead(t *testing.T) {
 		if gated >= 2 {
 			break
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-r.host.changed:
+		case <-deadline:
 			t.Fatalf("second session lookahead did not start: %+v", r.host.recorded())
 		}
-		time.Sleep(time.Millisecond)
 	}
 
 	// Session 1 seeks: only its own gated lookahead may be canceled.
 	r.read(t, sessionContext(1, 2), 20*ChunkSize, ChunkSize)
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.After(2 * time.Second)
 	for {
 		var s1Canceled, s2Canceled bool
 		for _, call := range r.host.recorded() {
@@ -68,9 +69,10 @@ func TestSeekCancelsOnlyItsOwnSessionLookahead(t *testing.T) {
 		if s1Canceled {
 			return
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-r.host.changed:
+		case <-deadline:
 			t.Fatalf("session 1's seek did not cancel its own lookahead: %+v", r.host.recorded())
 		}
-		time.Sleep(time.Millisecond)
 	}
 }

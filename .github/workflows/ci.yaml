@@ -182,6 +182,8 @@ jobs:
           unformatted=$("$gofmt_bin" -l .)
           test -z "$unformatted" || { echo "gofmt needed on:"; echo "$unformatted"; exit 1; }
           generated_schema_before=$(mktemp -d "${TMPDIR:-/tmp}/qrypt-generated-schema.XXXXXX")
+          generated_before=""
+          trap 'rm -rf "$generated_schema_before" ${generated_before:+"$generated_before"}' EXIT
           cp pkg/drive/builtin_schema_gen.go "$generated_schema_before/builtin_schema_gen.go"
           cp internal/cli/i18n/catalog_gen.go "$generated_schema_before/catalog_gen.go"
           python3 scripts/schema/check-schema.py
@@ -195,7 +197,6 @@ jobs:
           fi
           python3 scripts/schema/test-gen-docs.py
           generated_before=$(mktemp -d "${TMPDIR:-/tmp}/qrypt-generated-docs.XXXXXX")
-          trap 'rm -rf "$generated_before"' EXIT
           cp docs/for-user/full-config.md "$generated_before/full-config.md"
           cp docs/for-user/support-drivers.md "$generated_before/support-drivers.md"
           python3 scripts/schema/gen-config-docs.py
@@ -212,9 +213,35 @@ jobs:
         if: matrix.name == 'fast'
         run: scripts/ci/test-layers.sh fast
 
+      # PRs only rebuild the -race packages the diff can reach. The import
+      # closure needs the PR base commit, which the default shallow checkout
+      # does not have; fetch it best-effort. When the fetch or the diff cannot
+      # be placed, test-layers.sh falls back to the full race set, so this step
+      # can never narrow the run into a silent skip.
+      - name: Fetch PR base for -race selection
+        if: matrix.name == 'race' && github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if ! git fetch --no-tags --depth=1 origin "$BASE_SHA"; then
+            echo "warning: could not fetch PR base $BASE_SHA; trying $BASE_REF"
+            git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+          fi
+          if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "QRYPT_DIFF_BASE=${BASE_SHA}" >> "$GITHUB_ENV"
+          else
+            echo "warning: PR base $BASE_SHA is not in the checkout; race-changed will fall back to the full race set"
+          fi
+
       - name: Race suite
         if: matrix.name == 'race'
-        run: scripts/ci/test-layers.sh race
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            scripts/ci/test-layers.sh race-changed
+          else
+            scripts/ci/test-layers.sh race
+          fi
 
       - name: VFS stability and smoke
         if: matrix.name == 'stability'

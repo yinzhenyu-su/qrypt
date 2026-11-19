@@ -105,6 +105,17 @@ type MountSnapshotRuntime struct {
 	ReadTimeouts     int               `json:"read_timeouts"`
 	PrefetchTimeouts int               `json:"prefetch_timeouts"`
 	LastTimeout      *MountReadTimeout `json:"last_timeout,omitempty"`
+	// DedupedLookaheadChunks counts lookahead chunks skipped as already
+	// covered; OverlappingWindowChunks should stay zero and flags a window
+	// admitted over another in-flight window (duplicate provider work).
+	DedupedLookaheadChunks  int `json:"deduped_lookahead_chunks"`
+	OverlappingWindowChunks int `json:"overlapping_window_chunks"`
+	// Window shape counters split by read intent (playback vs download). They
+	// are cumulative and unaffected by the read event log's rate limit.
+	InteractiveWindowLoads  int `json:"interactive_window_loads"`
+	InteractiveWindowChunks int `json:"interactive_window_chunks"`
+	BulkWindowLoads         int `json:"bulk_window_loads"`
+	BulkWindowChunks        int `json:"bulk_window_chunks"`
 	// Counters are cumulative since process start, unlike the bounded event
 	// histories above: they answer "how fast and how reliable overall".
 	Counters drive.CounterSnapshot `json:"counters"`

@@ -310,10 +310,11 @@ edit staging use that source. Pass the existing source to another consumer;
 constructing one per request would create independent budgets. Crypt forwards
 recommendations and limits; the source charges the outer read once.
 
-`Interactive.Initial`, `Seek`, and `Sequential` are complete access policies.
-A window is `caller` or `fixed`; prefetch is `disabled`, `fixed`, or `adaptive`.
-Adaptive values are evaluated before execution, including at each stream refill.
-All external sizes are bytes. `Bulk.Split.PartBytes` is a strict ceiling; zero
+`Interactive.WindowBytes` widens the confirmed sequential window; initial and
+seek reads always keep the caller's window. `Interactive.PrefetchWindowBytes`
+and `Interactive.PrefetchDepth` declare the lookahead shape: the window count
+`W` defaults to the read window, the depth `D` is capped by the mount's
+available depth, and `D = 0` disables lookahead. All external sizes are bytes. `Bulk.PartBytes` is a strict ceiling; zero
 means even division of one bounded window. More tasks than workers are allowed.
 The split threshold uses the current window, independently of total file size.
 See [read policy execution](read-policy.md) for ownership and failure semantics.

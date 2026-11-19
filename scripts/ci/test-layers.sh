@@ -5,12 +5,17 @@
 #   ./scripts/ci/test-layers.sh fast         # default unit suite
 #   ./scripts/ci/test-layers.sh changed      # only what the working diff can reach
 #   ./scripts/ci/test-layers.sh race         # concurrency-heavy packages under -race
+#   ./scripts/ci/test-layers.sh race-changed # only the -race packages the diff can reach
+#   ./scripts/ci/test-layers.sh race-shard 1/4        # one balanced shard of the race set
+#   ./scripts/ci/test-layers.sh race-shard-all [4]    # every shard, in parallel, locally
 #   ./scripts/ci/test-layers.sh vfs-stability # VFS tree flake guard (x3, read included)
 #   ./scripts/ci/test-layers.sh smoke        # localfs mount smoke test
 #   ./scripts/ci/test-layers.sh all          # everything except real-netdisk tests
 #   ./scripts/ci/test-layers.sh integration  # real provider/HTTP contract tests
 #
 # Every layer prints its wall-clock duration and warns past $BUDGET seconds.
+# Set QRYPT_TEST_TIMINGS=1 to also print the slowest 10 individual tests on the
+# layers that run `go test -json` (fast/changed/race-changed/race-shard).
 # The timings below were measured on an 8-core darwin/arm64 dev box with Go
 # 1.27.4 and a warm build cache; CI runners are slower and vary, so read them
 # as order-of-magnitude only.
@@ -23,10 +28,23 @@
 # run is the `changed` layer's job, not a smaller `fast`.
 #
 # The depth layers sit above the fast budget by design. `race` now covers the
-# whole pkg/vfs subtree and takes ~76s with the default race_parallel (its
-# pkg/vfs/read accounts for nearly all of it); `vfs-stability` is three
-# concurrent runs of that subtree and takes ~22s. Their WARNING lines are
-# informational, not a regression signal.
+# whole pkg/vfs subtree and takes ~39s with the default race_parallel on the
+# same box (pkg/vfs/read alone costs 26.5s of the 218s summed package time);
+# `vfs-stability` is three concurrent runs of the pkg/vfs subtree and takes
+# ~22s.
+# Their WARNING lines are informational, not a regression signal.
+#
+# PR CI runs `race-changed` instead of `race`: it reuses `changed`'s
+# import-closure selection (and its fail-safe to the whole race set when the
+# diff cannot be placed on packages) but executes those packages under -race:
+# a one-file driver change reaches 11 packages and took 14s on the same box,
+# while a pkg/vfs/read change reaches 28 of the 47 packages. main pushes and the
+# nightly job keep the full `race` layer as the backstop. Nightly also shards
+# the race set into
+# `race-shard i/n` jobs, one balanced shard per runner: the four heavy packages
+# (pkg/vfs/read, internal/cli, pkg/crypt, pkg/drive) are pinned one per shard,
+# the rest is packed cheapest-fit by measured cost, so the slowest shard costs
+# about one heavy package instead of the whole set.
 #
 # Real-netdisk contract tests are NOT part of go test: they need a running
 # `qrypt mount` debug server with mounted cloud accounts. Run them manually:
@@ -37,7 +55,10 @@
 # ./...` also compiles the vendored cgofuse tests whose Windows host
 # expects a real WinFsp mount.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+# Resolve the physical path: delta selection compares `go list` absolute package
+# dirs against the git toplevel, and on systems where the checkout is reached
+# through a symlink (macOS /tmp -> /private/tmp) a logical path never matches.
+cd "$(cd "$(dirname "$0")/../.." && pwd -P)"
 
 # Wall-clock regression tripwire for a single measure() step, in seconds. See
 # the header for why `fast` sits just under it, and why the race/vfs-stability
@@ -58,35 +79,363 @@ race_parallel() {
   printf '%s' "${RACE_P:-$p}"
 }
 
-# Reclaim temp left behind by a test binary that was killed or hit -timeout:
-# such a process never reaches its own exit path, so the isolated CLI home, the
-# shared session-log roots, and the debug-server sockets under the process temp
-# root outlive it. Running this at the start of every layer makes each
-# invocation heal the previous one. Only qrypt-named entries are swept -- `Test*`
-# directories are t.TempDir's generic naming and belong to every Go tree on the
-# host, not just this one -- and a failed run's own temp is deliberately left
-# for inspection.
-clean_orphan_temp() {
-  # Resolve the temp root the way os.TempDir() does, so the sweep looks where
-  # the tests wrote under them: $TMPDIR on Unix, %TMP% then %TEMP% on Windows
-  # (Git Bash hands those over backslashed).
+# ── Local flake tolerance ───────────────────────────────────────────
+# A loaded host makes timer-bound tests fail for reasons the diff cannot
+# explain. `check-host-load` names that condition up front, and the retry
+# helpers rerun only the packages that failed, once, in isolation: a genuine
+# regression still fails (the same package, deterministically), while a
+# scheduling flake passes and no longer reds the whole run. CI and release
+# checks stay strict: set QRYPT_STRICT_FLAKES=1 (CI does) to disable retries.
+MEASURE_RERUN=()
+
+host_load1() {
+  if [ -r /proc/loadavg ]; then
+    awk '{ print $1; exit }' /proc/loadavg
+    return
+  fi
+  if sysctl -n vm.loadavg >/dev/null 2>&1; then
+    sysctl -n vm.loadavg | awk '{print $2}'
+    return
+  fi
+  printf '0\n'
+}
+
+cpu_count() {
+  local n
+  n=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  [ -n "$n" ] || n=$(sysctl -n hw.ncpu 2>/dev/null || true)
+  printf '%s\n' "${n:-0}"
+}
+
+check_host_load() {
+  local load cpus
+  # CI runners are noisy by design; the warning is for a developer machine
+  # where a loaded host usually explains an otherwise mysterious failure.
+  [ -n "${CI:-}" ] && return 0
+  load=$(host_load1)
+  cpus=$(cpu_count)
+  # Only a clearly oversubscribed host is worth calling out; noisy CI runners
+  # do not get to print a warning on every layer.
+  awk -v load="$load" -v cpus="$cpus" 'BEGIN {
+    if (cpus > 0 && load > cpus * 1.5) {
+      printf "== system load %.1f on %s CPUs: timer-bound tests may fail here; local failures are retried in isolation (QRYPT_STRICT_FLAKES=1 disables) ==\n", load, cpus
+    }
+  }'
+}
+
+retry_enabled() {
+  [ "${QRYPT_STRICT_FLAKES:-0}" = "1" ] && return 1
+  [ -n "${CI:-}" ] && return 1
+  [ -n "${GITHUB_ACTIONS:-}" ] && return 1
+  return 0
+}
+
+# failed_packages <go-test-json-log>: unique packages that reported a failure.
+failed_packages() {
+  awk -F'"' '
+    /"Action":"fail"/ && /"Package":"[^"]+"/ {
+      for (i = 1; i <= NF; i++) if ($i == "Package") print $(i + 2)
+    }
+  ' "$1" | sort -u
+}
+
+# retry_failed_isolated <label> <go-test-json-log>: rerun the failing packages
+# once, serially, with the same flags the layer used. Returns 0 when every
+# previously failing package passes.
+retry_failed_isolated() {
+  local label="$1" log="$2" pkgs count
+  retry_enabled || return 1
+  pkgs=$(failed_packages "$log")
+  [ -n "$pkgs" ] || return 1
+  count=$(printf '%s\n' "$pkgs" | wc -l | tr -d ' ')
+  if [ "$count" -gt 4 ]; then
+    printf '== retry skipped for %s: %s packages failed, too many to attribute to load ==\n' "$label" "$count"
+    return 1
+  fi
+  printf '== retry: rerunning %s failed package(s) in isolation ==\n' "$count"
+  printf '%s\n' "$pkgs"
+  # shellcheck disable=SC2086 # package list is intentionally word-split
+  if [ "${#MEASURE_RERUN[@]}" -gt 0 ]; then
+    if go test "${MEASURE_RERUN[@]}" $pkgs; then
+      printf '== retry: failed package(s) passed in isolation; treating as a local flake ==\n'
+      return 0
+    fi
+  elif go test $pkgs; then
+    printf '== retry: failed package(s) passed in isolation; treating as a local flake ==\n'
+    return 0
+  fi
+  return 1
+}
+
+# retry_repeated_isolated <log-dir>: rerun packages that failed in any repeat.
+retry_repeated_isolated() {
+  local dir="$1" pkgs count
+  retry_enabled || return 1
+  pkgs=$(grep -h -E '^FAIL[[:space:]]+[^[:space:]]+' "$dir"/run-*.log 2>/dev/null | awk '{print $2}' | sort -u)
+  [ -n "$pkgs" ] || return 1
+  count=$(printf '%s\n' "$pkgs" | wc -l | tr -d ' ')
+  if [ "$count" -gt 4 ]; then
+    printf '== retry skipped: %s packages failed, too many to attribute to load ==\n' "$count"
+    return 1
+  fi
+  printf '== retry: rerunning %s failed package(s) in isolation ==\n' "$count"
+  printf '%s\n' "$pkgs"
+  # shellcheck disable=SC2086 # package list is intentionally word-split
+  if go test -count=1 $pkgs; then
+    printf '== retry: failed package(s) passed in isolation; treating as a local flake ==\n'
+    return 0
+  fi
+  return 1
+}
+
+# The race layer's package set, shared by `race`, `race-changed`'s fallback and
+# the sharding path. Wildcards stay in pattern form for the layers so packages
+# added later are picked up automatically; only `race-shard` needs the concrete
+# list, and it expands these patterns through `go list` itself.
+RACE_PATTERNS=(
+  ./pkg/vfs/...
+  ./pkg/drive
+  ./pkg/drivers/...
+  ./pkg/contracttest
+  ./pkg/control
+  ./pkg/logging
+  ./pkg/mount
+  ./pkg/syncer
+  ./internal/cli
+  ./pkg/core
+  ./pkg/mobile
+  ./pkg/crypt
+  ./pkg/task
+  ./cmd/qrypt
+)
+
+# ── Temp hygiene ────────────────────────────────────────────────────
+# A test binary that is killed or hits -timeout never reaches its own exit
+# path, so two kinds of leftovers outlive it: entries under the process temp
+# root (isolated CLI homes, session-log roots, sockets, harness work areas) and
+# an active FUSE mount whose helper was SIGKILLed. Every layer invocation first
+# reclaims the previous one, and every temp path this script creates is
+# registered for removal on the normal and the interrupt path.
+
+# qrypt_temp_root resolves the temp root the way os.TempDir() does, so the
+# sweep looks where the tests wrote: $TMPDIR on Unix, %TMP% then %TEMP% on
+# Windows (Git Bash hands those over backslashed).
+qrypt_temp_root() {
   local tmp="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
-  tmp="${tmp//\\//}"
+  printf '%s\n' "${tmp//\\//}"
+}
+
+# canonical_path resolves the symlinks of <path>'s parent directory. The parent
+# is always a plain directory, unlike <path> itself, which may be a dead FUSE
+# mount; and on macOS /tmp and /var are symlinks, so mount output names the
+# resolved path (/private/var/...) rather than the path a test created.
+canonical_path() {
+  local path="$1" parent base resolved
+  parent=$(dirname "$path")
+  base=$(basename "$path")
+  if resolved=$(cd "$parent" 2>/dev/null && pwd -P); then
+    printf '%s/%s\n' "${resolved%/}" "$base"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+# mount_point_active <path> reports whether <path> is an active mount point.
+# Both the literal and the canonical path are checked: the literal one is what
+# the caller created, the canonical one is what the platform's mount table
+# lists. macOS has no mountpoint(1), so the mount table is authoritative there.
+mount_point_active() {
+  local mount_point="$1" canonical
+  canonical=$(canonical_path "$mount_point")
+  if command -v mountpoint >/dev/null 2>&1; then
+    if mountpoint -q "$mount_point" 2>/dev/null || mountpoint -q "$canonical" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  mount 2>/dev/null | grep -F -e " on $mount_point " -e " on $canonical " >/dev/null 2>&1
+}
+
+# unmount_point force-detaches <path> and reports success. It is only used when
+# QRYPT_TEMP_FORCE_UNMOUNT=1: a live session's mount must never be detached by
+# an automatic sweep, because the running command would lose its filesystem.
+unmount_point() {
+  local mount_point="$1" canonical
+  canonical=$(canonical_path "$mount_point")
+  detach_path() {
+    case "$(uname -s)" in
+      Darwin)
+        umount -f "$1" 2>/dev/null ||
+          diskutil unmount force "$1" >/dev/null 2>&1
+        ;;
+      *)
+        umount "$1" 2>/dev/null ||
+          fusermount3 -u "$1" 2>/dev/null ||
+          fusermount -u "$1" 2>/dev/null
+        ;;
+    esac
+  }
+  detach_path "$mount_point"
+  mount_point_active "$mount_point" && [ "$canonical" != "$mount_point" ] && detach_path "$canonical"
+  ! mount_point_active "$mount_point"
+}
+
+# reclaim_mounted_temp <dir> <mount subpath> decides what to do with a temp
+# directory that still has an active mount inside. Deleting through a live
+# mount would remove the entries it shows, so the default is to leave it for a
+# human; QRYPT_TEMP_FORCE_UNMOUNT=1 force-detaches first (only safe when the
+# owning test/debug process is known to be gone).
+reclaim_mounted_temp() {
+  local dir="$1" mount_point="$1/$2"
+  if ! mount_point_active "$mount_point"; then
+    rm -rf "$dir" 2>/dev/null || true
+    return
+  fi
+  if [ "${QRYPT_TEMP_FORCE_UNMOUNT:-0}" != "1" ] || ! unmount_point "$mount_point"; then
+    printf 'clean-orphan-temp: leaving still-mounted temp dir: %s\n' "$dir" >&2
+    return
+  fi
+  rm -rf "$dir" 2>/dev/null || true
+}
+
+# clean_orphan_temp_root sweeps one temp root. It is a separate function
+# because debug-mount.sh falls back to /tmp when the platform temp path is too
+# long for a Unix socket, so leftovers can live outside $TMPDIR.
+clean_orphan_temp_root() {
+  local tmp="$1" max_age entry pattern sock
   [ -d "$tmp" ] || return 0
-  # Best-effort: a leftover another process still holds open is common on
-  # Windows and must not abort the layer that follows.
-  rm -rf "$tmp"/qrypt-cli-test-home-* "$tmp"/qrypt-core-test-logs \
-    "$tmp"/qrypt-mobile-test-logs "$tmp"/qrypt-mount-test.* || true
-  # Test sockets carry a nanosecond timestamp. Runtime sockets for the
-  # mount-debug helper live under its temporary QRYPT_HOME and are removed
-  # with that work directory.
-  local sock
+  # A concurrent run may own a fresh qrypt-* entry, and deleting it would break
+  # that run. Only entries older than the threshold are reclaimed; leftovers
+  # from a killed or timed-out run are always older than that. Set
+  # QRYPT_TEMP_MAX_AGE_MIN=0 to force an immediate sweep.
+  max_age="${QRYPT_TEMP_MAX_AGE_MIN:-10}"
+  # find(1) has no "any age" predicate that also works on BSD: +N requires an
+  # age over N minutes, so a zero threshold switches to a large negative bound
+  # (-mmin -N matches anything younger than N minutes, i.e. everything).
+  local mmin="+$max_age"
+  if [ "$max_age" -le 0 ]; then
+    mmin="-5256000"
+  fi
+
+  # Killed mount helpers leave their work directory mounted. A still-mounted
+  # tree is never deleted through the mount; it is left for inspection unless
+  # QRYPT_TEMP_FORCE_UNMOUNT=1 says the owner is definitely gone.
+  for entry in "$tmp"/qrypt-mount-test.*; do
+    [ -d "$entry" ] || continue
+    [ -n "$(find "$entry" -maxdepth 0 -mmin "$mmin" 2>/dev/null)" ] || continue
+    reclaim_mounted_temp "$entry" mount
+  done
+  # `qrypt mount --isolated` keeps its FUSE mount in <root>/mnt.
+  for entry in "$tmp"/qrypt-isolated-*; do
+    [ -d "$entry" ] || continue
+    [ -n "$(find "$entry" -maxdepth 0 -mmin "$mmin" 2>/dev/null)" ] || continue
+    reclaim_mounted_temp "$entry" mnt
+  done
+
+  # Test homes, session-log roots, generated-doc staging, and harness work
+  # areas. The explicit prefixes keep the sweep from matching unrelated user
+  # files; new test temp roots must start with qrypt- so this heal covers them.
+  for pattern in \
+    'qrypt-cli-test-home-*' 'qrypt-core-test-logs' 'qrypt-mobile-test-logs' \
+    'qrypt-receive-test-*' 'qrypt-share-test-*' 'qrypt-offline-test-*' \
+    'qrypt-cache-*' 'qrypt-generated-*' \
+    'qrypt-install.*' 'qrypt-smoke.*' 'qrypt-shellcheck.*' \
+    'qrypt-read-ab-*' 'qrypt-tune-*'; do
+    find "$tmp" -maxdepth 1 -name "$pattern" -mmin "$mmin" \
+      -exec rm -rf {} + 2>/dev/null || true
+  done
+
+  # Sockets carry a nanosecond timestamp; a leftover socket file is safe to
+  # unlink even when fresh because nothing will connect to its dead server.
   for sock in "$tmp"/qrypt-[0-9]*.sock "$tmp"/qrypt-test-[0-9]*.sock; do
     [ -e "$sock" ] || continue
-    rm -f "$sock" || true
+    rm -f "$sock" 2>/dev/null || true
   done
 }
+
+clean_orphan_temp() {
+  local root roots
+  roots=$(qrypt_temp_root)
+  # debug-mount.sh uses /tmp when the platform temp path is long enough to
+  # overflow the Unix socket limit, so sweep it too unless it is the same root.
+  if [ "$roots" != "/tmp" ]; then
+    roots=$(printf '%s\n/tmp\n' "$roots")
+  fi
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    clean_orphan_temp_root "$root"
+  done <<<"$roots"
+}
+
+# temp_registry records every temp path this run creates so cleanup also runs
+# when the script is interrupted (measure and the repeated/sharded layers used
+# to leave their work behind on Ctrl-C).
+temp_registry=$(mktemp) || exit 1
+
+cleanup_temp_paths() {
+  local path
+  [ -n "$temp_registry" ] || return 0
+  while IFS= read -r path; do
+    [ -n "$path" ] && rm -rf "$path" 2>/dev/null
+  done <"$temp_registry"
+  rm -f "$temp_registry"
+  temp_registry=""
+}
+trap 'cleanup_temp_paths' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# new_temp_dir / new_temp_file print a fresh path and register it for removal.
+new_temp_dir() {
+  local dir
+  dir=$(mktemp -d) || return 1
+  printf '%s\n' "$dir" >>"$temp_registry"
+  printf '%s\n' "$dir"
+}
+
+new_temp_file() {
+  local file
+  file=$(mktemp) || return 1
+  printf '%s\n' "$file" >>"$temp_registry"
+  printf '%s\n' "$file"
+}
+
 clean_orphan_temp
+check_host_load
+
+# slowest_tests <json file> [limit] prints "<elapsed>\t<package>\t<test>" for
+# the most expensive individual test passes in a `go test -json` stream, most
+# expensive first. Package-level Elapsed hides which test owns a regression;
+# QRYPT_TEST_TIMINGS=1 surfaces the per-test view. Ties sort by package then
+# test name so the report is stable across runs.
+slowest_tests() {
+  awk -v limit="${2:-10}" '
+    /"Action":"pass"/ && /"Test":"[^"]+"/ && /"Elapsed":[0-9.]+/ {
+      n++
+      el=$0; sub(/.*"Elapsed":/, "", el); sub(/[^0-9.].*/, "", el)
+      pkg=$0; sub(/.*"Package":"/, "", pkg); sub(/".*/, "", pkg)
+      tst=$0; sub(/.*"Test":"/, "", tst); sub(/".*/, "", tst)
+      eval[n] = el + 0
+      epkg[n] = pkg
+      etst[n] = tst
+    }
+    END {
+      for (i = 1; i <= n; i++) order[i] = i
+      for (i = 2; i <= n; i++) {
+        v = order[i]
+        for (j = i - 1; j >= 1; j--) {
+          if (eval[order[j]] > eval[v]) break
+          if (eval[order[j]] == eval[v] && epkg[order[j]] "." etst[order[j]] < epkg[v] "." etst[v]) break
+          order[j + 1] = order[j]
+        }
+        order[j + 1] = v
+      }
+      for (i = 1; i <= n && i <= limit; i++) {
+        k = order[i]
+        printf "%.2f\t%s\t%s\n", eval[k], epkg[k], etst[k]
+      }
+    }
+  ' "$1"
+}
 
 measure() {
   local label="$1"; shift
@@ -96,7 +445,7 @@ measure() {
     # JSON mode: stream to a temp file so the slowest packages can be
     # reported afterwards. The grep -q exit code drives the result.
     local tmp json_ok
-    tmp=$(mktemp)
+    tmp=$(new_temp_file)
     "$@" | tee "$tmp" >/dev/null || true
     json_ok=0
     grep -q '"Action":"fail"' "$tmp" && json_ok=1
@@ -130,6 +479,9 @@ measure() {
         ' "$tmp" | tail -25
       done
     fi
+    if [ "$json_ok" -ne 0 ] && retry_failed_isolated "$label" "$tmp"; then
+      json_ok=0
+    fi
     printf '== slowest packages ==\n'
     awk -F'"' '
       /"Action":"pass"/ && !/"Test":"/ && /"Package":"[^"]+"/ && /"Elapsed":[0-9.]+/ {
@@ -140,6 +492,15 @@ measure() {
     ' "$tmp" | sort -rn | head -10 | while read -r t p; do
       printf '  %6.2fs  %s\n' "$t" "$p"
     done
+    # Per-test timings are opt-in: the package list already spots the package
+    # that grew, and the test-level view is wide enough that it only earns its
+    # place when someone is narrowing down a regression.
+    if [ "${QRYPT_TEST_TIMINGS:-0}" = "1" ]; then
+      printf '== slowest tests ==\n'
+      slowest_tests "$tmp" 10 | while IFS=$'\t' read -r t p name; do
+        printf '  %6.2fs  %s  %s\n' "$t" "$p" "$name"
+      done
+    fi
     # CI: write the per-package timings into the step summary so a >20s
     # regression can be traced without re-running locally. Separate the
     # layers by job name via the caller-provided label.
@@ -153,6 +514,16 @@ measure() {
             print "| " pkg " | " el "s |"
           }
         ' "$tmp" | sort -t'|' -k3 -rn | head -10
+        if [ "${QRYPT_TEST_TIMINGS:-0}" = "1" ]; then
+          echo
+          echo "#### Slowest tests"
+          echo
+          echo "| test | package | elapsed |"
+          echo "| --- | --- | --- |"
+          slowest_tests "$tmp" 10 | while IFS=$'\t' read -r t p name; do
+            printf '| %s | %s | %ss |\n' "$name" "$p" "$t"
+          done
+        fi
         echo
       } >> "$GITHUB_STEP_SUMMARY"
     fi
@@ -181,7 +552,7 @@ measure() {
 run_repeated() {
   local repeats="$1"; shift
   local tmp i status=0
-  tmp=$(mktemp -d)
+  tmp=$(new_temp_dir)
   local pids=() logs=()
   for ((i = 0; i < repeats; i++)); do
     logs+=("$tmp/run-$i.log")
@@ -195,6 +566,9 @@ run_repeated() {
       cat "${logs[$i]}"
     fi
   done
+  if [ "$status" -ne 0 ] && retry_repeated_isolated "$tmp"; then
+    status=0
+  fi
   rm -rf "$tmp"
   return "$status"
 }
@@ -223,7 +597,7 @@ run_repeated() {
 diff_packages() {
   local root work rc
   root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
-  work=$(mktemp -d) || return 1
+  work=$(new_temp_dir) || return 1
 
   {
     git diff --name-only "${QRYPT_DIFF_BASE:-HEAD}" -- 2>/dev/null
@@ -268,7 +642,7 @@ affected_packages() {
   case "$seeds" in *'!'*) return 1 ;; esac
 
   module=$(go list -m 2>/dev/null) || return 1
-  work=$(mktemp -d) || return 1
+  work=$(new_temp_dir) || return 1
 
   printf '%s\n' "$seeds" > "$work/seeds"
   go list -deps -test -f '{{.ImportPath}}{{"\t"}}{{join .Deps " "}}' ./... \
@@ -324,16 +698,144 @@ affected_packages() {
   return "$rc"
 }
 
+# ── Race sharding ───────────────────────────────────────────────────
+# `race` runs one go test over the whole set, so its wall clock is set by the
+# slowest packages: pkg/vfs/read, internal/cli, pkg/crypt and pkg/drive are
+# most of the run. `race-shard i/n` cuts the concrete package list into n
+# shards that CI runs as independent jobs, so the longest shard costs about one
+# heavy package instead of the whole set. The costs below are the per-package
+# Elapsed sums measured with
+#   go test -race -count=1 -p 32 <RACE_PATTERNS>
+# on the 8-core darwin/arm64 dev box the header describes (47 packages, sum
+# 218s, 39s wall). They only steer the split, so a stale number shifts balance
+# and never coverage: every package `go list` reports lands in exactly one
+# shard.
+race_cost() {
+  case "$1" in
+    */pkg/vfs/read) echo 26 ;;
+    */internal/cli) echo 19 ;;
+    */pkg/crypt) echo 18 ;;
+    */pkg/drive | */pkg/vfs/upload) echo 12 ;;
+    */pkg/vfs) echo 11 ;;
+    */pkg/drivers/drime) echo 10 ;;
+    */pkg/drivers/quark) echo 8 ;;
+    */pkg/contracttest | */pkg/drivers/yun139) echo 7 ;;
+    */pkg/drivers/p123 | */pkg/drivers/p189 | */pkg/drivers/s3 | */pkg/mount) echo 6 ;;
+    */pkg/control | */pkg/drivers/koofr) echo 5 ;;
+    */pkg/core | */pkg/mobile | */pkg/drivers/baidunetdisk) echo 4 ;;
+    */pkg/vfs/readcache | */pkg/drivers/sftp) echo 3 ;;
+    *) echo 2 ;;
+  esac
+}
+
+# race_package_list prints the concrete race package list (one import path per
+# line, `go list` order), so shard membership is stable for the same tree.
+race_package_list() {
+  go list "${RACE_PATTERNS[@]}" 2>/dev/null
+}
+
+# race_shard_plan <index> <count> reads "<cost> <import path>" lines and prints
+# the import paths of one shard. Balance:
+#   1. the four heavy packages are pinned one per shard first;
+#   2. every other package is then packed cheapest-fit (most expensive first)
+#      onto the least loaded shard.
+# Ties resolve to the lowest shard index and the input order is the go list
+# order, so the same tree always produces the same split.
+race_shard_plan() {
+  local index="$1" count="$2"
+  awk -v idx="$index" -v n="$count" '
+    function isheavy(p) {
+      return p ~ /\/pkg\/vfs\/read$/ || p ~ /\/internal\/cli$/ ||
+             p ~ /\/pkg\/crypt$/       || p ~ /\/pkg\/drive$/
+    }
+    function minload(   i, best) {
+      best = 1
+      for (i = 2; i <= n; i++) if (load[i] < load[best]) best = i
+      return best
+    }
+    { total++; cost[total] = $1 + 0; pkg[total] = $2 }
+    END {
+      for (i = 1; i <= total; i++) order[i] = i
+      # insertion sort: most expensive first, then import path for stable ties
+      for (i = 2; i <= total; i++) {
+        v = order[i]
+        for (j = i - 1; j >= 1; j--) {
+          if (cost[order[j]] > cost[v]) break
+          if (cost[order[j]] == cost[v] && pkg[order[j]] < pkg[v]) break
+          order[j + 1] = order[j]
+        }
+        order[j + 1] = v
+      }
+      # Heavy packages first: one per shard while shards are available, then
+      # cheapest-fit so a shard count below four still yields a sane split.
+      pinned = 0
+      for (k = 1; k <= total; k++) {
+        i = order[k]
+        if (!isheavy(pkg[i])) continue
+        if (pinned < n) {
+          pinned++
+          s = pinned
+        } else {
+          s = minload()
+        }
+        shard[i] = s
+        load[s] += cost[i]
+      }
+      for (k = 1; k <= total; k++) {
+        i = order[k]
+        if (isheavy(pkg[i])) continue
+        s = minload()
+        shard[i] = s
+        load[s] += cost[i]
+      }
+      for (i = 1; i <= total; i++) if (shard[i] == idx) print pkg[i]
+    }
+  '
+}
+
+# race_shard_packages <index> <count> prints the shard's import paths.
+race_shard_packages() {
+  local index="$1" count="$2" pkg
+  {
+    while IFS= read -r pkg; do
+      [ -n "$pkg" ] || continue
+      printf '%s %s\n' "$(race_cost "$pkg")" "$pkg"
+    done < <(race_package_list)
+  } | race_shard_plan "$index" "$count"
+}
+
+# run_race_shard <index> <count> runs one shard under -race. The package list is
+# printed before the run so a CI failure names the exact subset, and the
+# slowest-package/test report comes from the shared -json path.
+run_race_shard() {
+  local index="$1" count="$2" pkgs num
+  pkgs=$(race_shard_packages "$index" "$count")
+  if [ -z "$pkgs" ]; then
+    printf '== race-shard %s/%s: no packages (shard count exceeds the race set) ==\n' "$index" "$count"
+    return 0
+  fi
+  num=$(printf '%s\n' "$pkgs" | wc -l | tr -d ' ')
+  printf '== race-shard %s/%s: %s package(s) ==\n' "$index" "$count" "$num"
+  printf '%s\n' "$pkgs" | sed 's/^/     /'
+  MEASURE_RERUN=(-race -count=1 -p "$(race_parallel)")
+  # The list is deliberately split into argv.
+  # shellcheck disable=SC2086
+  measure "race-shard $index/$count: go test -race ($num pkg)" \
+    go test -json -race -count=1 -p "$(race_parallel)" $pkgs
+}
+
 case "${1:-fast}" in
   fast)
     # -json so the per-package wall clock is reported; the slowest 10
     # packages pinpoint where the fast layer's budget goes.
+    MEASURE_RERUN=(-count=1)
     measure "fast: go test -json ./..." go test -json -count=1 ./...
     ;;
   changed)
     # What the working diff can actually reach; see Delta selection above for
     # the safety rules. Falls back to the whole module when the diff cannot be
     # placed on packages.
+    MEASURE_RERUN=(-count=1)
     pkgs=$(affected_packages) || pkgs=""
     if [ -z "$pkgs" ]; then
       echo "== changed: diff cannot be placed on packages; running the whole module =="
@@ -362,9 +864,88 @@ case "${1:-fast}" in
     # idle box p=16 and p=32 both take ~38s. RACE_P tunes that per runner
     # without changing concurrency coverage.
     measure "race: pkg/vfs/... drive drivers contracttest control logging mount syncer cli core mobile crypt task cmd" \
-      go test -race -count=1 -p "$(race_parallel)" ./pkg/vfs/... ./pkg/drive ./pkg/drivers/... \
-      ./pkg/contracttest ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli \
-      ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
+      go test -race -count=1 -p "$(race_parallel)" "${RACE_PATTERNS[@]}"
+    ;;
+  race-changed)
+    # PR fast path: the same import-closure selection as `changed`, with the
+    # reachable packages executed under -race. The fail-safe rule is the same
+    # one `changed` documents: a diff that cannot be placed on packages
+    # (scripts/, go.mod, the docs, no git checkout) widens to the full race set
+    # rather than skipping concurrency coverage. -json keeps the slowest
+    # package/test report.
+    MEASURE_RERUN=(-race -count=1 -p "$(race_parallel)")
+    pkgs=$(affected_packages) || pkgs=""
+    if [ -z "$pkgs" ]; then
+      echo "== race-changed: diff cannot be placed on packages; running the full race set =="
+      measure "race-changed: go test -race (full fallback)" \
+        go test -json -race -count=1 -p "$(race_parallel)" "${RACE_PATTERNS[@]}"
+    else
+      count=$(printf '%s\n' "$pkgs" | wc -l | tr -d ' ')
+      printf '== race-changed: %s package(s) reachable from the working diff ==\n' "$count"
+      printf '%s\n' "$pkgs" | sed 's/^/     /'
+      # The list is deliberately split into argv.
+      # shellcheck disable=SC2086
+      measure "race-changed: go test -race ($count pkg)" \
+        go test -json -race -count=1 -p "$(race_parallel)" $pkgs
+    fi
+    ;;
+  race-shard)
+    spec="${2:-}"
+    if [ "${spec#*/}" = "$spec" ] || [ -z "${spec%%/*}" ] || [ -z "${spec##*/}" ]; then
+      echo "usage: $0 race-shard <index>/<count>" >&2
+      exit 2
+    fi
+    index="${spec%%/*}"
+    count="${spec##*/}"
+    if ! [[ "$index" =~ ^[1-9][0-9]*$ ]] || ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+      echo "usage: $0 race-shard <index>/<count>" >&2
+      exit 2
+    fi
+    if [ "$index" -gt "$count" ]; then
+      echo "race-shard: index $index is outside 1..$count" >&2
+      exit 2
+    fi
+    run_race_shard "$index" "$count"
+    ;;
+  race-shard-all)
+    count="${2:-4}"
+    if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+      echo "usage: $0 race-shard-all [shard-count]" >&2
+      exit 2
+    fi
+    # Local simulation of the nightly shard matrix. Each CI shard runs on its
+    # own runner with the full package budget, but here all shards share one
+    # machine, so halve the per-shard budget to keep the total in-flight work
+    # near what a single `race` run asks for (oversubscribing makes the
+    # timer-sensitive tests flake on a laptop). Set RACE_P to give every shard
+    # an explicit budget instead.
+    if [ -z "${RACE_P:-}" ]; then
+      shard_p=$(( $(race_parallel) / (count * 2) ))
+      if [ "$shard_p" -lt 2 ]; then shard_p=2; fi
+      export RACE_P="$shard_p"
+    fi
+    tmp=$(new_temp_dir)
+    logs=()
+    pids=()
+    start=$(date +%s)
+    for ((i = 1; i <= count; i++)); do
+      logs[i]="$tmp/shard-$i.log"
+      run_race_shard "$i" "$count" >"${logs[$i]}" 2>&1 &
+      pids+=("$!")
+    done
+    status=0
+    for pid in "${pids[@]}"; do
+      wait "$pid" || status=1
+    done
+    for log in "${logs[@]}"; do
+      cat "$log"
+    done
+    end=$(( $(date +%s) - start ))
+    printf '== race-shard-all: %s shard(s) in %ds ==\n' "$count" "$end"
+    grep -h '^== race-shard [0-9]*/[0-9]*: go test' "${logs[@]}" |
+      sed 's/^== /     /; s/ ==$//' || true
+    rm -rf "$tmp"
+    exit "$status"
     ;;
   vfs-stability)
     # The async upload engine (worker shutdown, staging cleanup, journaling)
@@ -376,6 +957,13 @@ case "${1:-fast}" in
     # than running -count=3 per package.
     measure "vfs-stability: 3x go test -count=1 ./pkg/vfs/..." \
       run_repeated 3 go test -count=1 ./pkg/vfs/...
+    ;;
+  clean-temp)
+    # Reclaim temp left by killed/timed-out runs without starting a layer.
+    # The sweep is age-gated so a concurrent run's fresh entries survive; set
+    # QRYPT_TEMP_MAX_AGE_MIN=0 to reclaim everything (do that only when no
+    # other test process is running).
+    clean_orphan_temp
     ;;
   smoke)
     measure "smoke: localfs" scripts/ci/smoke-localfs.sh
@@ -401,7 +989,7 @@ case "${1:-fast}" in
     done
     ;;
   *)
-    echo "usage: $0 [fast|changed|race|vfs-stability|smoke|all|integration <mount>...]" >&2
+    echo "usage: $0 [fast|changed|race|race-changed|race-shard <index>/<count>|race-shard-all [count]|vfs-stability|smoke|clean-temp|all|integration <mount>...]" >&2
     exit 2
     ;;
 esac

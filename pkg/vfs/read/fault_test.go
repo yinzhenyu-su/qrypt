@@ -82,6 +82,45 @@ func TestApplyReadFaultDelayHonorsContext(t *testing.T) {
 	}
 }
 
+func TestApplyReadFaultRatePacesBody(t *testing.T) {
+	body := &trackingReadCloser{Reader: strings.NewReader(strings.Repeat("x", 400))}
+	started := time.Now()
+	wrapped, err := applyReadFault(context.Background(), fakeReadFaults{
+		ok:    true,
+		fault: faultinject.DebugReadFault{Kind: faultinject.ReadFaultRate, RateBytesPerSec: 4000},
+	}, drive.Entry{}, 0, 400, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 400 {
+		t.Fatalf("data length = %d, want 400", len(data))
+	}
+	if elapsed := time.Since(started); elapsed < 80*time.Millisecond {
+		t.Fatalf("400 bytes at 4000 B/s finished in %s, want at least 80ms", elapsed)
+	}
+}
+
+func TestApplyReadFaultRateHonorsContext(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	body := &trackingReadCloser{Reader: strings.NewReader(strings.Repeat("x", 4000))}
+	wrapped, err := applyReadFault(ctx, fakeReadFaults{
+		ok:    true,
+		fault: faultinject.DebugReadFault{Kind: faultinject.ReadFaultRate, RateBytesPerSec: 1000},
+	}, drive.Entry{}, 0, 4000, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(wrapped)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+}
+
 func TestApplyReadFaultStallWaitsForCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	body := &trackingReadCloser{Reader: strings.NewReader("hello world")}

@@ -32,6 +32,7 @@ type commandReceiveService struct {
 	inspectErrOnce error
 	waitedID       string
 	waitBlock      chan struct{}
+	waitStarted    chan struct{}
 	cancelled      string
 	retried        string
 	state          task.State
@@ -72,6 +73,9 @@ func (s *commandReceiveService) GetShareTask(_ context.Context, id string) (task
 
 func (s *commandReceiveService) WaitShareTask(ctx context.Context, id string, timeout time.Duration) (task.Task, error) {
 	s.waitedID = id
+	if s.waitStarted != nil {
+		close(s.waitStarted)
+	}
 	if s.waitBlock != nil {
 		select {
 		case <-ctx.Done():
@@ -403,12 +407,14 @@ func TestReceivePartialExitCode(t *testing.T) {
 // canceled wait returns context.Canceled (exit 130) and never cancels the task.
 func TestReceiveWaitInterruptStopsOnlyObservation(t *testing.T) {
 	rt := receiveCommandRuntime(t)
-	service := &commandReceiveService{waitBlock: make(chan struct{})}
+	service := &commandReceiveService{waitBlock: make(chan struct{}), waitStarted: make(chan struct{})}
 	startReceiveCommandServer(t, rt, service)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		// Cancel only once the command is actually observing the task, which
+		// the fake records deterministically instead of a 50ms sleep.
+		<-service.waitStarted
 		cancel()
 	}()
 	_, _, err := executeReceiveCommandContext(t, ctx, rt, "", "wait", "share-test")

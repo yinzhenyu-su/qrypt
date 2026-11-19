@@ -39,12 +39,12 @@ func TestPlanOverrideAdjustsPlanAndPerFileLimit(t *testing.T) {
 	}
 }
 
-func TestStreamMeasurementOverrideRespectsProbeGate(t *testing.T) {
+func TestStreamMeasurementOverrideAppliesToStreamingReads(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		intent ReadIntent
 		chunks int
-	}{{"ordinary", ReadIntentUnspecified, 4}, {"probe", ReadIntentProbe, 1}} {
+	}{{"ordinary", ReadIntentUnspecified, 4}, {"interactive", ReadIntentInteractive, 4}} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newStagedReader(t, 8<<20)
 			r.reader.SetPlanOverride(PlanOverride{WindowChunks: 4, MaxStreams: 1})
@@ -78,5 +78,34 @@ func TestPlanOverrideIgnoresZeroFields(t *testing.T) {
 	}
 	if plan.MaxStreams != 2 || plan.WindowChunks != 4 {
 		t.Fatalf("plan = %+v, want streams 2 window 4", plan)
+	}
+}
+
+func TestPlanOverrideShapesLookaheadAndSplit(t *testing.T) {
+	state := NewState(nil)
+	reader := &Reader{state: state, profile: drive.DefaultReadPolicy()}
+	depth, part, minParallel := 3, int64(1<<20), int64(0)
+	reader.SetPlanOverride(PlanOverride{
+		PrefetchChunks:   4,
+		PrefetchDepth:    &depth,
+		PartBytes:        &part,
+		MinParallelBytes: &minParallel,
+	})
+	plan := ReadPlan{MaxStreams: 1, WindowChunks: 2, PrefetchChunks: 1, PrefetchDepth: 1, PartBytes: 8 << 20, MinParallelBytes: 8 << 20}
+	if !reader.applyPlanOverride(&plan) {
+		t.Fatal("shape override was not applied")
+	}
+	if plan.PrefetchChunks != 4 || plan.PrefetchDepth != 3 || plan.PartBytes != 1<<20 || plan.MinParallelBytes != 0 {
+		t.Fatalf("plan = %+v", plan)
+	}
+
+	zero := 0
+	reader.SetPlanOverride(PlanOverride{PrefetchDepth: &zero})
+	disabled := ReadPlan{WindowChunks: 2, PrefetchChunks: 4, PrefetchDepth: 3}
+	if !reader.applyPlanOverride(&disabled) {
+		t.Fatal("depth override was not applied")
+	}
+	if disabled.PrefetchDepth != 0 || disabled.PrefetchChunks != 0 {
+		t.Fatalf("disabled lookahead plan = %+v", disabled)
 	}
 }

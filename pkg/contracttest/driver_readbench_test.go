@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
 func TestParseConcurrencyList(t *testing.T) {
@@ -80,5 +83,41 @@ func TestRunDriverReadBenchmarkRejectsOversize(t *testing.T) {
 	report := RunDriverReadBenchmark(context.Background(), "mem", nil, MaxUploadProbeSize+1, []int{1}, 1, 0)
 	if report.Error == "" {
 		t.Fatal("oversize read benchmark accepted")
+	}
+}
+
+func TestRunDriverReadBenchmarkEntryReadsExistingFile(t *testing.T) {
+	root := t.TempDir()
+	payload := make([]byte, 64<<10)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	if err := os.WriteFile(filepath.Join(root, "existing.bin"), payload, 0o600); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	driver := localfs.New(root)
+	entries, err := driver.List(context.Background(), root)
+	if err != nil {
+		t.Fatalf("list root: %v", err)
+	}
+	var entry drive.Entry
+	for _, candidate := range entries {
+		if candidate.Name == "existing.bin" {
+			entry = candidate
+			break
+		}
+	}
+	if entry.ID == "" {
+		t.Fatalf("existing.bin missing from %v", entries)
+	}
+	report := RunDriverReadBenchmarkEntry(context.Background(), "local", driver, entry, 0, []int{1, 2}, 1, 0)
+	if report.Error != "" {
+		t.Fatalf("entry benchmark failed: %s", report.Error)
+	}
+	if len(report.Samples) != 2 {
+		t.Fatalf("samples = %d, want 2", len(report.Samples))
+	}
+	if report.FileSize != 64<<10 || report.Samples[0].Bytes != 64<<10 {
+		t.Fatalf("benchmark size = %d / read %d bytes, want 64 KiB", report.FileSize, report.Samples[0].Bytes)
 	}
 }

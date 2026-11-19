@@ -41,13 +41,13 @@ func TestGetLargeLocalFilePreservesEveryChunk(t *testing.T) {
 	if err := fs.Flush(ctx, "/large.bin"); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		info, statErr := os.Stat(filepath.Join(remote, "large.bin"))
-		if statErr == nil && info.Size() == int64(len(want)) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The upload engine reports when it has drained, so no polling interval and
+	// no missed wakeup is possible here.
+	idleCtx, cancelIdle := context.WithTimeout(ctx, 3*time.Second)
+	err = fs.WaitUploadsIdle(idleCtx)
+	cancelIdle()
+	if err != nil {
+		t.Fatalf("wait for upload: %v", err)
 	}
 	if info, err := os.Stat(filepath.Join(remote, "large.bin")); err != nil || info.Size() != int64(len(want)) {
 		t.Fatalf("uploaded file not ready: info=%+v err=%v", info, err)

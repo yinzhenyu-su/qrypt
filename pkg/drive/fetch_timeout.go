@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 )
 
 // FetchTimeoutKind identifies which bound aborted a read fetch.
@@ -190,6 +192,66 @@ const closeGrace = time.Second
 // its own error before surfacing the context error.
 const contextGrace = 100 * time.Millisecond
 
+// idleWatch schedules the idle bound on the fetch clock. For the wall clock it
+// keeps a single re-armable timer (the production path, one timer per body);
+// for a fake clock it re-arms through Clock.After, which the test advances.
+type idleWatch struct {
+	clk   testclock.Clock
+	timer *time.Timer
+	ch    <-chan time.Time
+}
+
+func newIdleWatch(clk testclock.Clock, d time.Duration) *idleWatch {
+	w := &idleWatch{clk: clk}
+	if clk == testclock.Real {
+		w.timer = time.NewTimer(d)
+		return w
+	}
+	w.ch = clk.After(d)
+	return w
+}
+
+// channel returns the channel the next idle expiry arrives on.
+func (w *idleWatch) channel() <-chan time.Time {
+	if w.timer != nil {
+		return w.timer.C
+	}
+	return w.ch
+}
+
+// stop stops the wall-clock timer. A fake clock cannot cancel a scheduled
+// timer, so a stale expiry is simply ignored by the caller.
+func (w *idleWatch) stop() {
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+}
+
+// reset restarts the idle bound after a chunk was delivered.
+func (w *idleWatch) reset(d time.Duration) {
+	if w.timer != nil {
+		if !w.timer.Stop() {
+			select {
+			case <-w.timer.C:
+			default:
+			}
+		}
+		w.timer.Reset(d)
+		return
+	}
+	w.ch = w.clk.After(d)
+}
+
+// graceAfter waits for d on the fetch clock, falling back to the wall clock
+// for a fake clock whose owner advances it explicitly; fake-clock tests use
+// bodies that stop immediately, so the grace path never runs there.
+func (w *idleWatch) graceAfter(d time.Duration) <-chan time.Time {
+	if w.timer != nil {
+		return time.After(d)
+	}
+	return w.clk.After(d)
+}
+
 type timeoutBodyChunk struct {
 	data []byte
 	err  error
@@ -220,7 +282,9 @@ type timeoutBody struct {
 	chunks chan timeoutBodyChunk
 	stop   chan struct{}
 	done   chan struct{}
-	timer  *time.Timer
+	// clk schedules the idle bound; idleWatch wraps it for the wall clock.
+	clk       testclock.Clock
+	idleWatch *idleWatch
 
 	idleStarted   time.Time
 	idleLocalWait time.Duration
@@ -233,19 +297,21 @@ type timeoutBody struct {
 }
 
 func newTimeoutBody(ctx context.Context, cancel, abandon context.CancelFunc, body io.ReadCloser, idle time.Duration) *timeoutBody {
+	clk := clockFrom(ctx)
 	r := &timeoutBody{
 		ctx:         ctx,
 		cancel:      cancel,
 		abandon:     abandon,
 		body:        body,
 		idle:        idle,
-		started:     time.Now(),
-		idleStarted: time.Now(),
+		clk:         clk,
+		started:     clk.Now(),
+		idleStarted: clk.Now(),
 		localWaits:  localWaitWatchFrom(ctx),
 		chunks:      make(chan timeoutBodyChunk, 1),
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
-		timer:       time.NewTimer(idle),
+		idleWatch:   newIdleWatch(clk, idle),
 	}
 	r.idleLocalWait = r.localWaits.duration()
 	if deadline, ok := ctx.Deadline(); ok {
@@ -306,12 +372,12 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 		select {
 		case chunk, ok := <-r.chunks:
 			if !ok {
-				r.timer.Stop()
+				r.idleWatch.stop()
 				r.err = io.EOF
 				return 0, io.EOF
 			}
 			r.deliverChunk(chunk)
-		case <-r.timer.C:
+		case <-r.idleWatch.channel():
 			// The pump may already have produced a chunk that this consumer
 			// was not scheduled to read before the idle timer expired (a
 			// loaded host or a slow caller). Those bytes are provider output,
@@ -321,7 +387,7 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 			select {
 			case chunk, ok := <-r.chunks:
 				if !ok {
-					r.timer.Stop()
+					r.idleWatch.stop()
 					r.err = io.EOF
 					return 0, io.EOF
 				}
@@ -329,20 +395,20 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 				continue
 			default:
 			}
-			remaining := r.idle - time.Since(r.idleStarted) + r.localWaits.duration() - r.idleLocalWait
+			remaining := r.idle - r.clk.Now().Sub(r.idleStarted) + r.localWaits.duration() - r.idleLocalWait
 			if r.localWaits.waiting() || remaining > 0 {
 				// Completed local waits also count: the consumer may only
 				// process this timer after the limiter has already resumed.
 				if remaining <= 0 {
 					remaining = r.idle
 				}
-				r.timer.Reset(remaining)
+				r.idleWatch.reset(remaining)
 				continue
 			}
 			return 0, r.abort(&FetchTimeoutError{
 				Kind:    FetchTimeoutIdle,
 				Limit:   r.idle,
-				Elapsed: time.Since(r.started),
+				Elapsed: r.clk.Now().Sub(r.started),
 			})
 		case <-r.ctx.Done():
 			// Give the body a brief chance to report its own error so
@@ -350,7 +416,7 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 			// close, then surface the context error.
 			select {
 			case <-r.chunks:
-			case <-time.After(contextGrace):
+			case <-r.idleWatch.graceAfter(contextGrace):
 			}
 			return 0, r.abort(r.contextError())
 		}
@@ -377,15 +443,9 @@ func (r *timeoutBody) deliverChunk(chunk timeoutBodyChunk) {
 }
 
 func (r *timeoutBody) resetIdle() {
-	r.idleStarted = time.Now()
+	r.idleStarted = r.clk.Now()
 	r.idleLocalWait = r.localWaits.duration()
-	if !r.timer.Stop() {
-		select {
-		case <-r.timer.C:
-		default:
-		}
-	}
-	r.timer.Reset(r.idle)
+	r.idleWatch.reset(r.idle)
 }
 
 func (r *timeoutBody) abort(err error) error {
@@ -399,9 +459,9 @@ func (r *timeoutBody) contextError() error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		limit := r.totalLimit
 		if limit <= 0 {
-			limit = time.Since(r.started)
+			limit = r.clk.Now().Sub(r.started)
 		}
-		return &FetchTimeoutError{Kind: FetchTimeoutTotal, Limit: limit, Elapsed: time.Since(r.started)}
+		return &FetchTimeoutError{Kind: FetchTimeoutTotal, Limit: limit, Elapsed: r.clk.Now().Sub(r.started)}
 	}
 	return err
 }
@@ -411,14 +471,14 @@ func (r *timeoutBody) contextError() error {
 func (r *timeoutBody) Close() error {
 	r.releaseOnce.Do(func() {
 		close(r.stop)
-		r.timer.Stop()
+		r.idleWatch.stop()
 		if r.cancel != nil {
 			r.cancel()
 		}
 		_ = r.body.Close()
 		select {
 		case <-r.done:
-		case <-time.After(closeGrace):
+		case <-r.idleWatch.graceAfter(closeGrace):
 		}
 	})
 	return nil
@@ -430,7 +490,7 @@ func (r *timeoutBody) Close() error {
 func (r *timeoutBody) finish() {
 	r.releaseOnce.Do(func() {
 		close(r.stop)
-		r.timer.Stop()
+		r.idleWatch.stop()
 		if r.cancel != nil {
 			r.cancel()
 		}
@@ -440,7 +500,7 @@ func (r *timeoutBody) finish() {
 func (r *timeoutBody) release() {
 	r.releaseOnce.Do(func() {
 		close(r.stop)
-		r.timer.Stop()
+		r.idleWatch.stop()
 		if r.abandon != nil {
 			r.abandon()
 		} else if r.cancel != nil {
@@ -449,7 +509,7 @@ func (r *timeoutBody) release() {
 		_ = r.body.Close()
 		select {
 		case <-r.done:
-		case <-time.After(closeGrace):
+		case <-r.idleWatch.graceAfter(closeGrace):
 		}
 	})
 }

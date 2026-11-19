@@ -43,48 +43,28 @@ func (d *rangeDelivery) publish(data []byte) {
 	d.next += int64(len(data))
 }
 
-func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts FetchTimeouts, open rangeOpener, delivery *rangeDelivery) ([]byte, map[string]any, error) {
+func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts FetchTimeouts, open rangeOpener, delivery *rangeDelivery) ([]byte, fetchStats, error) {
 	if entry.Size > 0 {
 		size = min(size, entry.Size-offset)
 	}
 	if size <= 0 {
-		return nil, nil, nil
+		return nil, fetchStats{}, nil
 	}
 	// One deadline covers every attempt: an idle-stall replay or a status
 	// backoff may only spend what is left of the range's total budget.
-	deadline := time.Now().Add(timeouts.Total)
-	var extra map[string]any
+	deadline := clockFrom(ctx).Now().Add(timeouts.Total)
 	var lastErr error
 	attempts := 0
 	timeoutCount := 0
 	timeoutKind := FetchTimeoutIdle
 	statusRetries := 0
-	statusReason := ""
 	bodyRetries := 0
-	var backoffTotal time.Duration
-	recordRetries := func() {
-		if extra == nil {
-			return
-		}
-		if attempts > 1 {
-			extra["fetch_attempts"] = attempts
-			extra["fetch_retried"] = true
-		}
-		if timeoutCount > 0 {
-			extra["fetch_timeouts"] = timeoutCount
-			extra["fetch_timeout_kind"] = string(timeoutKind)
-		}
-		if statusRetries > 0 {
-			extra["fetch_status_retries"] = statusRetries
-			extra["fetch_status_reason"] = statusReason
-			extra["fetch_backoff_ms"] = durationMillis(backoffTotal)
-		}
-		if bodyRetries > 0 {
-			extra["fetch_body_retries"] = bodyRetries
-		}
+	retryReason := ""
+	stats := func() fetchStats {
+		return fetchStats{attempts: attempts, timeouts: timeoutCount, timeoutKind: timeoutKind, retryReason: retryReason}
 	}
 	for {
-		remaining := time.Until(deadline)
+		remaining := deadline.Sub(clockFrom(ctx).Now())
 		if remaining <= 0 {
 			break
 		}
@@ -94,14 +74,12 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 			attemptOffset = delivery.next
 			attemptSize = offset + size - attemptOffset
 		}
-		data, attemptExtra, err := readWindowRangeAttempt(ctx, entry, attemptOffset, attemptSize, timeouts.Idle, remaining, open, delivery)
+		data, attemptStats, err := readWindowRangeAttempt(ctx, entry, attemptOffset, attemptSize, timeouts.Idle, remaining, open, delivery)
 		if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-			trace.record(attemptExtra)
+			trace.recordAttempt(attemptStats)
 		}
-		extra = attemptExtra
 		if err == nil {
-			recordRetries()
-			return data, extra, nil
+			return data, stats(), nil
 		}
 		lastErr = err
 		var timeout *FetchTimeoutError
@@ -111,10 +89,10 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 			// Only an idle stall is worth replaying: a total deadline has no
 			// budget left, and other failures are not the timeout case.
 			if timeout.Kind == FetchTimeoutIdle && timeoutCount < fetchTimeoutAttempts && ctx.Err() == nil {
+				retryReason = "timeout"
 				continue
 			}
-			recordRetries()
-			return nil, extra, err
+			return nil, stats(), err
 		}
 		if isShortBodyError(err) {
 			// A body that ends before its declared range is a provider hiccup,
@@ -122,40 +100,32 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 			// truncated-body resilience in the shared read layer instead of
 			// asking every driver to re-request partial responses itself.
 			if ctx.Err() != nil || bodyRetries+1 >= fetchTimeoutAttempts {
-				recordRetries()
-				return nil, extra, err
+				return nil, stats(), err
 			}
 			bodyRetries++
+			retryReason = "truncated_body"
 			continue
 		}
 		reason := readRetryReason(err)
 		if reason == "" || statusRetries+1 >= fetchStatusAttempts || ctx.Err() != nil {
-			recordRetries()
-			return nil, extra, err
+			return nil, stats(), err
 		}
 		statusRetries++
-		statusReason = reason
+		retryReason = reason
 		backoff := fetchStatusBackoff(statusRetries)
-		if backoff >= time.Until(deadline) {
+		if backoff >= deadline.Sub(clockFrom(ctx).Now()) {
 			// The wait would outlive the range's budget: reporting the provider
 			// failure is more useful than the timeout we would cause.
-			recordRetries()
-			return nil, extra, err
+			return nil, stats(), err
 		}
 		if sleepErr := sleepContext(ctx, backoff); sleepErr != nil {
-			recordRetries()
-			return nil, extra, sleepErr
+			return nil, stats(), sleepErr
 		}
-		backoffTotal += backoff
-	}
-	recordRetries()
-	if extra == nil {
-		extra = map[string]any{}
 	}
 	if lastErr != nil {
-		return nil, extra, lastErr
+		return nil, stats(), lastErr
 	}
-	return nil, extra, &FetchTimeoutError{Kind: FetchTimeoutTotal, Limit: timeouts.Total}
+	return nil, stats(), &FetchTimeoutError{Kind: FetchTimeoutTotal, Limit: timeouts.Total}
 }
 
 // isShortBodyError reports whether err means the body ended before the
@@ -210,12 +180,10 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return nil
 	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-timer.C:
+	case <-wakeAfter(ctx, d):
 		return nil
 	}
 }
@@ -223,7 +191,7 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // readWindowRangeAttempt performs one Range GET bounded by the idle and total
 // limits. total is the remaining share of the fetch deadline, so opening the
 // request and draining the body share one budget.
-func readWindowRangeAttempt(ctx context.Context, entry Entry, offset, size int64, idle, total time.Duration, open rangeOpener, delivery *rangeDelivery) ([]byte, map[string]any, error) {
+func readWindowRangeAttempt(ctx context.Context, entry Entry, offset, size int64, idle, total time.Duration, open rangeOpener, delivery *rangeDelivery) ([]byte, fetchAttemptStats, error) {
 	// The abandon cause tells the driver *why* the request context ends. A
 	// provider stall must reach the driver as a stalled connection so it can
 	// rotate away from a throttled one; a caller cancel must not.
@@ -235,9 +203,9 @@ func readWindowRangeAttempt(ctx context.Context, entry Entry, offset, size int64
 	// fine; the idle bound must not read that as a stall.
 	attemptCtx = WithLocalWaitTracking(attemptCtx)
 	rc, err := open(attemptCtx, entry, offset, size)
-	extra := map[string]any{}
+	var stats fetchAttemptStats
 	if err != nil {
-		return nil, extra, classifyTimeoutError(ctx, deadlineCtx, err, total)
+		return nil, stats, classifyTimeoutError(ctx, deadlineCtx, err, total)
 	}
 	defer rc.Close()
 	bodyStarted := time.Now()
@@ -248,36 +216,35 @@ func readWindowRangeAttempt(ctx context.Context, entry Entry, offset, size int64
 		data, err = readBodyChunks(attemptCtx, cancelAttempt, rc, size, idle, delivery)
 	}
 	bodyFinished := time.Now()
-	extra["driver_body_ms"] = durationMillis(bodyFinished.Sub(bodyStarted))
-	extra["body_us"] = bodyFinished.Sub(bodyStarted).Microseconds()
-	extra["local_wait_us"] = localWaitWatchFrom(attemptCtx).duration().Microseconds()
+	stats.bodyUS = bodyFinished.Sub(bodyStarted).Microseconds()
+	stats.localWaitUS = localWaitWatchFrom(attemptCtx).duration().Microseconds()
 	closeStarted := time.Now()
 	closeErr := rc.Close()
 	closeFinished := time.Now()
-	extra["driver_close_ms"] = durationMillis(closeFinished.Sub(closeStarted))
+	stats.closeUS = closeFinished.Sub(closeStarted).Microseconds()
 	if err != nil {
-		return nil, extra, classifyTimeoutError(ctx, deadlineCtx, err, total)
+		return nil, stats, classifyTimeoutError(ctx, deadlineCtx, err, total)
 	}
 	validateStarted := time.Now()
-	defer func() { extra["validate_us"] = time.Since(validateStarted).Microseconds() }()
+	defer func() { stats.validateUS = time.Since(validateStarted).Microseconds() }()
 	if delivery == nil && entry.Size > 0 && offset+size <= entry.Size && int64(len(data)) != size {
 		// A body that ends cleanly before its declared range looks like a
 		// short read, not an error. Report it as a truncated body so the
 		// window layer replays the Range GET instead of assembling a window
 		// from partial data.
-		return nil, extra, fmt.Errorf("read: returned %d of %d bytes: %w", len(data), size, io.ErrUnexpectedEOF)
+		return nil, stats, fmt.Errorf("read: returned %d of %d bytes: %w", len(data), size, io.ErrUnexpectedEOF)
 	}
 	if closeErr != nil {
-		return nil, extra, closeErr
+		return nil, stats, closeErr
 	}
 	if delivery != nil {
 		if err := ctx.Err(); err != nil {
-			return nil, extra, err
+			return nil, stats, err
 		}
 		delivery.publish(data) // Final block waits for EOF and successful Close.
-		return nil, extra, nil
+		return nil, stats, nil
 	}
-	return data, extra, nil
+	return data, stats, nil
 }
 
 // readBodyChunks shares the timeout body with buffered fetches. Only complete

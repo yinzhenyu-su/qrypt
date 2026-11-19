@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // DefaultReadBenchSize is large enough to amortise per-request latency over
@@ -76,6 +77,13 @@ func ParseConcurrencyList(raw string) ([]int, error) {
 // levels, bypassing the VFS and encryption layers. It answers whether the
 // provider scales with parallel ranges at all, independently of qrypt's read
 // pipeline. The fixture file is created and removed by the benchmark.
+// MountedBenchTarget is implemented by filesystems that can resolve the driver
+// entry behind a virtual path. probe bench read --path uses it to benchmark an
+// existing remote file instead of uploading a fixture.
+type MountedBenchTarget interface {
+	BenchTarget(ctx context.Context, mount, virtualPath string) (vfs.BenchTarget, error)
+}
+
 func RunDriverReadBenchmark(ctx context.Context, mount string, d drive.Driver, size int64, concurrency []int, samples int, interval time.Duration) *ReadBenchReport {
 	report := &ReadBenchReport{Mount: mount, FileSize: size}
 	if size <= 0 {
@@ -108,7 +116,7 @@ func RunDriverReadBenchmark(ctx context.Context, mount string, d drive.Driver, s
 		return report
 	}
 	defer func() {
-		if err := fx.d.Remove(ctx, fx.TestDir); err != nil && report.CleanupError == "" {
+		if err := RemoveFixtureTree(ctx, fx.d, fx); err != nil && report.CleanupError == "" {
 			report.CleanupError = err.Error()
 		}
 	}()
@@ -127,6 +135,44 @@ func RunDriverReadBenchmark(ctx context.Context, mount string, d drive.Driver, s
 		}
 	}()
 
+	measureReadBench(ctx, report, d, entry, size, concurrency, samples, interval)
+	return report
+}
+
+// RunDriverReadBenchmarkEntry measures an existing driver entry instead of
+// uploading a fixture. It is the benchmark for read-only mounts and for
+// drivers whose write path is irrelevant to the read ceiling; the requested
+// size is clamped to the entry's length. Mounted filesystems use it through
+// probe bench read --path.
+func RunDriverReadBenchmarkEntry(ctx context.Context, mount string, d drive.Driver, entry drive.Entry, size int64, concurrency []int, samples int, interval time.Duration) *ReadBenchReport {
+	report := &ReadBenchReport{Mount: mount}
+	if entry.ID == "" {
+		report.Error = "read benchmark needs a driver entry"
+		return report
+	}
+	if entry.Size <= 0 {
+		report.Error = "read benchmark needs an entry with a known size"
+		return report
+	}
+	if size <= 0 || size > entry.Size {
+		size = min(entry.Size, int64(DefaultReadBenchSize))
+	}
+	report.FileSize = size
+	if snap, err := d.DebugSnapshot(ctx); err == nil {
+		report.Driver = snap.Driver
+	}
+	if len(concurrency) == 0 {
+		concurrency = DefaultReadBenchConcurrency
+	}
+	if samples <= 0 {
+		samples = 1
+	}
+	measureReadBench(ctx, report, d, entry, size, concurrency, samples, interval)
+	return report
+}
+
+// measureReadBench runs the concurrency x samples matrix over one entry.
+func measureReadBench(ctx context.Context, report *ReadBenchReport, d drive.Driver, entry drive.Entry, size int64, concurrency []int, samples int, interval time.Duration) {
 	for _, level := range concurrency {
 		for sample := 0; sample < samples; sample++ {
 			if (len(report.Samples) > 0) && interval > 0 {
@@ -135,12 +181,12 @@ func RunDriverReadBenchmark(ctx context.Context, mount string, d drive.Driver, s
 				case <-ctx.Done():
 					timer.Stop()
 					report.Error = ctx.Err().Error()
-					return report
+					return
 				case <-timer.C:
 				}
 			}
 			started := time.Now()
-			read, errors, readErr := readRangeConcurrent(ctx, d, entry, size, level)
+			read, failures, readErr := readRangeConcurrent(ctx, d, entry, size, level)
 			elapsed := time.Since(started)
 			report.Samples = append(report.Samples, ReadBenchSample{
 				Concurrency:  level,
@@ -148,15 +194,14 @@ func RunDriverReadBenchmark(ctx context.Context, mount string, d drive.Driver, s
 				DurationUS:   int64(elapsed / time.Microsecond),
 				AggregateBPS: bytesPerSecond(read, elapsed),
 				PerStreamBPS: bytesPerSecond(read, elapsed) / int64(level),
-				Errors:       errors,
+				Errors:       failures,
 				Error:        errorText(readErr),
 			})
 			if readErr != nil {
-				return report
+				return
 			}
 		}
 	}
-	return report
 }
 
 // readRangeConcurrent divides the file into one range per stream and reads all

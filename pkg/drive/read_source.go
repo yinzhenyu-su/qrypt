@@ -1,13 +1,14 @@
 package drive
 
 import (
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
+
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"math"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,11 +34,16 @@ func WithReadBodyTransform(ctx context.Context, f ReadBodyTransform) context.Con
 
 type RangePlan struct {
 	Offset, Size int64
-	Streams      int
-	Split        SplitPolicy
-	Timeouts     FetchTimeouts
-	Priority     readbudget.Priority
-	Speculative  bool
+	// Streams requests a worker count without a part size; the caller that
+	// knows the download shape sets Workers and Part explicitly instead. The
+	// read layer translates driver split policy into an explicit layout, so the
+	// source never interprets policy.
+	Streams     int
+	Workers     int
+	Part        int64
+	Timeouts    FetchTimeouts
+	Priority    readbudget.Priority
+	Speculative bool
 }
 
 type readRange struct{ Offset, Size int64 }
@@ -46,17 +52,26 @@ type rangeLayout struct {
 	workers            int
 }
 
-func partitionRange(offset, size int64, workers int, split SplitPolicy) rangeLayout {
+func explicitRangeLayout(offset, size int64, workers int, part int64) rangeLayout {
 	workers = max(1, workers)
-	if size < split.MinParallelBytes {
-		workers = 1
-	}
-	part := split.PartBytes
-	if part == 0 {
+	if part <= 0 {
 		part = (size + int64(workers) - 1) / int64(workers)
 	}
 	return rangeLayout{offset: offset, size: size, part: part, workers: min(workers, int((size+part-1)/part))}
 }
+
+// WindowPartLayout translates a driver's split policy into the explicit part
+// layout the source executes. Below MinParallelBytes the window stays on one
+// stream; PartBytes (or an even split when zero) sizes each part. The read layer
+// and the direct sourceStream both use this so policy is interpreted once.
+func WindowPartLayout(size int64, streams int, partBytes, minParallelBytes int64) (workers int, part int64) {
+	workers = max(1, streams)
+	if minParallelBytes > 0 && size < minParallelBytes {
+		return 1, 0
+	}
+	return workers, partBytes
+}
+
 func (l rangeLayout) count() int64 { return (l.size + l.part - 1) / l.part }
 func (l rangeLayout) at(index int64) readRange {
 	start := index * l.part
@@ -71,11 +86,14 @@ type ReadSource struct {
 	scheduler *readbudget.Scheduler
 	ctx       context.Context
 	cancel    context.CancelFunc
-	mu        sync.Mutex
-	closed    bool
-	active    sync.WaitGroup
-	bodies    map[*sourceReadBody]struct{}
-	pending   map[*PendingRead]struct{}
+	// clock is the time seam for fetch retry backoff and close grace; it is
+	// testclock.Real unless ReadOverride.Clock installs one.
+	clock   testclock.Clock
+	mu      sync.Mutex
+	closed  bool
+	active  sync.WaitGroup
+	bodies  map[*sourceReadBody]struct{}
+	pending map[*PendingRead]struct{}
 	// Ranges count admitted driver calls through body EOF/Close, including
 	// opening. Reserved but unstarted PendingReads are not active ranges.
 	ranges  atomic.Int32
@@ -92,7 +110,11 @@ func NewReadSource(d Driver, o *ReadOverride) (*ReadSource, error) {
 	}
 	p.SourceID = fmt.Sprintf("read-%d", readSourceSequence.Add(1))
 	ctx, cancel := context.WithCancel(context.Background())
-	return &ReadSource{driver: d, policy: p, bodies: map[*sourceReadBody]struct{}{}, scheduler: readbudget.NewScheduler(readbudget.SchedulerConfig{MaxConcurrency: 32, HighReserve: 8, PrefetchLimit: 4}), ctx: ctx, cancel: cancel}, nil
+	clock := testclock.Real
+	if o != nil && o.Clock != nil {
+		clock = o.Clock
+	}
+	return &ReadSource{driver: d, policy: p, bodies: map[*sourceReadBody]struct{}{}, scheduler: readbudget.NewScheduler(readbudget.SchedulerConfig{MaxConcurrency: 32, HighReserve: 8, PrefetchLimit: 4}), ctx: ctx, cancel: cancel, clock: clock}, nil
 }
 func (s *ReadSource) Policy() ResolvedReadPolicy {
 	p := s.policy
@@ -128,7 +150,7 @@ func (s *ReadSource) Close() error {
 	select {
 	case <-done:
 		return nil
-	case <-time.After(closeGrace):
+	case <-s.clock.After(closeGrace):
 		return fmt.Errorf("read: source close timed out")
 	}
 }
@@ -157,7 +179,7 @@ func (s *ReadSource) OpenRange(ctx context.Context, e Entry, offset, size int64,
 	trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace)
 	var release func()
 	var err error
-	if job, ok := ctx.Value(pendingReadKey{}).(*PendingRead); ok && job.source == s && job.entry.ID == e.ID {
+	if job, ok := ctx.Value(pendingReadKey{}).(*PendingRead); ok && job.source == s && job.entry.ID == e.ID && job.active() {
 		release = func() {}
 	} else if speculative {
 		var ok bool
@@ -188,7 +210,7 @@ func (s *ReadSource) OpenRange(ctx context.Context, e Entry, offset, size int64,
 			endRange()
 		})
 	}
-	trace.record(map[string]any{"queue_us": time.Since(queueStarted).Microseconds()})
+	trace.recordQueue(time.Since(queueStarted))
 	if err := readCtx.Err(); err != nil {
 		release()
 		finish()
@@ -196,7 +218,7 @@ func (s *ReadSource) OpenRange(ctx context.Context, e Entry, offset, size int64,
 	}
 	openStarted := time.Now()
 	body, err := s.driver.Read(readCtx, e, offset, size)
-	trace.record(map[string]any{"open_us": time.Since(openStarted).Microseconds(), "driver_open_ms": durationMillis(time.Since(openStarted))})
+	trace.recordOpen(time.Since(openStarted))
 	if err != nil {
 		release()
 		finish()
@@ -281,11 +303,12 @@ func (b *sourceReadBody) Close() error {
 func (b *sourceReadBody) closeBody() { b.bodyOnce.Do(func() { b.closeErr = b.ReadCloser.Close() }) }
 
 // PendingRead reserves complete speculative admission without opening a
-// network request. Run consumes it once; Close also releases an unstarted job.
+// network request. Context hands the reservation to the read layer, which
+// executes the window through FetchStream or its own part workers; Close
+// releases it and cancels any work running under it.
 type PendingRead struct {
 	source          *ReadSource
 	entry           Entry
-	plan            RangePlan
 	release         func()
 	once            sync.Once
 	mu              sync.Mutex
@@ -307,61 +330,54 @@ func (s *ReadSource) TryFetch(e Entry, plan RangePlan) *PendingRead {
 	if !ok {
 		return nil
 	}
-	plan.Streams = 1
-	plan.Split = SplitPolicy{}
-	plan.Speculative = true
-	job := &PendingRead{source: s, entry: e, plan: plan, release: release}
+	job := &PendingRead{source: s, entry: e, release: release}
 	if s.pending == nil {
 		s.pending = map[*PendingRead]struct{}{}
 	}
 	s.pending[job] = struct{}{}
 	return job
 }
-func (p *PendingRead) Run(ctx context.Context) ([]byte, error) {
-	return p.run(ctx, nil)
-}
 
-// RunChunks consumes an aligned speculative window in ReadChunkSize blocks.
-// emit owns each immutable block and is called synchronously, in offset order.
-// A later error applies only to the unconsumed tail; completed blocks remain
-// valid. Retries request only the unpublished suffix. The last block is emitted
-// only after response length and Close validation. Unknown-size objects retain
-// whole-window validation. Run and RunChunks together may be called only once.
-func (p *PendingRead) RunChunks(ctx context.Context, emit func(int64, []byte)) error {
-	if emit == nil || p.plan.Offset%ReadChunkSize != 0 {
-		return ErrInvalidInput
-	}
-	_, err := p.run(ctx, &rangeDelivery{next: p.plan.Offset, emit: emit})
-	return err
-}
-
-func (p *PendingRead) run(ctx context.Context, delivery *rangeDelivery) ([]byte, error) {
+// Context returns a context carrying the admission this job already holds, so
+// Range requests executed with it reuse that permit instead of acquiring
+// another one. The job must stay open until those requests finish; Close
+// cancels them and releases the reservation. A job can serve one consumer
+// only.
+func (p *PendingRead) Context(ctx context.Context) (context.Context, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed || p.started {
-		p.mu.Unlock()
 		return nil, ErrInvalidInput
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	p.started = true
 	p.cancel = cancel
-	p.mu.Unlock()
-	defer func() { cancel(); p.finish() }()
-	return p.source.fetch(context.WithValue(ctx, pendingReadKey{}, p), p.entry, p.plan, delivery)
+	return context.WithValue(ctx, pendingReadKey{}, p), nil
 }
+
+// active reports whether the job still holds its reservation.
+func (p *PendingRead) active() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.closed
+}
+
 func (p *PendingRead) finish() {
 	p.once.Do(func() { p.release(); p.source.mu.Lock(); delete(p.source.pending, p); p.source.mu.Unlock() })
 }
 func (p *PendingRead) Close() error {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
 	p.closed = true
-	started, cancel := p.started, p.cancel
+	cancel := p.cancel
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	if !started {
-		p.finish()
-	}
+	p.finish()
 	return nil
 }
 
@@ -390,7 +406,7 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		plan.Timeouts.Total = s.policy.Effective.Fetch.Total
 	}
 	plan.Timeouts.Idle = min(plan.Timeouts.Idle, plan.Timeouts.Total)
-	if plan.Split.PartBytes < 0 || plan.Split.PartBytes > MaxReadWindowBytes || plan.Split.MinParallelBytes < 0 || plan.Split.MinParallelBytes > MaxReadWindowBytes || plan.Streams < 0 || plan.Streams > 32 {
+	if plan.Streams < 0 || plan.Streams > 32 || plan.Workers < 0 || plan.Workers > 32 || plan.Part < 0 || plan.Part > MaxReadWindowBytes {
 		return nil, ErrInvalidInput
 	}
 	if plan.Offset < 0 || plan.Size <= 0 || plan.Size > MaxReadWindowBytes || plan.Offset > math.MaxInt64-plan.Size {
@@ -402,29 +418,30 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		}
 		plan.Size = min(plan.Size, e.Size-plan.Offset)
 	}
-	workers := max(1, min(plan.Streams, s.policy.Effective.MaxInFlight))
-	if !s.policy.Limits.Parallel || s.scheduler.IsNonParallel(e.ID) {
-		workers = 1
-	}
-	if plan.Size < plan.Split.MinParallelBytes {
-		workers = 1
-	}
-	// Compute tasks lazily. Even a one-byte ceiling creates at most workers
-	// goroutines and one bounded output buffer, rather than millions of tasks.
-	if e.Size <= 0 {
-		workers = 1
-		plan.Split.PartBytes = 0
-	}
-	workers = s.scheduler.GrantStreams(workers, e.ID, s.policy.Effective.MaxInFlight)
-	layout := partitionRange(plan.Offset, plan.Size, workers, plan.Split)
-	workers = layout.workers
-	count := layout.count()
-	strict := workers > 1
-	if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-		trace.record(map[string]any{"granted_streams": workers, "range_tasks": int(count), "window_bytes": plan.Size, "part_bytes": layout.part})
-	}
-	if delivery != nil && e.Size > 0 {
-		// Pending reads always have one admitted stream and no split policy.
+	if delivery != nil {
+		// Progressive delivery is one streaming Range: the read layer owns
+		// part fan-out (FetchPart per part), so a window delivery never opens
+		// several connections of its own.
+		if e.Size <= 0 || plan.Offset%ReadChunkSize != 0 {
+			// Block boundaries are chunk aligned; an unaligned or unknown-size
+			// window keeps the buffered contract and publishes once validated.
+			data, err := s.fetch(ctx, e, plan, nil)
+			if err != nil {
+				if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
+					trace.failure(ctx, err)
+				}
+				return nil, err
+			}
+			for len(data) > 0 {
+				n := min(int64(len(data)), ReadChunkSize)
+				delivery.publish(data[:n:n])
+				data = data[n:]
+			}
+			return nil, nil
+		}
+		if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
+			trace.recordPlan(1, 1, plan.Size, plan.Size)
+		}
 		_, err := s.fetchPart(ctx, e, readRange{plan.Offset, plan.Size}, plan, delivery)
 		if err != nil {
 			if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
@@ -432,6 +449,29 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 			}
 		}
 		return nil, err
+	}
+	workers := plan.Streams
+	if plan.Workers > 0 {
+		// The read layer chose the part count for this window; keep its choice.
+		workers = plan.Workers
+	}
+	workers = max(1, min(workers, s.policy.Effective.MaxInFlight))
+	if !s.policy.Limits.Parallel || s.scheduler.IsNonParallel(e.ID) {
+		workers = 1
+	}
+	// Compute tasks lazily. Even a one-byte ceiling creates at most workers
+	// goroutines and one bounded output buffer, rather than millions of tasks.
+	if e.Size <= 0 {
+		workers = 1
+		plan.Part = 0
+	}
+	workers = s.scheduler.GrantStreams(workers, e.ID, s.policy.Effective.MaxInFlight)
+	layout := explicitRangeLayout(plan.Offset, plan.Size, workers, plan.Part)
+	workers = layout.workers
+	count := layout.count()
+	strict := workers > 1
+	if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
+		trace.recordPlan(workers, count, plan.Size, layout.part)
 	}
 	data := make([]byte, int(plan.Size))
 	var next atomic.Int64
@@ -467,7 +507,8 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 		if strict && errors.Is(err, ErrUnsupported) {
 			s.scheduler.MarkNonParallel(e.ID)
 			plan.Streams = 1
-			plan.Split.PartBytes = 0
+			plan.Workers = 1
+			plan.Part = 0
 			return s.Fetch(ctx, e, plan)
 		}
 		if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
@@ -489,18 +530,11 @@ func (s *ReadSource) fetch(ctx context.Context, e Entry, plan RangePlan, deliver
 
 func (s *ReadSource) fetchPart(ctx context.Context, e Entry, span readRange, p RangePlan, delivery *rangeDelivery) ([]byte, error) {
 	bounds := p.Timeouts
-	data, extra, err := fetchRange(ctx, e, span.Offset, span.Size, bounds, func(ctx context.Context, e Entry, offset, size int64) (io.ReadCloser, error) {
+	data, stats, err := fetchRange(ctx, e, span.Offset, span.Size, bounds, func(ctx context.Context, e Entry, offset, size int64) (io.ReadCloser, error) {
 		return s.OpenRange(ctx, e, offset, size, p.Priority, p.Speculative)
 	}, delivery)
 	if trace, _ := ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-		meta := make(map[string]any)
-		for k, v := range extra {
-			if strings.HasPrefix(k, "fetch_") {
-				meta[k] = v
-			}
-		}
-
-		trace.record(meta)
+		trace.recordFetch(stats)
 	}
 	return data, err
 }
@@ -561,7 +595,8 @@ func (r *sourceStream) Read(p []byte) (int, error) {
 		if r.known {
 			n = min(n, r.remaining)
 		}
-		data, err := r.source.Fetch(r.ctx, r.entry, RangePlan{Offset: r.offset, Size: n, Streams: policy.Bulk.Streams, Split: policy.Bulk.Split, Timeouts: policy.Fetch, Priority: readbudget.PriorityLow})
+		workers, part := WindowPartLayout(n, policy.Bulk.Streams, policy.Bulk.PartBytes, policy.Bulk.MinParallelBytes)
+		data, err := r.source.Fetch(r.ctx, r.entry, RangePlan{Offset: r.offset, Size: n, Workers: workers, Part: part, Timeouts: policy.Fetch, Priority: readbudget.PriorityLow})
 		if err != nil {
 			return 0, err
 		}
@@ -574,7 +609,7 @@ func (r *sourceStream) Read(p []byte) (int, error) {
 	deliverStarted := time.Now()
 	n := copy(p, r.buf)
 	if trace, _ := r.ctx.Value(readTraceKey{}).(*ReadTrace); trace != nil {
-		trace.record(map[string]any{"deliver_us": time.Since(deliverStarted).Microseconds()})
+		trace.recordDeliver(time.Since(deliverStarted))
 	}
 	r.buf = r.buf[n:]
 	r.offset += int64(n)

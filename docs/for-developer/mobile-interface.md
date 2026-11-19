@@ -87,6 +87,7 @@ Suggested Android mapping:
 filesDir/qrypt/
   config/qrypt.toml
   upload/
+  run/
   state/
     driver/
   logs/
@@ -103,6 +104,7 @@ Example:
 {
   "config_dir": "<filesDir>/qrypt/config",
   "storage": {
+    "run_dir": "<filesDir>/qrypt/run",
     "read_cache_dir": "<cacheDir>/qrypt/read",
     "thumbnail_cache_dir": "<cacheDir>/qrypt/thumbnail",
     "upload_dir": "<filesDir>/qrypt/upload",
@@ -120,6 +122,10 @@ qrypt stores mount-specific data under the provided roots:
 <upload_dir>/<mount>
 <state_dir>/driver/<mount>
 ```
+
+`run_dir` holds local endpoint files (sockets, pids). Mobile processes have no
+writable home directory, so when it is omitted qrypt falls back to
+`<state_dir>/run` rather than the desktop `~/.qrypt/run`.
 
 On Android, driver state and upload sessions should stay under app-private
 `filesDir`, while read cache, thumbnails, and temp data can live under
@@ -240,10 +246,15 @@ CloseFileJSON(handleID)
 `optionsJSON` may be empty. Supported fields are:
 
 ```json
-{"deadline_ms": 5000, "priority": "high"}
+{"deadline_ms": 5000, "priority": "high", "intent": "interactive"}
 ```
 
-`priority` accepts `normal` or `high`.
+`priority` accepts `normal` or `high`. `intent` accepts `interactive` (the
+default, latency-sensitive playback and preview reads) or `bulk` (transfer
+reads that opt into parallel range reads and skip durable cache writes); an
+absent value means `interactive`, and any other value is rejected before file
+work. The pre-release `probe` intent is gone: probing now measures the same
+streaming path the user sees.
 
 Use `deadlineMS` for seek-heavy playback so the app can stop waiting on stale
 reads. Do not use JSON APIs for media bytes.

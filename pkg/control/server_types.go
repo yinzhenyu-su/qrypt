@@ -192,6 +192,23 @@ type DebugCacheInvalidateResponse struct {
 	Invalidated   bool      `json:"invalidated"`
 }
 
+// DebugCacheFillResponse reports a completed read-cache warm-up through the
+// mounted VFS.
+type DebugCacheFillResponse struct {
+	SchemaVersion    int       `json:"schema_version"`
+	GeneratedAt      time.Time `json:"generated_at"`
+	Mount            string    `json:"mount"`
+	Path             string    `json:"path"`
+	FileSize         int64     `json:"file_size"`
+	RequestedBytes   int64     `json:"requested_bytes"`
+	Bytes            int64     `json:"bytes"`
+	BlockSize        int64     `json:"block_size"`
+	ReadCalls        int       `json:"read_calls"`
+	DurationMS       int64     `json:"duration_ms"`
+	CacheBytesBefore int64     `json:"cache_bytes_before"`
+	CacheBytesAfter  int64     `json:"cache_bytes_after"`
+}
+
 // DebugReadFaultsResponse lists the read faults armed on the probe socket.
 type DebugReadFaultsResponse struct {
 	SchemaVersion int                          `json:"schema_version"`

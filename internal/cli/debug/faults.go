@@ -36,12 +36,14 @@ func newFaultReadCmd(rt cliruntime.Runtime) *cobra.Command {
 		Use:   "read",
 		Short: "Arm one read fault",
 		Long: `Arm one read fault for a file. stall stops producing bytes after --after,
-truncate ends the body there, status returns an HTTP status, and delay waits
-before the body is returned. The rule fires --times times (default once), so
-the first failed attempt is followed by a healthy replay.`,
+truncate ends the body there, status returns an HTTP status, delay waits
+before the body is returned, and rate paces the body at a fixed byte rate
+(emulating a per-connection provider throttle). The rule fires --times times
+(default once), so the first failed attempt is followed by a healthy replay.`,
 		Example: `  qrypt probe fault read --path /cloud/movie.mp4 --kind stall --after 1m
   qrypt probe fault read --path /cloud/movie.mp4 --kind truncate --after 2m --times 1
-  qrypt probe fault read --path /cloud/movie.mp4 --kind status --status 500`,
+  qrypt probe fault read --path /cloud/movie.mp4 --kind status --status 500
+  qrypt probe fault read --path /cloud/movie.mp4 --kind rate --rate 150k --times 100`,
 		Args:              cliruntime.NoArgs(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,6 +60,7 @@ the first failed attempt is followed by a healthy replay.`,
 			}
 			afterRaw, _ := cmd.Flags().GetString("after")
 			delay, _ := cmd.Flags().GetString("delay")
+			rateRaw, _ := cmd.Flags().GetString("rate")
 			status, _ := cmd.Flags().GetInt("status")
 			times, _ := cmd.Flags().GetInt("times")
 			includePrefetch, _ := cmd.Flags().GetBool("include-prefetch")
@@ -95,6 +98,13 @@ the first failed attempt is followed by a healthy replay.`,
 			if strings.TrimSpace(delay) != "" {
 				request["delay"] = delay
 			}
+			if strings.TrimSpace(rateRaw) != "" {
+				rate := contracttest.ParseXferSize(rateRaw)
+				if rate <= 0 {
+					return fmt.Errorf("fault read --rate must be a positive bytes-per-second value")
+				}
+				request["rate_bytes_per_sec"] = rate
+			}
 			if status > 0 {
 				request["status"] = status
 			}
@@ -118,11 +128,12 @@ the first failed attempt is followed by a healthy replay.`,
 		},
 	}
 	cmd.Flags().String("path", "", "virtual path of the file to inject into")
-	cmd.Flags().String("kind", "", "fault kind: stall, truncate, status, or delay")
+	cmd.Flags().String("kind", "", "fault kind: stall, truncate, status, delay, or rate")
 	cmd.Flags().String("offset", "", "byte offset the fault applies to (default: any window)")
 	cmd.Flags().String("length", "", "fault range length from --offset (default: target one offset)")
 	cmd.Flags().String("after", "", "bytes delivered before a stall or truncate fires (default 0)")
 	cmd.Flags().String("delay", "", "open delay for --kind delay, e.g. 2s")
+	cmd.Flags().String("rate", "", "body rate for --kind rate, e.g. 150k")
 	cmd.Flags().Int("status", 0, "HTTP status for --kind status (default 500)")
 	cmd.Flags().Int("times", 1, "number of times the rule fires")
 	cmd.Flags().Bool("include-prefetch", false, "let the rule fire on background prefetch reads")

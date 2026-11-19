@@ -11,25 +11,23 @@ import (
 // --- eviction.go ---
 //
 // The eviction policy is a decision over a compact view of the cache: one pass
-// over the shards classifies every chunk into a budget bucket, and the drain
-// order falls out of the budget tree. No byte total is maintained
-// incrementally, so a lifecycle path that removes chunks behind the policy's
-// back (invalidate, clear, a stale chunk dropped on read, a whole-file replace)
-// cannot drift a counter out of sync with the contents.
+// over the shards sorts every chunk into one of two segments, and the drain
+// order falls out of the store's single byte budget.
 //
-// The budget tree has one level per failure mode it prevents:
+//	maxSize                        one continuous budget
+//	├── probationary               reached by one read pass; drained first
+//	└── protected                  reached by a later run; drained last
+//	    protected <= total - total/readCacheProtectedShare
 //
-//	maxSize
-//	├── small class          floor maxSize/readCacheSmallReserveDiv
-//	└── large class          ceiling maxSize - maxSize/readCacheSmallReserveDiv
-//	      ├── unproven       <= ceiling/readCacheStreamShare
-//	      └── proven         the rest
-//	      within a class: protected <= occupancy - occupancy/readCacheProtectedShare
+// A chunk starts probationary and is protected only when a read run other than
+// the one that admitted it touches it (see Access): the admitting run reading
+// back its own read-ahead is not evidence of reuse.
 //
-// A chunk is unproven until a read run other than the one that admitted it
-// touches it (see Access). That is what keeps a one-pass sequential stream —
-// which reads back its own read-ahead and would otherwise look hot — inside its
-// sub-budget instead of evicting reusable content.
+// The per-file pin is what keeps one stalled stream from evicting its own
+// read-ahead. Every chunk of a file that saw a read or a write inside
+// readCachePinWindow is skipped by the first drain pass; pinned chunks are only
+// evicted when the unpinned contents cannot bring the cache back within its
+// budget, so the pin never suspends the capacity bound.
 
 // diskCheckInterval is how often eviction re-checks free disk space. If the
 // filesystem is filling up from other processes, the cap tightens so the cache
@@ -43,7 +41,7 @@ func (a Access) sameRunAs(admitRun uint64) bool {
 	return a.Run != 0 && a.Run == admitRun
 }
 
-// evictIfNeeded returns the cache within its capacity after a write.
+// evictIfNeeded returns the cache within maxSize after a write.
 func (c *Store) evictIfNeeded() {
 	maxSize := c.maxSize
 	if maxSize <= 0 {
@@ -70,8 +68,7 @@ func (c *Store) evictIfNeeded() {
 
 // touchReadChunk records a hit on a chunk: it refreshes the recency the drain
 // order uses, and promotes the chunk when the hit comes from a different read
-// run than the one that admitted it — a hit from the admitting run is the
-// stream reading back its own read-ahead, not evidence of reuse.
+// run than the one that admitted it.
 //
 // The recency write is coalesced to cacheAccessWriteInterval so a hot chunk does
 // not take the file lock on every read. Promotion is applied even when the
@@ -110,77 +107,26 @@ func (c *Store) touchReadChunk(fc *fileChunks, index int64, seen chunkInfo, acce
 type chunkState uint8
 
 const (
-	// stateUnproven means the admitting read run has not come back for this
-	// chunk. This is what a sequential stream produces when it consumes its own
-	// read-ahead, so it is not treated as reuse.
-	stateUnproven chunkState = iota
-	// stateProbationary means another run proved the chunk is reused; it is not
-	// protected yet.
-	stateProbationary
-	// stateProtected is preferred over probationary content and is only evicted
-	// when probationary content cannot satisfy the budget.
+	// stateProbationary is what a chunk a single read pass produced looks like:
+	// nothing has come back for it yet.
+	stateProbationary chunkState = iota
+	// stateProtected is a chunk another read run came back for; it is drained
+	// only after probationary content.
 	stateProtected
 )
 
-// bucket is one drainable pool with its own byte budget.
-type bucket uint8
+// segment is one drainable pool of the single budget.
+type segment uint8
 
 const (
-	bucketSmallProbationary bucket = iota
-	bucketSmallProtected
-	bucketLargeUnproven
-	bucketLargeProbationary
-	bucketLargeProtected
-	numBuckets
+	segmentProbationary segment = iota
+	segmentProtected
+	numSegments
 )
 
-// drainOrder is the sequence a capacity drain walks: inside the large class the
-// unproven sub-budget goes first, then probationary, then protected; the small
-// class gives up bytes only after the large class has nothing left to give.
-var drainOrder = [...]bucket{
-	bucketLargeUnproven,
-	bucketLargeProbationary,
-	bucketLargeProtected,
-	bucketSmallProbationary,
-	bucketSmallProtected,
-}
-
-func bucketFor(class sizeClass, state chunkState) bucket {
-	if class == classSmall {
-		if state == stateProtected {
-			return bucketSmallProtected
-		}
-		return bucketSmallProbationary
-	}
-	switch state {
-	case stateUnproven:
-		return bucketLargeUnproven
-	case stateProtected:
-		return bucketLargeProtected
-	default:
-		return bucketLargeProbationary
-	}
-}
-
-// probationaryBucket is the bucket a chunk of this class falls back to when it
-// is demoted out of the protected segment.
-func probationaryBucket(class sizeClass) bucket {
-	if class == classSmall {
-		return bucketSmallProbationary
-	}
-	return bucketLargeProbationary
-}
-
-// readCacheFileLarge reports whether a file belongs to the large-file class: a
-// declared size at or above the threshold, or an unknown size whose cached
-// bytes already reach it. The unknown-size arm covers chunks admitted before
-// the file's size was known.
-func readCacheFileLarge(fileSize, cachedBytes int64) bool {
-	if fileSize >= ReadCacheLargeFileBytes {
-		return true
-	}
-	return fileSize == 0 && cachedBytes >= ReadCacheLargeFileBytes
-}
+// drainOrder is the sequence a capacity drain walks: probationary content first
+// so the newly admitted chunks pay for the overflow, then protected reuse.
+var drainOrder = [...]segment{segmentProbationary, segmentProtected}
 
 // victim names one chunk together with the chunkInfo the decision was based on.
 // Removal re-checks it under the file lock, so a chunk that changed or moved
@@ -198,10 +144,9 @@ type evictionPlan struct {
 	demote  []victim
 	victims []victim
 	// selected marks the view chunks already chosen as victims, indexed like
-	// cacheView.chunks. Two phases can drain the same bucket — the unproven
-	// sub-budget and the class ceiling both cut unproven content back — and a
-	// bucket's candidate list is not consumed by draining it, so without this a
-	// chunk would be selected twice and the view would subtract its bytes twice.
+	// cacheView.chunks. A bucket's candidate list is not consumed by draining
+	// it, so without this a chunk would be selected twice and the view would
+	// subtract its bytes twice.
 	selected []bool
 }
 
@@ -210,20 +155,20 @@ type viewChunk struct {
 	fid    string
 	index  int64
 	info   chunkInfo
-	class  sizeClass
-	bucket bucket
+	seg    segment
+	pinned bool
 }
 
 // cacheView is a point-in-time, compact picture of the cache contents. Its byte
 // totals are derived during construction and then updated in place while the
-// plan drains buckets, so every later decision sees the effect of the earlier
+// plan drains segments, so every later decision sees the effect of the earlier
 // ones.
 type cacheView struct {
-	chunks      []viewChunk
-	byBucket    [numBuckets][]int
-	total       int64
-	classBytes  [numSizeClasses]int64
-	bucketBytes [numBuckets]int64
+	chunks       []viewChunk
+	bySegment    [numSegments][]int
+	total        int64
+	segmentBytes [numSegments]int64
+	pinnedBytes  int64
 	// batchRefs counts the live chunks in each batch file. It is a build-time
 	// snapshot and never mutated afterwards: the victim order compares it, and
 	// a comparator that changed while sorting would not be a total order.
@@ -232,29 +177,31 @@ type cacheView struct {
 
 func (c *Store) buildView() *cacheView {
 	view := &cacheView{batchRefs: map[string]int32{}}
+	now := time.Now()
 	for i := range c.shards {
 		sh := &c.shards[i]
 		sh.mu.RLock()
 		for fid, fc := range sh.chunks {
+			pinned := c.filePinned(fid, now)
 			fc.mu.RLock()
-			var cachedBytes int64
-			for _, info := range fc.chunks {
-				cachedBytes += info.size
-			}
-			class := classOf(fc.fileSize, cachedBytes)
 			for index, info := range fc.chunks {
-				b := bucketFor(class, info.state)
+				seg := segmentProbationary
+				if info.state == stateProtected {
+					seg = segmentProtected
+				}
 				view.chunks = append(view.chunks, viewChunk{
 					fid:    fid,
 					index:  index,
 					info:   info,
-					class:  class,
-					bucket: b,
+					seg:    seg,
+					pinned: pinned,
 				})
-				view.byBucket[b] = append(view.byBucket[b], len(view.chunks)-1)
+				view.bySegment[seg] = append(view.bySegment[seg], len(view.chunks)-1)
 				view.total += info.size
-				view.classBytes[class] += info.size
-				view.bucketBytes[b] += info.size
+				view.segmentBytes[seg] += info.size
+				if pinned {
+					view.pinnedBytes += info.size
+				}
 				view.batchRefs[info.file]++
 			}
 			fc.mu.RUnlock()
@@ -264,123 +211,119 @@ func (c *Store) buildView() *cacheView {
 	return view
 }
 
+// filePinned reports whether a file saw a read or a write inside the pin
+// window, which keeps its chunks out of the first drain pass.
+func (c *Store) filePinned(fid string, now time.Time) bool {
+	c.activityMu.Lock()
+	at, ok := c.activity[fid]
+	c.activityMu.Unlock()
+	return ok && now.Sub(at) <= readCachePinWindow
+}
+
+// touchActivity pins the chunks of a file that is being read or written now.
+func (c *Store) touchActivity(fid string) {
+	c.activityMu.Lock()
+	if c.activity == nil {
+		c.activity = map[string]time.Time{}
+	}
+	c.activity[fid] = time.Now()
+	c.activityMu.Unlock()
+}
+
+// forgetActivity drops the pin record of a file that is no longer cached.
+func (c *Store) forgetActivity(fid string) {
+	c.activityMu.Lock()
+	delete(c.activity, fid)
+	c.activityMu.Unlock()
+}
+
 // evictionBudgets is maxSize expressed as the budget tree.
 type evictionBudgets struct {
-	lowWatermark  int64
-	largeCeiling  int64
-	streamCeiling int64
+	lowWatermark   int64
+	protectedLimit int64
 }
 
 func deriveBudgets(maxSize int64, view *cacheView) evictionBudgets {
-	floor := maxSize / readCacheSmallReserveDiv
-	// The large class may use everything the small class is not currently
-	// holding, but never so much that the small class can no longer reach its
-	// floor. While the small class is below its floor this loosens the ceiling,
-	// so a cache holding only large files does not waste capacity.
-	largeCeiling := maxSize - min(view.classBytes[classSmall], floor)
-	if largeCeiling < 0 {
-		largeCeiling = 0
-	}
 	return evictionBudgets{
-		lowWatermark:  maxSize * readCacheEvictLowWatermarkNum / readCacheEvictLowWatermarkDen,
-		largeCeiling:  largeCeiling,
-		streamCeiling: largeCeiling / readCacheStreamShare,
+		lowWatermark: maxSize * readCacheEvictLowWatermarkNum / readCacheEvictLowWatermarkDen,
+		// The protected segment may hold at most four fifths of the cache, so
+		// the probationary segment the next drain takes from never empties.
+		protectedLimit: view.total - view.total/readCacheProtectedShare,
 	}
 }
 
-// planEviction decides what must be removed so the cache returns within
-// maxSize. The caller has already established that the cache is over budget.
+// planEviction decides what must be removed so the cache returns within maxSize.
 func (c *Store) planEviction(maxSize int64) evictionPlan {
 	view := c.buildView()
+	plan := evictionPlan{}
 	if view.total <= maxSize {
-		return evictionPlan{}
+		return plan
 	}
 	budgets := deriveBudgets(maxSize, view)
-	plan := evictionPlan{}
-
-	// 1. Unproven content inside the large class is capped first. This is the
-	//    bound that stops one sequential pass from filling the class, and it
-	//    does not depend on the cache being over maxSize to matter: it is a
-	//    class budget, not a global one.
-	if excess := view.bucketBytes[bucketLargeUnproven] - budgets.streamCeiling; excess > 0 {
-		plan.drain(view, bucketLargeUnproven, excess)
-	}
-	// 2. Cap the large class as a whole so the small class can still grow to
-	//    its floor.
-	if excess := view.classBytes[classLarge] - budgets.largeCeiling; excess > 0 {
-		plan.drain(view, bucketLargeUnproven, excess)
-		plan.drain(view, bucketLargeProbationary, excess)
-		plan.drain(view, bucketLargeProtected, excess)
-	}
-	// 3. Capacity: drain to the low watermark so the writes that follow do not
-	//    each trigger another pass.
-	if want := view.total - budgets.lowWatermark; want > 0 {
-		plan.demoteOverflow(view)
-		for _, b := range drainOrder {
-			if want <= 0 {
-				break
-			}
-			want -= plan.drain(view, b, want)
+	// Capacity: drain to the low watermark so the writes that follow do not
+	// each trigger another pass.
+	want := view.total - budgets.lowWatermark
+	plan.demoteOverflow(view, budgets)
+	// Unpinned content pays first, and a pinned file is only touched when the
+	// unpinned contents cannot satisfy the drain.
+	for _, seg := range drainOrder {
+		if want <= 0 {
+			break
 		}
+		want -= plan.drain(view, seg, want, true)
+	}
+	for _, seg := range drainOrder {
+		if want <= 0 {
+			break
+		}
+		want -= plan.drain(view, seg, want, false)
 	}
 	return plan
 }
 
 // demoteOverflow moves the oldest protected chunks back to probationary when the
-// protected segment exceeds its share of a class's occupancy. Demotion is not
-// eviction: it decides which segment pays for the next drain, and it keeps
-// probationary holding roughly a fifth of each class so a burst of promotions
-// does not make every newly admitted chunk the next victim.
-func (p *evictionPlan) demoteOverflow(view *cacheView) {
-	for _, class := range []sizeClass{classSmall, classLarge} {
-		from := protectedBucket(class)
-		protected := view.bucketBytes[from]
-		limit := view.classBytes[class] - view.classBytes[class]/readCacheProtectedShare
+// protected segment exceeds its share. Demotion is not eviction: it decides
+// which segment pays for the next drain, and it keeps probationary holding
+// roughly a fifth of the cache so a burst of promotions does not make every
+// newly admitted chunk the next victim.
+func (p *evictionPlan) demoteOverflow(view *cacheView, budgets evictionBudgets) {
+	protected := view.segmentBytes[segmentProtected]
+	limit := budgets.protectedLimit
+	if protected <= limit {
+		return
+	}
+	candidates := slices.Clone(view.bySegment[segmentProtected])
+	view.sortCandidates(candidates)
+	for _, i := range candidates {
 		if protected <= limit {
+			break
+		}
+		if p.selected != nil && p.selected[i] {
+			// Already chosen as a victim by an earlier phase; demoting a chunk
+			// that is about to be removed is wasted work.
 			continue
 		}
-		candidates := slices.Clone(view.byBucket[from])
-		view.sortCandidates(candidates)
-		to := probationaryBucket(class)
-		for _, i := range candidates {
-			if protected <= limit {
-				break
-			}
-			if p.selected != nil && p.selected[i] {
-				// Already chosen as a victim by an earlier phase; demoting a
-				// chunk that is about to be removed is wasted work.
-				continue
-			}
-			chunk := view.chunks[i]
-			p.demote = append(p.demote, victim{fid: chunk.fid, index: chunk.index, expected: chunk.info})
-			protected -= chunk.info.size
-			view.bucketBytes[from] -= chunk.info.size
-			view.bucketBytes[to] += chunk.info.size
-			view.chunks[i].bucket = to
-			view.byBucket[to] = append(view.byBucket[to], i)
-		}
+		chunk := view.chunks[i]
+		p.demote = append(p.demote, victim{fid: chunk.fid, index: chunk.index, expected: chunk.info})
+		protected -= chunk.info.size
+		view.segmentBytes[segmentProtected] -= chunk.info.size
+		view.segmentBytes[segmentProbationary] += chunk.info.size
+		view.chunks[i].seg = segmentProbationary
+		view.bySegment[segmentProbationary] = append(view.bySegment[segmentProbationary], i)
 	}
 }
 
-// protectedBucket is the drainable pool holding a class's protected segment.
-func protectedBucket(class sizeClass) bucket {
-	if class == classSmall {
-		return bucketSmallProtected
-	}
-	return bucketLargeProtected
-}
-
-// drain selects victims from one bucket until want bytes are released from it or
-// the bucket is empty, and returns what it released. The view's byte totals are
-// updated so the caller's next decision sees the result.
-func (p *evictionPlan) drain(view *cacheView, b bucket, want int64) int64 {
-	if want <= 0 || view.bucketBytes[b] <= 0 {
+// drain selects victims from one segment until want bytes are released from it
+// or the segment is empty, and returns what it released. The view's byte totals
+// are updated so the caller's next decision sees the result.
+func (p *evictionPlan) drain(view *cacheView, seg segment, want int64, skipPinned bool) int64 {
+	if want <= 0 || view.segmentBytes[seg] <= 0 {
 		return 0
 	}
 	if p.selected == nil {
 		p.selected = make([]bool, len(view.chunks))
 	}
-	candidates := view.byBucket[b]
+	candidates := view.bySegment[seg]
 	view.sortCandidates(candidates)
 	var freed int64
 	for _, i := range candidates {
@@ -391,12 +334,17 @@ func (p *evictionPlan) drain(view *cacheView, b bucket, want int64) int64 {
 			continue
 		}
 		chunk := view.chunks[i]
+		if skipPinned && chunk.pinned {
+			continue
+		}
 		p.selected[i] = true
 		p.victims = append(p.victims, victim{fid: chunk.fid, index: chunk.index, expected: chunk.info})
 		freed += chunk.info.size
 		view.total -= chunk.info.size
-		view.classBytes[chunk.class] -= chunk.info.size
-		view.bucketBytes[b] -= chunk.info.size
+		view.segmentBytes[seg] -= chunk.info.size
+		if chunk.pinned {
+			view.pinnedBytes -= chunk.info.size
+		}
 	}
 	return freed
 }

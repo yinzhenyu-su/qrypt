@@ -107,34 +107,21 @@ func TestSlowPrefetchProgressKeepsBothJoinPaths(t *testing.T) {
 	}
 }
 
-func TestPrefetchTargetWaitKeepsBounds(t *testing.T) {
-	for _, kind := range []string{"stall", "stall_after_progress", "distant", "unknown", "caller", "total"} {
+func TestPrefetchTargetWaitJoinsProgressingBody(t *testing.T) {
+	for _, kind := range []string{"progress", "caller"} {
 		t.Run(kind, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				r := newStagedReader(t, 8*ChunkSize)
-				if kind == "unknown" {
-					r.host.entry.Size = 0 // Buffered fallback cannot publish a prefix.
-				}
 				h := slowPrefetchHost{stagedHost: r.host}
-				if kind == "stall_after_progress" {
-					h.stallAfter = 32 << 10
-				}
 				p := quarkLikeProfile()
 				p.MaxInFlight = 1
-				if kind == "total" {
-					p.Fetch.Total = 2500 * time.Millisecond
-					p.Fetch.Idle = time.Second
-				}
 				source, err := drive.NewReadSource(hostReadDriver{host: h, policy: p}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer source.Close()
 				r.reader = NewReader(ReaderDeps{Host: h, State: r.state, Source: source})
-				if kind == "stall" {
-					r.host.gateFn = func(_, _ int64) (<-chan struct{}, bool) { return make(chan struct{}), true }
-				}
-				load := r.reader.prefetchWindow(sessionContext(99, 1), r.host.entry, 3, 4)
+				load := r.reader.prefetchWindow(sessionContext(99, 1), r.host.entry, 3, 1)
 				if load == nil {
 					t.Fatal("prefetch not admitted")
 				}
@@ -145,32 +132,24 @@ func TestPrefetchTargetWaitKeepsBounds(t *testing.T) {
 					ctx, cancel = context.WithTimeout(ctx, time.Second)
 					defer cancel()
 				}
-				index := int64(3)
-				if kind == "distant" {
-					index = 6 // Earlier prefix progress cannot renew this target.
-				}
 				started := time.Now()
-				ready, err := load.waitTarget(ctx, index)
-				switch kind {
-				case "caller":
+				ready, err := load.waitTarget(ctx, 3)
+				if kind == "caller" {
 					if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) != time.Second {
-						t.Fatalf("caller deadline ignored: %v", err)
+						t.Fatalf("caller deadline ignored: %v after %s", err, time.Since(started))
 					}
-				case "total":
-					if !ready || err != nil || time.Since(started) != p.Fetch.Total {
-						t.Fatalf("shared total deadline ignored: %t, %v", ready, err)
-					}
-					if _, err := load.result(index); !drive.IsFetchTimeout(err) {
-						t.Fatalf("missing terminal fetch error: %v", err)
-					}
-				default:
-					wait := prefetchWaitBudget
-					if kind == "stall_after_progress" {
-						wait += 200 * time.Millisecond
-					}
-					if ready || err != nil || time.Since(started) != wait {
-						t.Fatalf("takeover bound lost: %t, %v", ready, err)
-					}
+					return
+				}
+				// A progressing body is joined, not abandoned: the wait ends when
+				// the paced target block is published (512 KiB at 32 KiB/200ms).
+				if !ready || err != nil || time.Since(started) != 3200*time.Millisecond {
+					t.Fatalf("progressing wait = %t, %v after %s", ready, err, time.Since(started))
+				}
+				if data, err := load.result(3); err != nil || !bytes.Equal(data, r.host.data[3*ChunkSize:4*ChunkSize]) {
+					t.Fatalf("wrong target block: %v", err)
+				}
+				if r.host.callCount() != 1 {
+					t.Fatal("progressing target was refetched")
 				}
 			})
 		})

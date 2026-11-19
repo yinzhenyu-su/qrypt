@@ -50,6 +50,38 @@ Use `driver-migrate` for implementation context; this skill is the review gate.
 - Negative offsets/sizes are rejected before the request.
 - Directory reads and missing entries use the right sentinels.
 
+### 3b. Read policy claims need measurements
+
+Any non-default number in `ReadPolicy()` (`Interactive.WindowBytes`,
+`PrefetchWindowBytes`, `PrefetchDepth`, `Bulk.WindowBytes`, `Bulk.Streams`,
+`Bulk.PartBytes`, `Bulk.MinParallelBytes`) is a performance claim. Require:
+
+- the exact command and the observed numbers (the PR body may summarise, but
+  the command must be reproducible against a real provider);
+- a cold-cache baseline next to the tuned shape, not a single win;
+- the measured profile recorded in `docs/for-developer/read-policy.md`
+  ("Measured driver profiles"), so the next reviewer does not have to trust an
+  unarchived log.
+
+Tools to demand, in increasing effort:
+
+```bash
+qrypt probe bench read --path "/absolute/movie.mp4" --mount NAME --size 32m --concurrency 1,2,4,8
+qrypt probe tune read --mount NAME --mount-point MOUNT --path "/absolute/movie.mp4" --size 32m --rounds 3
+qrypt probe test read --mount NAME --mount-point MOUNT --path "/absolute/movie.mp4" \
+  --streams 2 --require-parallel --cache-mode cold --samples 1
+qrypt probe test read --mount NAME --mount-point MOUNT --path "/absolute/movie.mp4" \
+  --hold-open --timeline --length 64m
+```
+
+`probe tune read` prints the recommended TOML block; `--require-parallel` fails
+when the provider never runs more than one range in flight, which is the check
+that pins a declared `CapabilityParallelRange` to observed behaviour;
+`--hold-open --timeline` exposes a sustained session, not one cold burst. A
+resolved `read_policy.warnings` entry (visible in `/v1/read-memory`) is a
+blocker until the numbers are reconciled: it means the configured shape cannot
+execute as written.
+
 ### 4. Writes and uploads
 
 - `PutSource` streams; it must not buffer the whole source into memory.

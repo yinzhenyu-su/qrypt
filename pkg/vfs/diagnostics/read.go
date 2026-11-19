@@ -94,7 +94,7 @@ func RecordReadDetail(runtime ReadRuntime, ctx context.Context, path, remoteID, 
 	}
 	runtime.AppendDetailEvent(event)
 	switch phase {
-	case "read_access", "prefetch_plan", "source_range_begin", "source_range_end", "wait_window_begin", "wait_window_done", "wait_window_bypass", "wait_window_load_begin", "wait_window_load_bypass", "wait_window_load", "fetch_window", "prefetch_window":
+	case "read_access", "prefetch_plan", "source_range_begin", "source_range_end", "wait_window_begin", "wait_window_done", "wait_window_load_begin", "wait_window_load", "fetch_window", "prefetch_window":
 		// Keep these causal events in the debug log as well as the bounded
 		// history: small FUSE reads can evict the start of a slow seek.
 		// Extras contain read plans and timings, never provider URLs/headers.

@@ -39,7 +39,7 @@ func TestVFSDebugSnapshotRuntimeReportsReadTimeouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := fs.SetReadPlanOverride("cloud", 0, 0, 50*time.Millisecond, 5*time.Second); err != nil {
+	if err := fs.SetReadPlanOverride("cloud", ReadPlanOverride{FetchIdleTimeout: 50 * time.Millisecond, FetchTotalTimeout: 5 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	fs.Start(ctx)

@@ -26,22 +26,27 @@ const (
 	ReadFaultTruncate = "truncate"
 	ReadFaultStatus   = "status"
 	ReadFaultDelay    = "delay"
+	// ReadFaultRate paces a body at a fixed provider byte rate. It emulates a
+	// per-connection CDN throttle so fan-out and latency changes can be measured
+	// deterministically against a real provider.
+	ReadFaultRate = "rate"
 )
 
 // DebugReadFaultRequest describes one read fault to inject. Path is a virtual
 // path; the VFS resolves it to EntryID before the rule is armed.
 type DebugReadFaultRequest struct {
-	ID         string `json:"id,omitempty"`
-	Path       string `json:"path,omitempty"`
-	EntryID    string `json:"entry_id,omitempty"`
-	Kind       string `json:"kind"`
-	Offset     int64  `json:"offset,omitempty"`
-	Length     int64  `json:"length,omitempty"`
-	AnyOffset  bool   `json:"any_offset,omitempty"`
-	AfterBytes int64  `json:"after_bytes,omitempty"`
-	Delay      string `json:"delay,omitempty"`
-	Status     int    `json:"status,omitempty"`
-	Times      int    `json:"times,omitempty"`
+	ID              string `json:"id,omitempty"`
+	Path            string `json:"path,omitempty"`
+	EntryID         string `json:"entry_id,omitempty"`
+	Kind            string `json:"kind"`
+	Offset          int64  `json:"offset,omitempty"`
+	Length          int64  `json:"length,omitempty"`
+	AnyOffset       bool   `json:"any_offset,omitempty"`
+	AfterBytes      int64  `json:"after_bytes,omitempty"`
+	Delay           string `json:"delay,omitempty"`
+	RateBytesPerSec int64  `json:"rate_bytes_per_sec,omitempty"`
+	Status          int    `json:"status,omitempty"`
+	Times           int    `json:"times,omitempty"`
 	// IncludePrefetch lets a rule fire on a background prefetch window. The
 	// default is false so a canceled speculative prefetch cannot consume a
 	// rule meant for the foreground read.
@@ -60,6 +65,7 @@ type DebugReadFault struct {
 	AnyOffset       bool      `json:"any_offset,omitempty"`
 	AfterBytes      int64     `json:"after_bytes,omitempty"`
 	DelayMS         int64     `json:"delay_ms,omitempty"`
+	RateBytesPerSec int64     `json:"rate_bytes_per_sec,omitempty"`
 	Status          int       `json:"status,omitempty"`
 	Times           int       `json:"times"`
 	Remaining       int       `json:"remaining"`
@@ -101,6 +107,7 @@ func (r *ReadFaultRegistry) Inject(req DebugReadFaultRequest) (DebugReadFault, e
 		Length:          req.Length,
 		AnyOffset:       req.AnyOffset,
 		AfterBytes:      req.AfterBytes,
+		RateBytesPerSec: req.RateBytesPerSec,
 		Status:          req.Status,
 		Times:           req.Times,
 		IncludePrefetch: req.IncludePrefetch,
@@ -135,8 +142,12 @@ func (r *ReadFaultRegistry) Inject(req DebugReadFaultRequest) (DebugReadFault, e
 		if fault.DelayMS <= 0 {
 			fault.DelayMS = 1
 		}
+	case ReadFaultRate:
+		if fault.RateBytesPerSec <= 0 {
+			return DebugReadFault{}, fmt.Errorf("read fault rate must be a positive bytes-per-second value")
+		}
 	default:
-		return DebugReadFault{}, fmt.Errorf("read fault kind must be stall, truncate, status, or delay")
+		return DebugReadFault{}, fmt.Errorf("read fault kind must be stall, truncate, status, delay, or rate")
 	}
 	if fault.ID == "" {
 		fault.ID = fmt.Sprintf("read-fault-%d-%d", util.Now().UnixNano(), r.nextID.Add(1))
