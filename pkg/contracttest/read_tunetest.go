@@ -111,7 +111,20 @@ func RunVFSReadTune(ctx context.Context, fs vfs.FileSystem, mount string, req Dr
 	if _, err := os.Stat(mountedPath); err != nil {
 		return finish(fmt.Errorf("stat tuned file: %w", err))
 	}
-	if err := ensureRemoteSettled(fs, mount, req.Path); err != nil {
+	// The mount point-relative path is what the interactive phase opens in the
+	// FUSE mount; the bulk phase reads through the namespace instead. A
+	// filesystem-wide mount keeps the caller's virtual path, while a
+	// single-drive mount exposes its files at the namespace root, so accept the
+	// caller path when it resolves and fall back to the mount-prefixed form.
+	bulkPath := req.Path
+	if _, err := fs.Stat(ctx, bulkPath); err != nil {
+		if prefixed := tuneNamespacePath(mount, req.Path); prefixed != bulkPath {
+			if _, statErr := fs.Stat(ctx, prefixed); statErr == nil {
+				bulkPath = prefixed
+			}
+		}
+	}
+	if err := ensureRemoteSettled(fs, mount, bulkPath); err != nil {
 		return finish(err)
 	}
 	size := int64(tuneDefaultSize)
@@ -158,7 +171,7 @@ func RunVFSReadTune(ctx context.Context, fs vfs.FileSystem, mount string, req Dr
 				// just read the same region, and a warm hit would measure memory
 				// instead of the provider.
 				clearMountedReadCache(fs, mount) //nolint:errcheck // a shared cache only warms the sample
-				sample, err := measureTuneVariant(ctx, fs, mount, req, overrider, variant, mountedPath, size, blockSize, round)
+				sample, err := measureTuneVariant(ctx, fs, mount, req, overrider, variant, mountedPath, bulkPath, size, blockSize, round)
 				details.Samples = append(details.Samples, sample)
 				step := TestStep{Operation: "tune", Name: fmt.Sprintf("%s round %d", variant.Name, round), OK: err == nil, Duration: (time.Duration(sample.DurationMS) * time.Millisecond).String(), DurationMS: sample.DurationMS}
 				if err != nil {
@@ -247,6 +260,23 @@ func bestTuneWindow(summaries []ReadTuneSummary) int64 {
 	return best
 }
 
+// tuneNamespacePath returns the namespace path of path on mount. A per-drive
+// mount exposes its files below the mount name, so "/movie.mp4" mounted as
+// "cloud" is "/cloud/movie.mp4"; a filesystem-wide mount keeps the caller's
+// virtual path.
+func tuneNamespacePath(mount, path string) string {
+	mount = strings.TrimSpace(mount)
+	if mount == "" {
+		return path
+	}
+	clean := "/" + strings.TrimPrefix(path, "/")
+	prefix := "/" + mount
+	if clean == prefix || strings.HasPrefix(clean, prefix+"/") {
+		return clean
+	}
+	return prefix + clean
+}
+
 func tuneWindowName(window int64) string {
 	if window <= 0 {
 		return "window=caller"
@@ -292,10 +322,10 @@ func rotateVariants(variants []ReadTuneVariant, by int) []ReadTuneVariant {
 	return out
 }
 
-func measureTuneVariant(ctx context.Context, fs vfs.FileSystem, mount string, req DriverTestRequest, overrider readPlanOverrider, variant ReadTuneVariant, mountedPath string, size, blockSize int64, round int) (ReadTuneSample, error) {
+func measureTuneVariant(ctx context.Context, fs vfs.FileSystem, mount string, req DriverTestRequest, overrider readPlanOverrider, variant ReadTuneVariant, mountedPath, bulkPath string, size, blockSize int64, round int) (ReadTuneSample, error) {
 	sample := ReadTuneSample{Variant: variant.Name, Mode: variant.Mode, Round: round, Bytes: size}
 	if variant.Mode == "bulk" {
-		return measureTuneBulk(ctx, fs, req.Path, variant, size, sample)
+		return measureTuneBulk(ctx, fs, bulkPath, variant, size, sample)
 	}
 	measurement, _, err := measureMountedFile(ctx, fs, mount, mountedPath, "", blockSize, 0, size, "cold", round, nil, false)
 	sample.DurationMS = measurement.DurationMicros / 1000

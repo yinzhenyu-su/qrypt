@@ -83,3 +83,20 @@ func TestRunVFSReadTuneRequiresExistingFile(t *testing.T) {
 }
 
 func tuneIntPtr(value int) *int { return &value }
+
+func TestTuneNamespacePathResolvesPerDriveMount(t *testing.T) {
+	cases := []struct {
+		mount, path, want string
+	}{
+		{"", "/cloud/movie.mp4", "/cloud/movie.mp4"},
+		{"cloud", "/movie.mp4", "/cloud/movie.mp4"},
+		{"cloud", "movie.mp4", "/cloud/movie.mp4"},
+		{"cloud", "/cloud/movie.mp4", "/cloud/movie.mp4"},
+		{"cloud", "/", "/cloud/"},
+	}
+	for _, tc := range cases {
+		if got := tuneNamespacePath(tc.mount, tc.path); got != tc.want {
+			t.Fatalf("tuneNamespacePath(%q, %q) = %q, want %q", tc.mount, tc.path, got, tc.want)
+		}
+	}
+}
