@@ -47,6 +47,13 @@ type ReadOverride struct {
 	BulkWindowBytes  *int64
 	PartBytes        *int64
 	MinParallelBytes *int64
+
+	// Interactive overrides exist for measurement and for mounts whose
+	// provider needs a different playback shape; omitted fields inherit the
+	// driver recommendation.
+	InteractiveWindowBytes         *int64
+	InteractivePrefetchWindowBytes *int64
+	InteractivePrefetchDepth       *int
 }
 type ReadLimits struct {
 	MaxInFlight int  `json:"max_in_flight"`
@@ -157,6 +164,18 @@ func ResolveReadPolicy(d Driver, o *ReadOverride) (ResolvedReadPolicy, error) {
 		if o.MinParallelBytes != nil {
 			p.Bulk.MinParallelBytes = *o.MinParallelBytes
 			out.Origins["bulk.min_parallel_size"] = "mount"
+		}
+		if o.InteractiveWindowBytes != nil {
+			p.Interactive.WindowBytes = *o.InteractiveWindowBytes
+			out.Origins["interactive.window"] = "mount"
+		}
+		if o.InteractivePrefetchWindowBytes != nil {
+			p.Interactive.PrefetchWindowBytes = *o.InteractivePrefetchWindowBytes
+			out.Origins["interactive.prefetch_window"] = "mount"
+		}
+		if o.InteractivePrefetchDepth != nil {
+			p.Interactive.PrefetchDepth = *o.InteractivePrefetchDepth
+			out.Origins["interactive.prefetch_depth"] = "mount"
 		}
 	}
 	if err := ValidateReadPolicy(p); err != nil {

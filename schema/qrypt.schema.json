@@ -3415,6 +3415,16 @@
           "minimum": 1,
           "maximum": 32
         },
+        "interactive": {
+          "$ref": "#/definitions/interactiveReadConfig",
+          "type": "object",
+          "description": "Interactive window and lookahead overrides.",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "交互读窗口与预读设置（见下表）"
+            }
+          }
+        },
         "bulk": {
           "$ref": "#/definitions/bulkReadConfig",
           "type": "object",
@@ -3480,6 +3490,52 @@
               "description": "允许并行拆分的最小窗口；0 表示不设门槛。按本次窗口判断，与文件总大小无关。"
             }
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "interactiveReadConfig": {
+      "type": "object",
+      "title": "Interactive read policy",
+      "description": "Sequential playback reads widen the window only after a confirmed sequential run.",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "交互读取策略",
+          "description": "交互读取（播放）仅在确认顺序读后放大窗口；初始读和随机跳读保持调用方窗口。"
+        }
+      },
+      "properties": {
+        "window": {
+          "type": "string",
+          "description": "Sequential read window, up to 32 MiB.",
+          "x-doc-default": "继承驱动",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "顺序读窗口大小，例如 4MiB；必须在 1 字节到 32 MiB 之间。"
+            }
+          }
+        },
+        "prefetch_window": {
+          "type": "string",
+          "description": "Lookahead window size; defaults to the read window.",
+          "x-doc-default": "继承驱动",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "预读窗口大小，例如 4MiB；省略时与读窗口相同。"
+            }
+          }
+        },
+        "prefetch_depth": {
+          "type": "integer",
+          "description": "Lookahead windows kept ahead; 0 disables lookahead.",
+          "x-doc-default": "继承驱动",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "向前保留的预读窗口数（0–4），0 表示关闭预读。"
+            }
+          },
+          "minimum": 0,
+          "maximum": 4
         }
       },
       "additionalProperties": false

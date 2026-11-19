@@ -104,3 +104,25 @@ func TestPolicyProvenanceDoesNotChangeExecution(t *testing.T) {
 		t.Fatal("invalid hard limit accepted")
 	}
 }
+
+func TestInteractiveOverridesApplyWithOrigin(t *testing.T) {
+	d := policyTestDriver{NewFakeDriver(FakeWithCapabilities(CapabilityParallelRange)), DefaultReadPolicy(), ReadLimits{MaxInFlight: 32, Parallel: true}}
+	window, prefetchWindow, depth := int64(4<<20), int64(8<<20), 2
+	out, err := ResolveReadPolicy(d, &ReadOverride{
+		InteractiveWindowBytes:         &window,
+		InteractivePrefetchWindowBytes: &prefetchWindow,
+		InteractivePrefetchDepth:       &depth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := InteractivePolicy{WindowBytes: window, PrefetchWindowBytes: prefetchWindow, PrefetchDepth: depth}
+	if out.Effective.Interactive != want {
+		t.Fatalf("interactive = %+v, want %+v", out.Effective.Interactive, want)
+	}
+	for _, key := range []string{"interactive.window", "interactive.prefetch_window", "interactive.prefetch_depth"} {
+		if out.Origins[key] != "mount" {
+			t.Fatalf("origin[%s] = %q, want mount", key, out.Origins[key])
+		}
+	}
+}

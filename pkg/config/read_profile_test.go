@@ -86,3 +86,38 @@ func TestReadConfigLoadAndSavePreservesPresence(t *testing.T) {
 		t.Fatalf("override=%+v", o)
 	}
 }
+
+func TestReadConfigInteractiveOverrides(t *testing.T) {
+	c := &ReadConfig{Interactive: &InteractiveReadConfig{
+		Window:         readPtr("4MiB"),
+		PrefetchWindow: readPtr("8MiB"),
+		PrefetchDepth:  readPtr(2),
+	}}
+	o, err := c.Override()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.InteractiveWindowBytes == nil || *o.InteractiveWindowBytes != 4<<20 {
+		t.Fatalf("window override = %v", o.InteractiveWindowBytes)
+	}
+	if o.InteractivePrefetchWindowBytes == nil || *o.InteractivePrefetchWindowBytes != 8<<20 {
+		t.Fatalf("prefetch window override = %v", o.InteractivePrefetchWindowBytes)
+	}
+	if o.InteractivePrefetchDepth == nil || *o.InteractivePrefetchDepth != 2 {
+		t.Fatalf("prefetch depth override = %v", o.InteractivePrefetchDepth)
+	}
+	for _, tc := range []*ReadConfig{
+		{Interactive: &InteractiveReadConfig{Window: readPtr("0")}},
+		{Interactive: &InteractiveReadConfig{Window: readPtr("33MiB")}},
+		{Interactive: &InteractiveReadConfig{PrefetchWindow: readPtr("nope")}},
+		{Interactive: &InteractiveReadConfig{PrefetchDepth: readPtr(5)}},
+		{Interactive: &InteractiveReadConfig{PrefetchDepth: readPtr(-1)}},
+	} {
+		if _, err := tc.Override(); err == nil {
+			t.Fatalf("invalid interactive override accepted: %+v", tc)
+		}
+	}
+	if o, _ := (&ReadConfig{}).Override(); o.InteractiveWindowBytes != nil || o.InteractivePrefetchDepth != nil {
+		t.Fatal("omission materialized an interactive override")
+	}
+}
