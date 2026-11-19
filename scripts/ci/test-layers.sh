@@ -5,12 +5,17 @@
 #   ./scripts/ci/test-layers.sh fast         # default unit suite
 #   ./scripts/ci/test-layers.sh changed      # only what the working diff can reach
 #   ./scripts/ci/test-layers.sh race         # concurrency-heavy packages under -race
+#   ./scripts/ci/test-layers.sh race-changed # only the -race packages the diff can reach
+#   ./scripts/ci/test-layers.sh race-shard 1/4        # one balanced shard of the race set
+#   ./scripts/ci/test-layers.sh race-shard-all [4]    # every shard, in parallel, locally
 #   ./scripts/ci/test-layers.sh vfs-stability # VFS tree flake guard (x3, read included)
 #   ./scripts/ci/test-layers.sh smoke        # localfs mount smoke test
 #   ./scripts/ci/test-layers.sh all          # everything except real-netdisk tests
 #   ./scripts/ci/test-layers.sh integration  # real provider/HTTP contract tests
 #
 # Every layer prints its wall-clock duration and warns past $BUDGET seconds.
+# Set QRYPT_TEST_TIMINGS=1 to also print the slowest 10 individual tests on the
+# layers that run `go test -json` (fast/changed/race-changed/race-shard).
 # The timings below were measured on an 8-core darwin/arm64 dev box with Go
 # 1.27.4 and a warm build cache; CI runners are slower and vary, so read them
 # as order-of-magnitude only.
@@ -23,10 +28,23 @@
 # run is the `changed` layer's job, not a smaller `fast`.
 #
 # The depth layers sit above the fast budget by design. `race` now covers the
-# whole pkg/vfs subtree and takes ~76s with the default race_parallel (its
-# pkg/vfs/read accounts for nearly all of it); `vfs-stability` is three
-# concurrent runs of that subtree and takes ~22s. Their WARNING lines are
-# informational, not a regression signal.
+# whole pkg/vfs subtree and takes ~39s with the default race_parallel on the
+# same box (pkg/vfs/read alone costs 26.5s of the 218s summed package time);
+# `vfs-stability` is three concurrent runs of the pkg/vfs subtree and takes
+# ~22s.
+# Their WARNING lines are informational, not a regression signal.
+#
+# PR CI runs `race-changed` instead of `race`: it reuses `changed`'s
+# import-closure selection (and its fail-safe to the whole race set when the
+# diff cannot be placed on packages) but executes those packages under -race:
+# a one-file driver change reaches 11 packages and took 14s on the same box,
+# while a pkg/vfs/read change reaches 28 of the 47 packages. main pushes and the
+# nightly job keep the full `race` layer as the backstop. Nightly also shards
+# the race set into
+# `race-shard i/n` jobs, one balanced shard per runner: the four heavy packages
+# (pkg/vfs/read, internal/cli, pkg/crypt, pkg/drive) are pinned one per shard,
+# the rest is packed cheapest-fit by measured cost, so the slowest shard costs
+# about one heavy package instead of the whole set.
 #
 # Real-netdisk contract tests are NOT part of go test: they need a running
 # `qrypt mount` debug server with mounted cloud accounts. Run them manually:
@@ -37,7 +55,10 @@
 # ./...` also compiles the vendored cgofuse tests whose Windows host
 # expects a real WinFsp mount.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+# Resolve the physical path: delta selection compares `go list` absolute package
+# dirs against the git toplevel, and on systems where the checkout is reached
+# through a symlink (macOS /tmp -> /private/tmp) a logical path never matches.
+cd "$(cd "$(dirname "$0")/../.." && pwd -P)"
 
 # Wall-clock regression tripwire for a single measure() step, in seconds. See
 # the header for why `fast` sits just under it, and why the race/vfs-stability
@@ -57,6 +78,27 @@ race_parallel() {
   [ "$p" -lt 8 ] && p=8
   printf '%s' "${RACE_P:-$p}"
 }
+
+# The race layer's package set, shared by `race`, `race-changed`'s fallback and
+# the sharding path. Wildcards stay in pattern form for the layers so packages
+# added later are picked up automatically; only `race-shard` needs the concrete
+# list, and it expands these patterns through `go list` itself.
+RACE_PATTERNS=(
+  ./pkg/vfs/...
+  ./pkg/drive
+  ./pkg/drivers/...
+  ./pkg/contracttest
+  ./pkg/control
+  ./pkg/logging
+  ./pkg/mount
+  ./pkg/syncer
+  ./internal/cli
+  ./pkg/core
+  ./pkg/mobile
+  ./pkg/crypt
+  ./pkg/task
+  ./cmd/qrypt
+)
 
 # Reclaim temp left behind by a test binary that was killed or hit -timeout:
 # such a process never reaches its own exit path, so the isolated CLI home, the
@@ -87,6 +129,41 @@ clean_orphan_temp() {
   done
 }
 clean_orphan_temp
+
+# slowest_tests <json file> [limit] prints "<elapsed>\t<package>\t<test>" for
+# the most expensive individual test passes in a `go test -json` stream, most
+# expensive first. Package-level Elapsed hides which test owns a regression;
+# QRYPT_TEST_TIMINGS=1 surfaces the per-test view. Ties sort by package then
+# test name so the report is stable across runs.
+slowest_tests() {
+  awk -v limit="${2:-10}" '
+    /"Action":"pass"/ && /"Test":"[^"]+"/ && /"Elapsed":[0-9.]+/ {
+      n++
+      el=$0; sub(/.*"Elapsed":/, "", el); sub(/[^0-9.].*/, "", el)
+      pkg=$0; sub(/.*"Package":"/, "", pkg); sub(/".*/, "", pkg)
+      tst=$0; sub(/.*"Test":"/, "", tst); sub(/".*/, "", tst)
+      eval[n] = el + 0
+      epkg[n] = pkg
+      etst[n] = tst
+    }
+    END {
+      for (i = 1; i <= n; i++) order[i] = i
+      for (i = 2; i <= n; i++) {
+        v = order[i]
+        for (j = i - 1; j >= 1; j--) {
+          if (eval[order[j]] > eval[v]) break
+          if (eval[order[j]] == eval[v] && epkg[order[j]] "." etst[order[j]] < epkg[v] "." etst[v]) break
+          order[j + 1] = order[j]
+        }
+        order[j + 1] = v
+      }
+      for (i = 1; i <= n && i <= limit; i++) {
+        k = order[i]
+        printf "%.2f\t%s\t%s\n", eval[k], epkg[k], etst[k]
+      }
+    }
+  ' "$1"
+}
 
 measure() {
   local label="$1"; shift
@@ -140,6 +217,15 @@ measure() {
     ' "$tmp" | sort -rn | head -10 | while read -r t p; do
       printf '  %6.2fs  %s\n' "$t" "$p"
     done
+    # Per-test timings are opt-in: the package list already spots the package
+    # that grew, and the test-level view is wide enough that it only earns its
+    # place when someone is narrowing down a regression.
+    if [ "${QRYPT_TEST_TIMINGS:-0}" = "1" ]; then
+      printf '== slowest tests ==\n'
+      slowest_tests "$tmp" 10 | while IFS=$'\t' read -r t p name; do
+        printf '  %6.2fs  %s  %s\n' "$t" "$p" "$name"
+      done
+    fi
     # CI: write the per-package timings into the step summary so a >20s
     # regression can be traced without re-running locally. Separate the
     # layers by job name via the caller-provided label.
@@ -153,6 +239,16 @@ measure() {
             print "| " pkg " | " el "s |"
           }
         ' "$tmp" | sort -t'|' -k3 -rn | head -10
+        if [ "${QRYPT_TEST_TIMINGS:-0}" = "1" ]; then
+          echo
+          echo "#### Slowest tests"
+          echo
+          echo "| test | package | elapsed |"
+          echo "| --- | --- | --- |"
+          slowest_tests "$tmp" 10 | while IFS=$'\t' read -r t p name; do
+            printf '| %s | %s | %ss |\n' "$name" "$p" "$t"
+          done
+        fi
         echo
       } >> "$GITHUB_STEP_SUMMARY"
     fi
@@ -324,6 +420,131 @@ affected_packages() {
   return "$rc"
 }
 
+# ── Race sharding ───────────────────────────────────────────────────
+# `race` runs one go test over the whole set, so its wall clock is set by the
+# slowest packages: pkg/vfs/read, internal/cli, pkg/crypt and pkg/drive are
+# most of the run. `race-shard i/n` cuts the concrete package list into n
+# shards that CI runs as independent jobs, so the longest shard costs about one
+# heavy package instead of the whole set. The costs below are the per-package
+# Elapsed sums measured with
+#   go test -race -count=1 -p 32 <RACE_PATTERNS>
+# on the 8-core darwin/arm64 dev box the header describes (47 packages, sum
+# 218s, 39s wall). They only steer the split, so a stale number shifts balance
+# and never coverage: every package `go list` reports lands in exactly one
+# shard.
+race_cost() {
+  case "$1" in
+    */pkg/vfs/read) echo 26 ;;
+    */internal/cli) echo 19 ;;
+    */pkg/crypt) echo 18 ;;
+    */pkg/drive | */pkg/vfs/upload) echo 12 ;;
+    */pkg/vfs) echo 11 ;;
+    */pkg/drivers/drime) echo 10 ;;
+    */pkg/drivers/quark) echo 8 ;;
+    */pkg/contracttest | */pkg/drivers/yun139) echo 7 ;;
+    */pkg/drivers/p123 | */pkg/drivers/p189 | */pkg/drivers/s3 | */pkg/mount) echo 6 ;;
+    */pkg/control | */pkg/drivers/koofr) echo 5 ;;
+    */pkg/core | */pkg/mobile | */pkg/drivers/baidunetdisk) echo 4 ;;
+    */pkg/vfs/readcache | */pkg/drivers/sftp) echo 3 ;;
+    *) echo 2 ;;
+  esac
+}
+
+# race_package_list prints the concrete race package list (one import path per
+# line, `go list` order), so shard membership is stable for the same tree.
+race_package_list() {
+  go list "${RACE_PATTERNS[@]}" 2>/dev/null
+}
+
+# race_shard_plan <index> <count> reads "<cost> <import path>" lines and prints
+# the import paths of one shard. Balance:
+#   1. the four heavy packages are pinned one per shard first;
+#   2. every other package is then packed cheapest-fit (most expensive first)
+#      onto the least loaded shard.
+# Ties resolve to the lowest shard index and the input order is the go list
+# order, so the same tree always produces the same split.
+race_shard_plan() {
+  local index="$1" count="$2"
+  awk -v idx="$index" -v n="$count" '
+    function isheavy(p) {
+      return p ~ /\/pkg\/vfs\/read$/ || p ~ /\/internal\/cli$/ ||
+             p ~ /\/pkg\/crypt$/       || p ~ /\/pkg\/drive$/
+    }
+    function minload(   i, best) {
+      best = 1
+      for (i = 2; i <= n; i++) if (load[i] < load[best]) best = i
+      return best
+    }
+    { total++; cost[total] = $1 + 0; pkg[total] = $2 }
+    END {
+      for (i = 1; i <= total; i++) order[i] = i
+      # insertion sort: most expensive first, then import path for stable ties
+      for (i = 2; i <= total; i++) {
+        v = order[i]
+        for (j = i - 1; j >= 1; j--) {
+          if (cost[order[j]] > cost[v]) break
+          if (cost[order[j]] == cost[v] && pkg[order[j]] < pkg[v]) break
+          order[j + 1] = order[j]
+        }
+        order[j + 1] = v
+      }
+      # Heavy packages first: one per shard while shards are available, then
+      # cheapest-fit so a shard count below four still yields a sane split.
+      pinned = 0
+      for (k = 1; k <= total; k++) {
+        i = order[k]
+        if (!isheavy(pkg[i])) continue
+        if (pinned < n) {
+          pinned++
+          s = pinned
+        } else {
+          s = minload()
+        }
+        shard[i] = s
+        load[s] += cost[i]
+      }
+      for (k = 1; k <= total; k++) {
+        i = order[k]
+        if (isheavy(pkg[i])) continue
+        s = minload()
+        shard[i] = s
+        load[s] += cost[i]
+      }
+      for (i = 1; i <= total; i++) if (shard[i] == idx) print pkg[i]
+    }
+  '
+}
+
+# race_shard_packages <index> <count> prints the shard's import paths.
+race_shard_packages() {
+  local index="$1" count="$2" pkg
+  {
+    while IFS= read -r pkg; do
+      [ -n "$pkg" ] || continue
+      printf '%s %s\n' "$(race_cost "$pkg")" "$pkg"
+    done < <(race_package_list)
+  } | race_shard_plan "$index" "$count"
+}
+
+# run_race_shard <index> <count> runs one shard under -race. The package list is
+# printed before the run so a CI failure names the exact subset, and the
+# slowest-package/test report comes from the shared -json path.
+run_race_shard() {
+  local index="$1" count="$2" pkgs num
+  pkgs=$(race_shard_packages "$index" "$count")
+  if [ -z "$pkgs" ]; then
+    printf '== race-shard %s/%s: no packages (shard count exceeds the race set) ==\n' "$index" "$count"
+    return 0
+  fi
+  num=$(printf '%s\n' "$pkgs" | wc -l | tr -d ' ')
+  printf '== race-shard %s/%s: %s package(s) ==\n' "$index" "$count" "$num"
+  printf '%s\n' "$pkgs" | sed 's/^/     /'
+  # The list is deliberately split into argv.
+  # shellcheck disable=SC2086
+  measure "race-shard $index/$count: go test -race ($num pkg)" \
+    go test -json -race -count=1 -p "$(race_parallel)" $pkgs
+}
+
 case "${1:-fast}" in
   fast)
     # -json so the per-package wall clock is reported; the slowest 10
@@ -362,9 +583,87 @@ case "${1:-fast}" in
     # idle box p=16 and p=32 both take ~38s. RACE_P tunes that per runner
     # without changing concurrency coverage.
     measure "race: pkg/vfs/... drive drivers contracttest control logging mount syncer cli core mobile crypt task cmd" \
-      go test -race -count=1 -p "$(race_parallel)" ./pkg/vfs/... ./pkg/drive ./pkg/drivers/... \
-      ./pkg/contracttest ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli \
-      ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
+      go test -race -count=1 -p "$(race_parallel)" "${RACE_PATTERNS[@]}"
+    ;;
+  race-changed)
+    # PR fast path: the same import-closure selection as `changed`, with the
+    # reachable packages executed under -race. The fail-safe rule is the same
+    # one `changed` documents: a diff that cannot be placed on packages
+    # (scripts/, go.mod, the docs, no git checkout) widens to the full race set
+    # rather than skipping concurrency coverage. -json keeps the slowest
+    # package/test report.
+    pkgs=$(affected_packages) || pkgs=""
+    if [ -z "$pkgs" ]; then
+      echo "== race-changed: diff cannot be placed on packages; running the full race set =="
+      measure "race-changed: go test -race (full fallback)" \
+        go test -json -race -count=1 -p "$(race_parallel)" "${RACE_PATTERNS[@]}"
+    else
+      count=$(printf '%s\n' "$pkgs" | wc -l | tr -d ' ')
+      printf '== race-changed: %s package(s) reachable from the working diff ==\n' "$count"
+      printf '%s\n' "$pkgs" | sed 's/^/     /'
+      # The list is deliberately split into argv.
+      # shellcheck disable=SC2086
+      measure "race-changed: go test -race ($count pkg)" \
+        go test -json -race -count=1 -p "$(race_parallel)" $pkgs
+    fi
+    ;;
+  race-shard)
+    spec="${2:-}"
+    if [ "${spec#*/}" = "$spec" ] || [ -z "${spec%%/*}" ] || [ -z "${spec##*/}" ]; then
+      echo "usage: $0 race-shard <index>/<count>" >&2
+      exit 2
+    fi
+    index="${spec%%/*}"
+    count="${spec##*/}"
+    if ! [[ "$index" =~ ^[1-9][0-9]*$ ]] || ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+      echo "usage: $0 race-shard <index>/<count>" >&2
+      exit 2
+    fi
+    if [ "$index" -gt "$count" ]; then
+      echo "race-shard: index $index is outside 1..$count" >&2
+      exit 2
+    fi
+    run_race_shard "$index" "$count"
+    ;;
+  race-shard-all)
+    count="${2:-4}"
+    if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+      echo "usage: $0 race-shard-all [shard-count]" >&2
+      exit 2
+    fi
+    # Local simulation of the nightly shard matrix. Each CI shard runs on its
+    # own runner with the full package budget, but here all shards share one
+    # machine, so halve the per-shard budget to keep the total in-flight work
+    # near what a single `race` run asks for (oversubscribing makes the
+    # timer-sensitive tests flake on a laptop). Set RACE_P to give every shard
+    # an explicit budget instead.
+    if [ -z "${RACE_P:-}" ]; then
+      shard_p=$(( $(race_parallel) / (count * 2) ))
+      if [ "$shard_p" -lt 2 ]; then shard_p=2; fi
+      export RACE_P="$shard_p"
+    fi
+    tmp=$(mktemp -d)
+    logs=()
+    pids=()
+    start=$(date +%s)
+    for ((i = 1; i <= count; i++)); do
+      logs[i]="$tmp/shard-$i.log"
+      run_race_shard "$i" "$count" >"${logs[$i]}" 2>&1 &
+      pids+=("$!")
+    done
+    status=0
+    for pid in "${pids[@]}"; do
+      wait "$pid" || status=1
+    done
+    for log in "${logs[@]}"; do
+      cat "$log"
+    done
+    end=$(( $(date +%s) - start ))
+    printf '== race-shard-all: %s shard(s) in %ds ==\n' "$count" "$end"
+    grep -h '^== race-shard [0-9]*/[0-9]*: go test' "${logs[@]}" |
+      sed 's/^== /     /; s/ ==$//' || true
+    rm -rf "$tmp"
+    exit "$status"
     ;;
   vfs-stability)
     # The async upload engine (worker shutdown, staging cleanup, journaling)
@@ -401,7 +700,7 @@ case "${1:-fast}" in
     done
     ;;
   *)
-    echo "usage: $0 [fast|changed|race|vfs-stability|smoke|all|integration <mount>...]" >&2
+    echo "usage: $0 [fast|changed|race|race-changed|race-shard <index>/<count>|race-shard-all [count]|vfs-stability|smoke|all|integration <mount>...]" >&2
     exit 2
     ;;
 esac

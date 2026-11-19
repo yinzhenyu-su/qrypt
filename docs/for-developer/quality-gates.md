@@ -8,9 +8,9 @@ qrypt 用五个 GitHub Actions workflow 组成质量体系：每 PR 的快速检
 
 | Workflow | 触发 | 内容 | 状态徽章 |
 | --- | --- | --- | --- |
-| `CI` (ci.yaml) | PR / push main | vet、staticcheck、golangci-lint、govulncheck、gofmt、**repo hygiene**（`go mod tidy -diff`、actionlint、shellcheck、空白/冲突标记）、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；push main 时先由 `detect` 判断能否复用 PR 的 CI（见下） | README |
+| `CI` (ci.yaml) | PR / push main | vet、staticcheck、golangci-lint、govulncheck、gofmt、**repo hygiene**（`go mod tidy -diff`、actionlint、shellcheck、空白/冲突标记）、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race（PR 只跑 diff 可达包的 `race-changed`，push main 跑全量 `race`）、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；push main 时先由 `detect` 判断能否复用 PR 的 CI（见下） | README |
 | `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测；nightly 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的无人值守子集 | README |
-| `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
+| `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、全量 race（backstop）、**拆成 4 个 `race-shard` 并行跑**、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
 | `Read Gates` (read-gates.yaml) | PR / nightly cron | **读路径确定性门禁**：自适应前台分片、lookahead 去重、范围重试/截断重放，全部跑在 `pkg/testsupport/simread` 模拟 provider 上（无网络、无凭证）；真实网盘持续读探测只在配置了可选 secret 时运行，缺失时跳过而非失败 | —（未挂徽章） |
 | `Release` (release.yaml) | push `v*` tag / 手动 dispatch | `verify` 校验 tag 在 main 上且对应 tree 的 CI 已全绿，然后生成 changelog PR、构建 linux/windows/darwin 产物、跑 Windows 发布包挂载冒烟并发布 | README |
 
@@ -395,7 +395,10 @@ mkdir/upload/read 的 entry id 带 `ext:<mountId>` 前缀；主存储 ↔ 外挂
 # 最前：check-all.sh 自己也会安装并前置，但单独跑子门禁时不会，PATH 里其它
 # 版本的 shellcheck 等会触发版本不一致。
 PATH="$HOME/.cache/qrypt-tools:$PATH" ./scripts/ci/check-all.sh
-./scripts/ci/test-layers.sh                # 分层测试（fast/changed/race/vfs-stability/smoke/all/integration）
+./scripts/ci/test-layers.sh                # 分层测试（fast/changed/race/race-changed/race-shard/race-shard-all/vfs-stability/smoke/all/integration）
+./scripts/ci/test-layers.sh race-changed   # PR 等价：只跑 diff 可达包的 -race，diff 无法落到包上时自动回退全量 race
+./scripts/ci/test-layers.sh race-shard 1/4 # nightly 等价：只跑一个 race 分片（1..4）
+./scripts/ci/test-layers.sh race-shard-all # 本机一次跑完 1..4 全部分片
 ./scripts/ci/check-hygiene.sh              # 仓库卫生：tidy -diff、actionlint、pinned shellcheck、空白/冲突标记
 ./scripts/ci/check-coverage.sh -print      # 覆盖率快照（不 gate）
 ./scripts/ci/fuzz-nightly.sh 10s           # 本地 fuzz（每 fuzzer 10s）
@@ -447,8 +450,24 @@ pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟
 `pkg/vfs/read` 约 6.5s、`pkg/vfs/upload` 约 3.6s；fast 层并行争用下分别约
 7s/8s/8s）。fast 层在本机 8 核 darwin/arm64 上约 18s（加速前约 26s），GitHub
 共享 runner 更慢，因此 `test-layers.sh` 的 `BUDGET=25` 只打印警告、不做硬失败。
-race 层已覆盖 `./pkg/vfs/...` 全部子包，本机约 50s；vfs-stability 并行跑 3 次
-`./pkg/vfs/...`，本机约 20s，超预算同样只是提示。
+race 层已覆盖 `./pkg/vfs/...` 全部子包，本机 8 核 darwin/arm64 上约 39s（47 个包，
+`-p 32`；单包 Elapsed 之和 218s，`pkg/vfs/read` 一个包就占 26.5s）；vfs-stability
+并行跑 3 次 `./pkg/vfs/...`，本机约 20s，超预算同样只是提示。
+
+race 层的墙钟由最慢的几个包决定，因此拆成 `n` 个分片：`race-shard i/n` 把具体包
+列表按本机实测的单包耗时切成 `n` 份，四个重包（`pkg/vfs/read`、`internal/cli`、
+`pkg/crypt`、`pkg/drive`）各钉在一个分片的第一位，其余包按「最贵优先、装到当前
+最轻分片」 cheapest-fit 分配，划分是确定性的（同一棵树重复跑得到同一分片）。
+夜间的 `Nightly race shard (i/4)` 在各自的 runner 上并行跑，全量 `race` 仍保留为
+backstop；PR 则用 `race-changed`：复用 `changed` 层的 import-closure 选择，只对
+diff 可达的包加 `-race`（本机实测：改一个 driver 文件可达 11 个包、约 14s；改
+`pkg/vfs/read` 这类被大量包依赖的文件则可达 28/47 个包、约 42s），diff 落不到包上
+（改脚本、`go.mod`、文档、无 git checkout）时同样 fail-safe 回退全量 race，绝不
+静默跳过。本地跑
+`race-shard-all` 时四个分片共用一台机器，脚本会把 `RACE_P` 按分片数下调，避免
+把本机 CPU 超额订阅；它只用于本机自检，不是 CI 的墙钟预期。任何 `go test -json`
+层加 `QRYPT_TEST_TIMINGS=1` 会额外打印最慢的 10 个单测（并写进 CI step summary），
+用来区分「包变慢」是哪个用例造成的。
 
 两类进程级状态让测试不能并行，且都看不出自测试自身：
 

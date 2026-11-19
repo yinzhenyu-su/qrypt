@@ -2,7 +2,8 @@ name: Nightly Quality Gates
 
 # Full regression suite that is too slow or too flaky for every PR:
 # property fuzzing (30s per fuzzer), the coverage gate, the race suite
-# and the layered fast/all suites. Run nightly or on demand.
+# (sharded across runners, with the full suite kept as a backstop) and the
+# layered fast/all suites. Run nightly or on demand.
 on:
   schedule:
     - cron: "0 18 * * *" # 02:00 Asia/Shanghai
@@ -77,6 +78,33 @@ jobs:
         run: |
           scripts/ci/test-layers.sh fast
           scripts/ci/test-layers.sh smoke
+
+  # The race set split across runners. The full `race` gate above stays as the
+  # backstop; sharding isolates a failure to a named package subset and keeps
+  # the slowest shard around one heavy package instead of the whole set. The
+  # balance is deterministic (heavy packages pinned one per shard, the rest
+  # packed cheapest-fit by measured cost), see scripts/ci/test-layers.sh.
+  race-shard:
+    name: Nightly race shard (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # go.mod is the single source of truth for the pinned toolchain.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install FUSE headers
+        uses: ./.github/actions/setup-fuse
+
+      - name: Race shard
+        run: scripts/ci/test-layers.sh race-shard ${{ matrix.shard }}/4
 
   # Deep Windows verification: a real WinFsp mount through the pure-Go
   # nocgo host. Too slow/flaky for every PR; the PR-level Windows gate
