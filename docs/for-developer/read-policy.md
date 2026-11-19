@@ -283,6 +283,7 @@ a row when a driver policy changes.
 |---|---|---|---|---|
 | quark | sequential fixed 2 MiB (initial/seek caller) | four 2 MiB windows | 4 MiB window, 3 streams, 8 MiB parts, min parallel 4 MiB | 32 MiB playback-shaped reads: 2 MiB sequential window 1.55× the one-chunk caller window (4/4 rounds, median); bulk 4-way aggregate optimum from `probe bench read` |
 | koofr | sequential fixed 4 MiB (initial/seek caller) | four default lookahead windows | 16 MiB window, 2×8 MiB parts, min parallel 8 MiB | 32 MiB cold mounted reads: interactive 2.0–2.5× the caller window; bulk 16 MiB/2 parts ~8% faster and more stable than 8 MiB single-stream; raw ceiling 3.7–4.5 MB/s at 1–4 connections |
+| drime | sequential fixed 4 MiB (initial/seek caller) | four default lookahead windows (16 MiB horizon) | 16 MiB window, 2×8 MiB parts | 16 MiB playback-shaped reads: caller 512 KiB window ~1.75 MB/s, 4 MiB window ~3.8–5.4 MB/s (fresh session ~5.5–7.1 MB/s); tune sweep median 4 MiB 5.9 MB/s > 8 MiB 5.6 > 2 MiB 4.1; bulk 16 MiB/2 parts ~5.3 MB/s vs 8 MiB single-stream ~4.2 MB/s; raw driver concurrency 1→4 streams 6.4→13.0 MB/s |
 
 Re-measure with `probe tune read` (interactive window and depth, then bulk
 window and streams) on a read-only mount; it prints the TOML block above.

@@ -13,14 +13,25 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// ReadPolicy keeps bulk reads single-stream. A live measurement on the
-// provider showed 4 concurrent sub-ranges 20-30% slower than one 4 MiB range:
-// the CDN's per-request latency dominates and does not scale with concurrency.
-// The capability stays declared so the profile can be retuned after a future
-// re-measurement.
+// ReadPolicy widens the confirmed-sequential window to 4 MiB and downloads in
+// 16 MiB windows split across two 8 MiB parts. Live measurements on this
+// provider show per-range TTFB (~0.8-0.9 s) dominating a 512 KiB window:
+// playback-shaped 16 MiB reads improved from ~1.75 MB/s to ~3.8-5.4 MB/s with
+// a 4 MiB window (and to ~5.5-7.1 MB/s when the CDN was fresh), while 8 MiB
+// windows measured about the same and 1 MiB windows were slower. A later
+// interleaved sweep on a fresh isolated mount ranked 4 MiB first (5.9 MB/s)
+// over 8 MiB (5.6 MB/s) and 2 MiB (4.1 MB/s); keep the depth-4 lookahead
+// (16 MiB horizon). Initial and seek access keep the caller window. Bulk
+// reads use the 16 MiB window over two 8 MiB parts: the same sweep measured
+// ~5.3 MB/s for that shape versus ~4.2 MB/s for the old 8 MiB single-stream
+// window, and concurrent driver-level reads scale (~6.4 MB/s at one stream to
+// ~13.0 MB/s at four). Provider state varies between sessions, so re-measure
+// with `probe tune read` before the next retune.
 func (d *Driver) ReadPolicy() drive.ReadPolicy {
 	p := drive.DefaultReadPolicy()
-	p.Bulk.Streams = 1
+	p.Interactive.WindowBytes = 4 << 20
+	p.Bulk.WindowBytes = 16 << 20
+	p.Bulk.Streams = 2
 	return p
 }
 
