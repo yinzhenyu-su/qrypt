@@ -39,6 +39,12 @@ type RuntimeSnapshot struct {
 	// shared with one already in flight (expected to stay zero).
 	DedupedLookaheadChunks  int
 	OverlappingWindowChunks int
+	// Window shape counters split by read intent; they show what shape the
+	// provider actually executed when the read event log is rate limited.
+	InteractiveWindowLoads  int
+	InteractiveWindowChunks int
+	BulkWindowLoads         int
+	BulkWindowChunks        int
 }
 
 // DebugReadTimeout describes the most recent read fetch timeout.
@@ -138,6 +144,10 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 	snapshot.Runtime.PrefetchTimeouts = runtimeState.PrefetchTimeouts
 	snapshot.Runtime.DedupedLookaheadChunks = runtimeState.DedupedLookaheadChunks
 	snapshot.Runtime.OverlappingWindowChunks = runtimeState.OverlappingWindowChunks
+	snapshot.Runtime.InteractiveWindowLoads = runtimeState.InteractiveWindowLoads
+	snapshot.Runtime.InteractiveWindowChunks = runtimeState.InteractiveWindowChunks
+	snapshot.Runtime.BulkWindowLoads = runtimeState.BulkWindowLoads
+	snapshot.Runtime.BulkWindowChunks = runtimeState.BulkWindowChunks
 	if last := runtimeState.LastTimeout; last != nil {
 		snapshot.Runtime.LastTimeout = &MountReadTimeout{
 			CacheKey:    last.CacheKey,

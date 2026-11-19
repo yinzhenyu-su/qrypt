@@ -29,7 +29,10 @@ type windowLoad struct {
 	streams int
 	// prefetch marks a speculative load. A timed-out prefetch is a silent
 	// cancellation for foreground readers, not a read failure.
-	prefetch  bool
+	prefetch bool
+	// intent is the read plan's intent (interactive or bulk). It only feeds
+	// the runtime shape counters and diagnostics.
+	intent    ReadIntent
 	trace     *drive.ReadTrace
 	createdAt time.Time
 	sessionID uint64
@@ -118,6 +121,14 @@ type windowState struct {
 	// dedupe should keep at zero.
 	dedupedChunks     int64
 	overlappingChunks int64
+	// Window shape counters split by read intent. Playback and downloads share
+	// one execution path, so the only way to tell whether a bulk download ran
+	// with the shape its driver asked for is to count the windows each intent
+	// actually admitted.
+	interactiveLoads  int64
+	interactiveChunks int64
+	bulkLoads         int64
+	bulkChunks        int64
 }
 
 func newWindowState() *windowState {
@@ -135,6 +146,14 @@ func (s *State) beginWindowLoad(key string, load *windowLoad) (*windowLoad, bool
 	s.noteWindowOverlapLocked(load)
 	load.key = key
 	s.windows.loads[key] = load
+	chunks := load.end - load.start + 1
+	if load.intent == ReadIntentBulk {
+		s.windows.bulkLoads++
+		s.windows.bulkChunks += chunks
+	} else {
+		s.windows.interactiveLoads++
+		s.windows.interactiveChunks += chunks
+	}
 	return load, false
 }
 
@@ -174,6 +193,19 @@ func (s *State) LookaheadStats() (dedupedChunks, overlappingChunks int) {
 	overlappingChunks = int(s.windows.overlappingChunks)
 	s.windows.mu.Unlock()
 	return dedupedChunks, overlappingChunks
+}
+
+// WindowShapeStats reports admitted window counts and covered chunks split by
+// read intent. A bulk download whose window size or worker count is overridden
+// shows up here, not in the read events, which are rate limited.
+func (s *State) WindowShapeStats() (interactiveLoads, interactiveChunks, bulkLoads, bulkChunks int) {
+	s.windows.mu.Lock()
+	interactiveLoads = int(s.windows.interactiveLoads)
+	interactiveChunks = int(s.windows.interactiveChunks)
+	bulkLoads = int(s.windows.bulkLoads)
+	bulkChunks = int(s.windows.bulkChunks)
+	s.windows.mu.Unlock()
+	return interactiveLoads, interactiveChunks, bulkLoads, bulkChunks
 }
 
 // endWindowLoad unregisters load. The removal is identity-checked: a

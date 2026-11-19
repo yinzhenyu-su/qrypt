@@ -424,7 +424,11 @@ with a deadline.
   the scheduler skipped because an in-flight window already covers them, and
   `overlapping_window_chunks` counts chunks a newly admitted window shared with
   one already in flight. The dedupe should keep the latter at zero; a nonzero
-  value means duplicate provider work.
+  value means duplicate provider work. Window shape counters split by intent
+  (`interactive_window_loads`/`interactive_window_chunks` and
+  `bulk_window_loads`/`bulk_window_chunks`) show what shape playback and
+  downloads actually admitted; read events are rate limited, so a download's
+  window shape would otherwise not appear in the log at all.
 
 ## Upload State Flow
 

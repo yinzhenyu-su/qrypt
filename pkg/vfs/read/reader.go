@@ -712,7 +712,7 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		}
 	}
 	key := WindowShapeKey(WindowKey(LoadKey(r.host, entry), startIndex, endIndex), streams)
-	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: streams, done: make(chan struct{})}
+	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: streams, intent: plan.Intent, done: make(chan struct{})}
 	if entry.Size > 0 {
 		// Known-size windows publish completed blocks: initialize the per-block
 		// channels before the load is registered so joiners can wait on them.
@@ -1417,8 +1417,9 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 	prefetchCtx = WithPrefetchRead(prefetchCtx)
 
 	hint, _ := AccessHintFromContext(ctx)
+	prefetchPlan, _ := readPlanFromContext(ctx)
 	trace := r.newReadTrace(prefetchCtx, entry)
-	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: 1, prefetch: true, progressive: entry.Size > 0, trace: trace, createdAt: time.Now(), done: make(chan struct{}), cancel: func() { cancelCause(drive.ReadSuperseded) }, sessionID: hint.SessionID}
+	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: 1, prefetch: true, progressive: entry.Size > 0, trace: trace, createdAt: time.Now(), done: make(chan struct{}), cancel: func() { cancelCause(drive.ReadSuperseded) }, sessionID: hint.SessionID, intent: prefetchPlan.Intent}
 	load.chunks = make([]windowChunk, int(endIndex-startIndex+1))
 	for i := range load.chunks {
 		load.chunks[i].ready = make(chan struct{})
