@@ -29,6 +29,7 @@ func TestQuarkShareCreatePollsWhenTaskIsQueued(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":200,"code":0,"data":{"share_id":"native1","pwd_id":"link00000001","share_url":"https://pan.quark.cn/s/link00000001","url_type":2,"passcode":"abcd"}}`))
 	})
 	d := newShareTestDriver(t, mux)
+	d.sharePollInterval = 10 * time.Millisecond
 
 	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
 		Entries:  []drive.Entry{{ID: "f1"}},

@@ -15,7 +15,6 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
-	"github.com/yinzhenyu/qrypt/pkg/util"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -283,7 +282,7 @@ func (d *Driver) downloadRange(ctx context.Context, fid, downloadURL, cookieSnap
 			lastErr = fmt.Errorf("quark: read: download: %w", err)
 			logging.L.DebugfEvery("quark.read_http.error", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d attempt=%d err=%v dur=%s", fid, offset, size, attempt+1, err, time.Since(httpStart))
 			if attempt < quarkDownloadMaxRetries && retryableHTTPError(err) {
-				if waitErr := util.WaitExponential(ctx, attempt); waitErr != nil {
+				if waitErr := retryWait(ctx, attempt); waitErr != nil {
 					return nil, remoteAddr, waitErr
 				}
 				continue
@@ -293,7 +292,7 @@ func (d *Driver) downloadRange(ctx context.Context, fid, downloadURL, cookieSnap
 		logging.L.DebugfEvery("quark.read_http", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d attempt=%d status=%d dur=%s", fid, offset, size, attempt+1, resp.StatusCode, time.Since(httpStart))
 		if retryableHTTPStatus(resp.StatusCode) && attempt < quarkDownloadMaxRetries {
 			resp.Body.Close()
-			if waitErr := util.WaitExponential(ctx, attempt); waitErr != nil {
+			if waitErr := retryWait(ctx, attempt); waitErr != nil {
 				return nil, remoteAddr, waitErr
 			}
 			continue

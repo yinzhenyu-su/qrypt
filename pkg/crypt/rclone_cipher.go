@@ -62,6 +62,13 @@ type Cipher interface {
 }
 
 func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, error) {
+	return newRcloneCipher(password, salt, DefaultArgon2Params(), opts...)
+}
+
+// newRcloneCipher is NewRcloneCipher with explicit Argon2id cost. It is
+// unexported because production callers must derive keys with production cost;
+// tests use it to keep the Argon2id code path fast.
+func newRcloneCipher(password, salt string, params Argon2Params, opts ...string) (*RcloneCipher, error) {
 	saltBytes := defaultSalt
 	if salt != "" {
 		saltBytes = []byte(salt)
@@ -88,7 +95,7 @@ func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, erro
 	}
 
 	if passwordHash == PasswordHashArgon2id {
-		password = argon2idStretch(password, salt)
+		password = argon2idStretchWith(params, password, salt)
 	}
 
 	// rclone's Key() uses an all-zero 80-byte key for an empty password
@@ -101,7 +108,8 @@ func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, erro
 	if password == "" {
 		key = make([]byte, 80)
 	} else {
-		key, err = scrypt.Key([]byte(password), saltBytes, 16384, 8, 1, 80)
+		cost := DefaultScryptParams()
+		key, err = scrypt.Key([]byte(password), saltBytes, cost.N, cost.R, cost.P, 80)
 		if err != nil {
 			return nil, err
 		}

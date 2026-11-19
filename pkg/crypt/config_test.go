@@ -88,11 +88,11 @@ func TestNewRcloneCipherFromConfigBackwardCompat(t *testing.T) {
 
 func TestNewRcloneCipherFromConfigArgon2id(t *testing.T) {
 	t.Parallel()
-	cp, err := NewRcloneCipherFromConfig(Config{
+	cp, err := newRcloneCipherFromConfigWithParams(Config{
 		Password:     "pass",
 		Salt:         "salt",
 		PasswordHash: PasswordHashArgon2id,
-	})
+	}, testArgon2Params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,11 +110,11 @@ func TestNewRcloneCipherFromConfigArgon2idDifferentKey(t *testing.T) {
 		Salt:         "salt",
 		PasswordHash: "",
 	})
-	withHash, _ := NewRcloneCipherFromConfig(Config{
+	withHash, _ := newRcloneCipherFromConfigWithParams(Config{
 		Password:     "pass",
 		Salt:         "salt",
 		PasswordHash: PasswordHashArgon2id,
-	})
+	}, testArgon2Params)
 
 	enc1 := noHash.EncryptSegment("hello.txt")
 	enc2 := withHash.EncryptSegment("hello.txt")
@@ -141,11 +141,11 @@ func TestExportRclonePassword_NoHash(t *testing.T) {
 
 func TestExportRclonePassword_Argon2id(t *testing.T) {
 	t.Parallel()
-	pw, err := ExportRclonePassword(Config{
+	pw, err := exportRclonePasswordWithParams(Config{
 		Password:     "my-password",
 		Salt:         "salt",
 		PasswordHash: PasswordHashArgon2id,
-	})
+	}, testArgon2Params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,12 +163,12 @@ func TestExportRclonePassword_Argon2idWithObscured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pw, err := ExportRclonePassword(Config{
+	pw, err := exportRclonePasswordWithParams(Config{
 		Password:         obscured,
 		Salt:             "salt",
 		PasswordHash:     PasswordHashArgon2id,
 		PasswordObscured: true,
-	})
+	}, testArgon2Params)
 	if err != nil {
 		t.Fatal(err)
 	}

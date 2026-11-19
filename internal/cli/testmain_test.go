@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/testsupport/testknobs"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"go.uber.org/goleak"
 )
@@ -21,6 +22,15 @@ import (
 // for the command only; without a parent cancel the last command's loop
 // would outlive the tests. StopNTP drains it before goleak checks.
 func TestMain(m *testing.M) {
+	// Every encrypted mount and crypt-encode/decode command builds a fresh
+	// rclone cipher, which derives its keys with scrypt at rclone's on-disk
+	// contract cost (N=16384, r=8, p=1, ~271ms per build under -race). No CLI
+	// test asserts production-derived key bytes or talks to an existing rclone
+	// remote: internal/cli has no testdata or golden fixtures, and the raw/cat
+	// comparisons are in-process round trips. Installing the tiny test cost
+	// keeps the production derivation path exercised without the per-command
+	// KDF. It is process-wide, so install it before any test starts.
+	restoreScrypt := testknobs.SetFastScryptParams()
 	home, err := os.MkdirTemp("", "qrypt-cli-test-home-")
 	if err != nil {
 		panic("cli: cannot create isolated test home: " + err.Error())
@@ -41,6 +51,7 @@ func TestMain(m *testing.M) {
 	// the goleak check on slow runner DNS (see initTime).
 	os.Setenv("QRYPT_TEST_NTP_DISABLED", "1")
 	code := m.Run()
+	restoreScrypt()
 	util.StopNTP()
 	if err := goleak.Find(
 		goleak.IgnoreAnyFunction("gopkg.in/natefinch/lumberjack%2ev2.(*Logger).millRun"),

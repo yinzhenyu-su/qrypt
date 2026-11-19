@@ -62,7 +62,15 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// NewRcloneCipherFromConfig builds the rclone-compatible cipher described by
+// cfg, deriving the Argon2id pre-stretch with production cost.
 func NewRcloneCipherFromConfig(cfg Config) (*RcloneCipher, error) {
+	return newRcloneCipherFromConfigWithParams(cfg, DefaultArgon2Params())
+}
+
+// newRcloneCipherFromConfigWithParams is NewRcloneCipherFromConfig with explicit
+// Argon2id cost, so tests can cover the configuration plumbing cheaply.
+func newRcloneCipherFromConfigWithParams(cfg Config, params Argon2Params) (*RcloneCipher, error) {
 	cfg = cfg.WithDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -80,7 +88,7 @@ func NewRcloneCipherFromConfig(cfg Config) (*RcloneCipher, error) {
 			return nil, fmt.Errorf("crypt: reveal salt: %w", err)
 		}
 	}
-	return NewRcloneCipher(cfg.Password, cfg.Salt, cfg.FileNameEncoding, cfg.FileNameEncryption, cfg.PasswordHash)
+	return newRcloneCipher(cfg.Password, cfg.Salt, params, cfg.FileNameEncoding, cfg.FileNameEncryption, cfg.PasswordHash)
 }
 
 // GenerateSalt produces a random 16-byte hex-encoded salt for use in
@@ -96,8 +104,16 @@ func GenerateSalt() (string, error) {
 // ExportRclonePassword returns the password that rclone must use to decrypt
 // files encrypted by this Config. When PasswordHash is "argon2id", the
 // returned value is the hex-encoded Argon2id-derived key; otherwise it is
-// the raw password (unchanged, rclone-compatible as-is).
+// the raw password (unchanged, rclone-compatible as-is). Argon2id always uses
+// production cost: the output is an interoperability contract with rclone.
 func ExportRclonePassword(cfg Config) (string, error) {
+	return exportRclonePasswordWithParams(cfg, DefaultArgon2Params())
+}
+
+// exportRclonePasswordWithParams is ExportRclonePassword with explicit Argon2id
+// cost, so tests can cover the argument handling without paying for a
+// production derivation.
+func exportRclonePasswordWithParams(cfg Config, params Argon2Params) (string, error) {
 	cfg = cfg.WithDefaults()
 	if cfg.Password == "" {
 		return "", fmt.Errorf("crypt: password is empty")
@@ -110,7 +126,7 @@ func ExportRclonePassword(cfg Config) (string, error) {
 		}
 	}
 	if cfg.PasswordHash == PasswordHashArgon2id {
-		return argon2idStretch(cfg.Password, cfg.Salt), nil
+		return argon2idStretchWith(params, cfg.Password, cfg.Salt), nil
 	}
 	return cfg.Password, nil
 }

@@ -596,6 +596,13 @@ func TestReadHasNoMetadataCall(t *testing.T) {
 }
 
 func TestClientErrorMappingAndLimiter(t *testing.T) {
+	// Collapse the retry backoff for every case: the 429 mapping below proves the
+	// status is retryable, and that must not cost the race build real exponential
+	// pauses.
+	oldWait := retryWait
+	retryWait = func(context.Context, int) error { return nil }
+	defer func() { retryWait = oldWait }()
+
 	f := newFakeProvider(t)
 	d := f.newDriver(t, Options{})
 	if err := d.Init(context.Background()); err != nil {
@@ -618,10 +625,7 @@ func TestClientErrorMappingAndLimiter(t *testing.T) {
 	}
 	delete(f.forceStatus, "/api/v1/drive/file-entries")
 
-	// Retryable 5xx is retried; collapse the backoff for the test.
-	oldWait := retryWait
-	retryWait = func(context.Context, int) error { return nil }
-	defer func() { retryWait = oldWait }()
+	// Retryable 5xx is retried.
 	f.forceStatus["/api/v1/drive/file-entries"] = 500
 	before := len(f.requestsFor("GET", "/api/v1/drive/file-entries"))
 	if _, err := d.List(context.Background(), ""); err == nil {

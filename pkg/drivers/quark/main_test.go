@@ -1,6 +1,7 @@
 package quark
 
 import (
+	"context"
 	"os"
 	"testing"
 )
@@ -12,5 +13,6 @@ import (
 // the package-level hook before m.Run keeps the parallel tests race-free.
 func TestMain(m *testing.M) {
 	retrySleep = func(int) {}
+	retryWait = func(context.Context, int) error { return nil }
 	os.Exit(m.Run())
 }
