@@ -1,7 +1,7 @@
 # 质量门禁（CI Workflows）
 
-qrypt 用四个 GitHub Actions workflow 组成质量体系：每 PR 的快速检查、
-每夜的全量门禁、真实网盘 contract 套件，以及 tag 触发的发布。本地开发时
+qrypt 用五个 GitHub Actions workflow 组成质量体系：每 PR 的快速检查、
+每夜的读路径与全量门禁、真实网盘 contract 套件，以及 tag 触发的发布。本地开发时
 对应的脚本见文末。
 
 ## Workflow 总览
@@ -11,6 +11,7 @@ qrypt 用四个 GitHub Actions workflow 组成质量体系：每 PR 的快速检
 | `CI` (ci.yaml) | PR / push main | vet、staticcheck、golangci-lint、govulncheck、gofmt、**repo hygiene**（`go mod tidy -diff`、actionlint、shellcheck、空白/冲突标记）、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；push main 时先由 `detect` 判断能否复用 PR 的 CI（见下） | README |
 | `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测；nightly 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的无人值守子集 | README |
 | `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
+| `Read Gates` (read-gates.yaml) | PR / nightly cron | **读路径确定性门禁**：自适应前台分片、lookahead 去重、范围重试/截断重放，全部跑在 `pkg/testsupport/simread` 模拟 provider 上（无网络、无凭证）；真实网盘持续读探测只在配置了可选 secret 时运行，缺失时跳过而非失败 | —（未挂徽章） |
 | `Release` (release.yaml) | push `v*` tag / 手动 dispatch | `verify` 校验 tag 在 main 上且对应 tree 的 CI 已全绿，然后生成 changelog PR、构建 linux/windows/darwin 产物、跑 Windows 发布包挂载冒烟并发布 | README |
 
 ## 合并后复用 PR 检查（ci.yaml `detect`）
@@ -68,6 +69,9 @@ gh workflow run "Contract Tests"
 # Nightly Quality Gates（fuzz + coverage gate + race + all）
 gh workflow run "Nightly Quality Gates"
 
+# Read Gates（读路径确定性门禁；配置了真实网盘 secret 时额外跑持续读探测）
+gh workflow run "Read Gates"
+
 # Release：重跑失败的发布（tag 已存在；verify 会重新校验它仍指向已绿的提交）
 gh workflow run release.yaml -f version=vX.Y.Z
 ```
@@ -81,6 +85,55 @@ nightly cron 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的子集。定时任务�
 该 cookie 几天内就会过期，之后每次定时任务都会以 `mount "X" not found` 失败
 （`/v1/health` 仍返回 OK，因为失败的 mount 在启动时就被跳过了）。这类 mount
 请手动 dispatch，并在跑之前先按下面的步骤重建 secret。
+
+## 读路径门禁（read-gates.yaml）
+
+`Read Gates` 守住读取路径上两个反直觉的行为，两者都通过
+`pkg/testsupport/simread` 的确定性模拟 provider 验证：不碰网络、不需要凭证，
+也不会因为机器快慢而抖动。
+
+- **自适应前台分片默认开启**：单连接模拟 150 KiB/s 时，第一个窗口按单流测量
+  （约 300 KiB/s，低于 350 KiB/s 的进入阈值），下一个窗口切为 4 路范围并发，
+  聚合吞吐达到单流的 1.5 倍以上（本机实测约 3.4 倍、峰值 4 路并发）。
+  `pkg/vfs/read/simread_split_test.go` 直接使用生产默认阈值与默认 ReadPolicy，
+  不改任何测试开关，因此默认值本身被钉住。
+- **lookahead 不重复抓取在途窗口的尾部**：窗口 4..6 仍在途时，下一次 lookahead
+  调度必须跳过已被覆盖的 chunk，落点为 7/9/11；模拟 provider 的 Range 请求日志
+  按字节做「无空隙、无重叠、恰好铺满」断言，即 chunk 4..12 各被抓取一次
+  （对应 ce70c14 的 `windowCoverage` 修复）。
+- **重试与截断重放可复现**：同一份脚本化故障（503 → 429 → 截断 body → 重放）
+  连跑两遍，请求序列（offset/size/attempt/status/truncated/delivered）与交付
+  字节完全一致。
+
+模拟 provider 包住真实驱动（测试里是临时目录上的 localfs），按
+`Config.TimeScale` 把模拟时间压缩成真实时间：150 KiB/s、open 延迟、TTFB 和中途
+stall 都按配置的模拟值发生，只有 `模拟时长 / TimeScale` 才是真实 sleep 时长。
+确定性用例的时序来自 sim/replay 的时间缩放，因此生产超时逻辑无需为测试改动；
+测试保持快的方式是缩放模拟 provider，而不是缩短真实 deadline。例如
+`TestSimAdaptiveForegroundSplitUnderBandwidth` 在 TimeScale 2 下约 3 秒跑完，
+生产侧的 350 KiB/s 进入阈值和 900 KiB/s 退出阈值保持原值。
+
+workflow 有三个 job：
+
+- `setup`：只把可选的 secret/variable 转成布尔 `enabled` 输出，值本身不打印、
+  不导出；secret 无法用在 job 级 `if` 里，所以需要这一步中转。
+- `hermetic`（PR + nightly）：运行 `scripts/ci/read-gate.sh`；纯 Go，不需要 FUSE
+  头文件，是合并前必须为绿的检查。
+- `real-cloud`（手动 / nightly，可选）：仅当 secret `READ_GATE_CONFIG_TOML_B64`
+  与 repository variable `READ_GATE_MOUNT` 都存在且当前不是 PR 时运行，通过
+  `scripts/dev/debug-mount.sh ... read` 对真实挂载做一次持续顺序读探测；两者缺失
+  时 job 被跳过而不是失败，因此无凭证的贡献者和维护者不会看到红灯。
+
+本地等价命令：
+
+```bash
+# 只跑确定性读路径门禁（与 workflow 的 hermetic job 相同，秒级完成）
+scripts/ci/read-gate.sh
+
+# 有真实 mount 时运行同一个持续读探测；`--` 之后原样传给 probe test read
+scripts/ci/read-gate.sh --real-cloud <mount> --config ./qrypt.toml -- \
+  --size 64m --block-size 1m --samples 2 --cache-mode cold
+```
 
 ## Coverage 门禁
 
@@ -127,6 +180,10 @@ nightly cron 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的子集。定时任务�
 
 - `CONTRACT_CONFIG_TOML_B64`（secret）：Contract Tests 使用的
   `qrypt.toml` 的 base64。内容含真实凭证，只进 secret，绝不进日志。
+- `READ_GATE_CONFIG_TOML_B64`（secret，可选）：Read Gates 真实网盘持续读探测
+  使用的 `qrypt.toml` 的 base64；未配置时 `real-cloud` job 自动跳过。
+- `READ_GATE_MOUNT`（repository **variable**，可选）：上述配置里要探测的 mount
+  名称；与 secret 同时存在才会运行 `real-cloud`。
 - `CONTRACT_MOUNTS_JSON`（repository **variable**）：默认跑 contract 的
   mount 列表（JSON 数组）。**必须用 variable 而不是 secret**：GitHub
   会把含 secret 的 job output 脱敏为 `***`，导致

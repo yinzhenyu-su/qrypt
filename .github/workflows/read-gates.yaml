@@ -1,0 +1,94 @@
+name: Read Gates
+
+# Read-path quality gates. The hermetic job runs on every PR and nightly: the
+# adaptive foreground split, the duplicate-lookahead dedupe and the range retry
+# determinism all run against the deterministic simulated provider in
+# pkg/testsupport/simread, so no network, credentials or wall-clock slack is
+# needed. The real-cloud job is opt-in.
+#
+# Optional configuration (repo/org level), used by the real-cloud job only:
+#   Secret   READ_GATE_CONFIG_TOML_B64 - base64 of a qrypt.toml with a real
+#                                        account (never printed)
+#   Variable READ_GATE_MOUNT           - mount name in that config to probe
+# When either is absent the real-cloud job is skipped, never failed, so fork PRs
+# and maintainers without credentials still get a green gate.
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 18 * * *" # 02:30 Asia/Shanghai, after the nightly suite
+  workflow_dispatch:
+
+concurrency:
+  group: read-gates-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      # Secrets cannot be referenced in a job-level `if`, so turn the optional
+      # configuration into a plain boolean output here. The values themselves
+      # are never printed or exported.
+      - id: check
+        env:
+          CONFIG_B64: ${{ secrets.READ_GATE_CONFIG_TOML_B64 }}
+          MOUNT: ${{ vars.READ_GATE_MOUNT }}
+        run: |
+          if [ -n "${CONFIG_B64:-}" ] && [ -n "${MOUNT:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::real-cloud read gate skipped: READ_GATE_CONFIG_TOML_B64 secret / READ_GATE_MOUNT variable not configured"
+          fi
+
+  hermetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # go.mod is the single source of truth for the pinned toolchain.
+          go-version-file: go.mod
+          cache: true
+
+      # pkg/testsupport/simread, pkg/drive and pkg/vfs/read are pure Go, so the
+      # hermetic gate needs no FUSE headers and finishes in seconds.
+      - name: Hermetic read gates
+        run: scripts/ci/read-gate.sh
+
+  real-cloud:
+    needs: setup
+    # Never on pull requests (fork PRs cannot read secrets), and only when the
+    # optional configuration produced an enabled=true output.
+    if: needs.setup.outputs.enabled == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install FUSE headers
+        uses: ./.github/actions/setup-fuse
+
+      - name: Write read gate config
+        env:
+          CONFIG_B64: ${{ secrets.READ_GATE_CONFIG_TOML_B64 }}
+        run: |
+          umask 077
+          printf '%s' "$CONFIG_B64" | base64 -d > ./qrypt.toml
+
+      - name: Sustained read on real cloud
+        env:
+          MOUNT: ${{ vars.READ_GATE_MOUNT }}
+        run: scripts/ci/read-gate.sh --real-cloud "$MOUNT" --config ./qrypt.toml
