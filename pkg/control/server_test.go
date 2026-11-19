@@ -549,6 +549,21 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(err.Error(), `mount "disabled" is not enabled for probe tests`) {
 		t.Fatalf("expected disabled mount benchmark error, got %v", err)
 	}
+	// Read-only probes measure an existing file, so a mount without
+	// test_enabled may run them; they must not be rejected by the write gate.
+	for _, req := range []contracttest.DriverTestRequest{
+		{Test: "read", Mount: "disabled", Path: "/movie.mp4"},
+		{Test: "tuneread", Mount: "disabled", Path: "/movie.mp4"},
+	} {
+		if _, err := disabledCommandClient.PostJSON(context.Background(), "/v1/driver/test", req); err != nil &&
+			strings.Contains(err.Error(), "is not enabled for probe tests") {
+			t.Fatalf("read-only probe %s was rejected by the write gate: %v", req.Test, err)
+		}
+	}
+	if _, err := disabledCommandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "read", Mount: "disabled", Path: "/movie.mp4"}); err != nil &&
+		strings.Contains(err.Error(), "is not enabled for probe tests") {
+		t.Fatalf("read benchmark --path was rejected by the write gate: %v", err)
+	}
 	benchBody, err := commandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,19 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
+// ReadOnlyProbe reports whether a probe request only reads provider data.
+// Probes that create fixtures, upload, or mutate the mount are not read-only
+// and still require a mount with test_enabled.
+func ReadOnlyProbe(test string, req DriverTestRequest) bool {
+	switch strings.ToLower(strings.TrimSpace(test)) {
+	case "tuneread", "read":
+		// --path measures an existing file; without it the read test creates a
+		// fixture, which is a write.
+		return strings.TrimSpace(req.Path) != ""
+	}
+	return false
+}
+
 // DriverTestRequest is the JSON body for the local probe endpoints.
 type DriverTestRequest struct {
 	Test         string `json:"test"`

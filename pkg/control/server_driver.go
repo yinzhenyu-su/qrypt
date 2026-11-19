@@ -205,7 +205,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			matched = true
-			if !nd.TestEnabled {
+			if !nd.TestEnabled && !contracttest.ReadOnlyProbe(testType, req) {
 				if req.Mount != "" {
 					http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
 					return
@@ -293,7 +293,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func debugTestDisabledError(mount string) string {
-	return fmt.Sprintf("mount %q is not enabled for probe tests; set test_enabled = true in [[mounts]]", mount)
+	return fmt.Sprintf("mount %q is not enabled for probe tests; set test_enabled = true in [[mounts]] (read-only probes such as read/tune --path do not need it)", mount)
 }
 
 func findDebugTestDriver(drivers []diagnostics.NamedDriver, mount string) (diagnostics.NamedDriver, bool) {
@@ -492,10 +492,8 @@ func (s *Server) writeReadBenchmarkPath(w http.ResponseWriter, r *http.Request, 
 			continue
 		}
 		matched = true
-		if !nd.TestEnabled {
-			http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
-			return
-		}
+		// A benchmark of an existing path only reads provider data, so it does
+		// not require test_enabled the way fixture-creating benchmarks do.
 		driver = nd.Driver
 	}
 	if !matched {
