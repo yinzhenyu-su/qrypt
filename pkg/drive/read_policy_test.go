@@ -2,6 +2,7 @@ package drive
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -124,5 +125,37 @@ func TestInteractiveOverridesApplyWithOrigin(t *testing.T) {
 		if out.Origins[key] != "mount" {
 			t.Fatalf("origin[%s] = %q, want mount", key, out.Origins[key])
 		}
+	}
+}
+
+func TestResolveReadPolicyWarnsAboutUnreachableShapes(t *testing.T) {
+	p := DefaultReadPolicy()
+	p.MaxInFlight = 2
+	p.Bulk.Streams = 4
+	p.Interactive.PrefetchDepth = 3
+	warnings := ReadPolicyWarnings(p)
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %v, want two (bulk streams and prefetch depth)", warnings)
+	}
+	if !strings.Contains(warnings[0], "read.bulk.streams (4) exceeds max_in_flight (2)") {
+		t.Fatalf("first warning = %q", warnings[0])
+	}
+	if !strings.Contains(warnings[1], "read.interactive.prefetch_depth (3)") {
+		t.Fatalf("second warning = %q", warnings[1])
+	}
+
+	requested := DefaultReadPolicy()
+	requested.Bulk.MinParallelBytes = requested.Bulk.WindowBytes + 1
+	if warnings := ReadPolicyWarnings(requested); len(warnings) != 1 || !strings.Contains(warnings[0], "run single-stream") {
+		t.Fatalf("min parallel warning = %v", warnings)
+	}
+
+	d := policyTestDriver{NewFakeDriver(FakeWithCapabilities(CapabilityParallelRange)), DefaultReadPolicy(), ReadLimits{MaxInFlight: 32}}
+	resolved, err := ResolveReadPolicy(d, nil)
+	if err != nil {
+		t.Fatalf("resolve default policy: %v", err)
+	}
+	if len(resolved.Warnings) != 0 {
+		t.Fatalf("shipped default produced warnings: %v", resolved.Warnings)
 	}
 }

@@ -70,6 +70,11 @@ type ResolvedReadPolicy struct {
 	Limits      ReadLimits        `json:"limits"`
 	Effective   ReadPolicy        `json:"effective"`
 	Origins     map[string]string `json:"origins"`
+	// Warnings lists policy combinations that silently degrade the executed
+	// shape, such as asking for more parallel parts than read admission allows.
+	// They are reported, never fatal: a deliberately slow-but-safe policy stays
+	// valid, it just does not do what its numbers suggest.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 const MaxReadWindowBytes int64 = 32 << 20
@@ -81,6 +86,35 @@ func DefaultReadPolicy() ReadPolicy {
 		MaxInFlight: 4, Fetch: FetchTimeouts{Idle: DefaultFetchIdleTimeout, Total: DefaultFetchTotalTimeout},
 	}
 }
+
+// ReadPolicyWarnings reports policy combinations that cannot execute as
+// written. Read admission is the ceiling for every in-flight Range, so a bulk
+// stream count or a lookahead depth above it queues work instead of running it
+// in parallel, and a minimum parallel size wider than the bulk window keeps
+// windows single-stream.
+func ReadPolicyWarnings(p ReadPolicy) []string {
+	var warnings []string
+	if p.MaxInFlight > 0 && p.Bulk.Streams > p.MaxInFlight {
+		warnings = append(warnings, fmt.Sprintf(
+			"read.bulk.streams (%d) exceeds max_in_flight (%d): bulk window parts queue for read admission instead of running in parallel",
+			p.Bulk.Streams, p.MaxInFlight))
+	}
+	// One lookahead window may share admission with the foreground read: that is
+	// the steady state, not a misconfiguration. Warn only when the requested
+	// depth alone exceeds admission.
+	if p.MaxInFlight > 0 && p.Interactive.PrefetchDepth > p.MaxInFlight {
+		warnings = append(warnings, fmt.Sprintf(
+			"read.interactive.prefetch_depth (%d) exceeds max_in_flight (%d): lookahead windows queue for read admission",
+			p.Interactive.PrefetchDepth, p.MaxInFlight))
+	}
+	if p.Bulk.MinParallelBytes > 0 && p.Bulk.WindowBytes > 0 && p.Bulk.MinParallelBytes > p.Bulk.WindowBytes {
+		warnings = append(warnings, fmt.Sprintf(
+			"read.bulk.min_parallel_size (%d) exceeds read.bulk.window (%d): bulk windows run single-stream",
+			p.Bulk.MinParallelBytes, p.Bulk.WindowBytes))
+	}
+	return warnings
+}
+
 func ValidateReadPolicy(p ReadPolicy) error {
 	size := func(field string, n int64, zero bool) error {
 		if n < 0 || (!zero && n == 0) || n > MaxReadWindowBytes {
@@ -198,6 +232,7 @@ func ResolveReadPolicy(d Driver, o *ReadOverride) (ResolvedReadPolicy, error) {
 		out.Origins["bulk.streams"] = "budget"
 	}
 	out.Effective = p
+	out.Warnings = ReadPolicyWarnings(p)
 	return out, nil
 }
 
