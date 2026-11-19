@@ -1,6 +1,8 @@
 package drive
 
 import (
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
+
 	"bytes"
 	"context"
 	"errors"
@@ -84,11 +86,14 @@ type ReadSource struct {
 	scheduler *readbudget.Scheduler
 	ctx       context.Context
 	cancel    context.CancelFunc
-	mu        sync.Mutex
-	closed    bool
-	active    sync.WaitGroup
-	bodies    map[*sourceReadBody]struct{}
-	pending   map[*PendingRead]struct{}
+	// clock is the time seam for fetch retry backoff and close grace; it is
+	// testclock.Real unless ReadOverride.Clock installs one.
+	clock   testclock.Clock
+	mu      sync.Mutex
+	closed  bool
+	active  sync.WaitGroup
+	bodies  map[*sourceReadBody]struct{}
+	pending map[*PendingRead]struct{}
 	// Ranges count admitted driver calls through body EOF/Close, including
 	// opening. Reserved but unstarted PendingReads are not active ranges.
 	ranges  atomic.Int32
@@ -105,7 +110,11 @@ func NewReadSource(d Driver, o *ReadOverride) (*ReadSource, error) {
 	}
 	p.SourceID = fmt.Sprintf("read-%d", readSourceSequence.Add(1))
 	ctx, cancel := context.WithCancel(context.Background())
-	return &ReadSource{driver: d, policy: p, bodies: map[*sourceReadBody]struct{}{}, scheduler: readbudget.NewScheduler(readbudget.SchedulerConfig{MaxConcurrency: 32, HighReserve: 8, PrefetchLimit: 4}), ctx: ctx, cancel: cancel}, nil
+	clock := testclock.Real
+	if o != nil && o.Clock != nil {
+		clock = o.Clock
+	}
+	return &ReadSource{driver: d, policy: p, bodies: map[*sourceReadBody]struct{}{}, scheduler: readbudget.NewScheduler(readbudget.SchedulerConfig{MaxConcurrency: 32, HighReserve: 8, PrefetchLimit: 4}), ctx: ctx, cancel: cancel, clock: clock}, nil
 }
 func (s *ReadSource) Policy() ResolvedReadPolicy {
 	p := s.policy
@@ -141,7 +150,7 @@ func (s *ReadSource) Close() error {
 	select {
 	case <-done:
 		return nil
-	case <-time.After(closeGrace):
+	case <-s.clock.After(closeGrace):
 		return fmt.Errorf("read: source close timed out")
 	}
 }

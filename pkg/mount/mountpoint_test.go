@@ -4,9 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 )
 
 func TestEnsureMountPointCreatesMissingDirectory(t *testing.T) {
@@ -102,7 +105,7 @@ func TestDetachRootForPlainDirectoryIsThePathItself(t *testing.T) {
 func TestBoundedProbeReturnsTheProbeAnswer(t *testing.T) {
 	want := errors.New("device not configured")
 
-	err := boundedProbe(time.Second, func() error { return want })
+	err := boundedProbe(testclock.Real, time.Second, func() error { return want })
 	if !errors.Is(err, want) {
 		t.Fatalf("boundedProbe = %v, want %v", err, want)
 	}
@@ -110,16 +113,33 @@ func TestBoundedProbeReturnsTheProbeAnswer(t *testing.T) {
 
 func TestBoundedProbeGivesUpOnASilentProbe(t *testing.T) {
 	// A hung FUSE daemon must not look dead: force-detaching a working mount
-	// would be worse than the failure the user already has.
+	// would be worse than the failure the user already has. The probe timeout
+	// runs on the fake clock, so the test proves the deadline fired without
+	// waiting the 50ms out.
+	clk := testclock.NewFake(time.Now())
 	blocked := make(chan struct{})
 	defer close(blocked)
 
-	start := time.Now()
-	err := boundedProbe(50*time.Millisecond, func() error { <-blocked; return errors.New("never") })
-	if err != nil {
-		t.Fatalf("boundedProbe on a silent probe = %v, want nil (inconclusive)", err)
+	result := make(chan error, 1)
+	go func() {
+		result <- boundedProbe(clk, 50*time.Millisecond, func() error { <-blocked; return errors.New("never") })
+	}()
+	// Wait for boundedProbe to arm its timeout (pending fake timers are only
+	// observable through the clock) without sleeping.
+	deadline := time.Now().Add(5 * time.Second)
+	for clk.Pending() == 0 && time.Now().Before(deadline) {
+		runtime.Gosched()
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("boundedProbe waited %s, want it to give up after 50ms", elapsed)
+	if clk.Pending() == 0 {
+		t.Fatal("boundedProbe never armed its timeout")
+	}
+	clk.Advance(50 * time.Millisecond)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("boundedProbe on a silent probe = %v, want nil (inconclusive)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("boundedProbe did not give up after the timeout elapsed")
 	}
 }

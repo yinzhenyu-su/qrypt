@@ -1,9 +1,14 @@
 package readcache
 
 import (
+	"context"
+	"crypto/sha256"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 )
 
 // fakeDebouncer is a deterministic Debouncer for tests: it records arms
@@ -103,5 +108,71 @@ func TestStoreDebouncerSurvivesRepeatedFlush(t *testing.T) {
 	}
 	if fake.Armed() {
 		t.Fatal("flush left debouncer armed")
+	}
+}
+
+// TestClockDebouncerFiresOnAdvance proves the clock seam used by the index
+// save: arming schedules one fake-clock timer, and advancing to the delay runs
+// the callback without real time passing.
+func TestClockDebouncerFiresOnAdvance(t *testing.T) {
+	t.Parallel()
+	clk := testclock.NewFake(time.Unix(1_700_000_000, 0))
+	d := newClockDebouncer(clk)
+	fired := make(chan struct{})
+	d.Arm(readCacheIndexSaveDelay, func() { close(fired) })
+	if !d.Armed() {
+		t.Fatal("debouncer not armed after Arm")
+	}
+	if got := clk.Pending(); got != 1 {
+		t.Fatalf("fake clock pending timers = %d, want 1", got)
+	}
+	clk.Advance(readCacheIndexSaveDelay)
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("armed callback did not fire after Advance")
+	}
+	if d.Armed() {
+		t.Fatal("debouncer still armed after firing")
+	}
+}
+
+// TestStoreUseClockForTestWiresFakeDebouncer checks tests can swap the index
+// save debouncer for the clock-driven one.
+func TestStoreUseClockForTestWiresFakeDebouncer(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	store.useClockForTest(testclock.NewFake(time.Unix(1_700_000_000, 0)))
+	if _, ok := store.debounce.(*clockDebouncer); !ok {
+		t.Fatalf("debouncer = %T, want the clock-driven implementation", store.debounce)
+	}
+	store.scheduleReadIndexSave()
+	if !store.debounce.Armed() {
+		t.Fatal("index save was not armed on the clock debouncer")
+	}
+}
+
+// TestStoreFlushPersistsPendingAsyncWrite covers Flush: it waits for the async
+// chunk write and saves the dirty index, so a reopened store sees the chunk.
+func TestStoreFlushPersistsPendingAsyncWrite(t *testing.T) {
+	t.Parallel()
+	cacheDir := t.TempDir()
+	key := strings.Repeat("a", sha256.Size*2)
+	cache := newTestStore(t, cacheDir, 10<<20)
+	cache.PutChunkAsync(key, int64(len("flushed")), 0, []byte("flushed"), testAccess)
+	if err := cache.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	reopened := newTestStore(t, cacheDir, 10<<20)
+	got, ok, err := reopened.GetChunk(key, 0, testAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || string(got) != "flushed" {
+		t.Fatalf("flushed chunk = %q ok=%v, want flushed", got, ok)
 	}
 }

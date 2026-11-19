@@ -20,12 +20,10 @@ var BehaviorConvergenceStep = time.Second
 // schedule instead of being slept through, so the checks still report the
 // verdict they had reached rather than stalling a caller that is shutting down.
 func convergenceWait(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
-	case <-timer.C:
+	case <-wakeAfter(ctx, d):
 		return true
 	}
 }

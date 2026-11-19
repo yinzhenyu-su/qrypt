@@ -1,4 +1,4 @@
-// Package testclock provides the time seam used by code with real timeouts,
+// Package clock provides the time seam used by code with real timeouts,
 // backoffs and debounces.
 //
 // Production code defaults to Real, which is time.Now/time.After. Tests that
@@ -6,7 +6,7 @@
 // a 30s fetch timeout or a 200ms retry backoff costs microseconds. The seam is
 // deliberately tiny: callers only need Now and After, which keeps the
 // production behavior identical to using the time package directly.
-package testclock
+package clock
 
 import (
 	"sync"

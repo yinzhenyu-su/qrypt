@@ -1,4 +1,4 @@
-package testclock
+package clock
 
 import (
 	"testing"

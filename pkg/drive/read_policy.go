@@ -1,6 +1,8 @@
 package drive
 
 import (
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
+
 	"fmt"
 )
 
@@ -54,6 +56,11 @@ type ReadOverride struct {
 	InteractiveWindowBytes         *int64
 	InteractivePrefetchWindowBytes *int64
 	InteractivePrefetchDepth       *int
+
+	// Clock installs a deterministic clock for the fetch layer (retry backoff
+	// and timeout accounting). Tests use it to advance expired timers
+	// instantly; nil selects the wall clock.
+	Clock testclock.Clock
 }
 type ReadLimits struct {
 	MaxInFlight int  `json:"max_in_flight"`

@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -357,40 +358,42 @@ func TestDirectReadAllowsSlowProgress(t *testing.T) {
 }
 
 func TestDirectReadWholeFileStreamIsNotCappedByFetchTotal(t *testing.T) {
-	// 2 MiB + 1 KiB at 8 KiB per 2 ms paces the stream at ~510ms. The file is
-	// still delivered whole and still spans more than one fetch window; the
-	// size is only large enough for the stream to outrun the total bound.
-	data := bytes.Repeat([]byte("h"), (2<<20)+1024)
-	driver := seededDriver(t, data)
-	driver.ReadBehavior.BodyFunc = func(ctx context.Context, span []byte) io.ReadCloser {
-		return &pacedParallelBody{ctx: ctx, remaining: len(span), chunk: 8 << 10, interval: 2 * time.Millisecond}
-	}
-	// The stream refills window by window (128 KiB at this ~4 MiB/s pacing is
-	// ~32 ms each), far below the 400 ms total, so a loaded runner cannot trip
-	// the bound on one refill. The whole file (~510 ms) still outruns the
-	// total, so a regression that applies it to the whole-file stream fails.
-	// The idle bound (300 ms) is 150x the 2 ms pacing gap.
-	profile := func() ReadPolicy {
-		p := DefaultReadPolicy()
-		p.Bulk.Streams = 1
-		p.Bulk.WindowBytes = 128 << 10
-		p.Fetch.Idle = 300 * time.Millisecond
-		p.Fetch.Total = 400 * time.Millisecond
-		return p
-	}()
-	entry := Entry{ID: "0/file.bin", Size: int64(len(data))}
-	rc, err := readSourceWithPolicy(context.Background(), driver, entry, 0, 0, profile)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer rc.Close()
-	got, err := io.ReadAll(rc)
-	if err != nil {
-		t.Fatalf("whole-file stream failed despite steady progress: %v", err)
-	}
-	if len(got) != len(data) {
-		t.Fatalf("bytes = %d, want %d", len(got), len(data))
-	}
+	synctest.Test(t, func(t *testing.T) {
+		// 2 MiB + 1 KiB at 8 KiB per 2 ms paces the stream at ~510ms. The file is
+		// still delivered whole and still spans more than one fetch window; the
+		// size is only large enough for the stream to outrun the total bound.
+		data := bytes.Repeat([]byte("h"), (2<<20)+1024)
+		driver := seededDriver(t, data)
+		driver.ReadBehavior.BodyFunc = func(ctx context.Context, span []byte) io.ReadCloser {
+			return &pacedParallelBody{ctx: ctx, remaining: len(span), chunk: 8 << 10, interval: 2 * time.Millisecond}
+		}
+		// The stream refills window by window (128 KiB at this ~4 MiB/s pacing is
+		// ~32 ms each), far below the 400 ms total, so a loaded runner cannot trip
+		// the bound on one refill. The whole file (~510 ms) still outruns the
+		// total, so a regression that applies it to the whole-file stream fails.
+		// The idle bound (300 ms) is 150x the 2 ms pacing gap.
+		profile := func() ReadPolicy {
+			p := DefaultReadPolicy()
+			p.Bulk.Streams = 1
+			p.Bulk.WindowBytes = 128 << 10
+			p.Fetch.Idle = 300 * time.Millisecond
+			p.Fetch.Total = 400 * time.Millisecond
+			return p
+		}()
+		entry := Entry{ID: "0/file.bin", Size: int64(len(data))}
+		rc, err := readSourceWithPolicy(context.Background(), driver, entry, 0, 0, profile)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer rc.Close()
+		got, err := io.ReadAll(rc)
+		if err != nil {
+			t.Fatalf("whole-file stream failed despite steady progress: %v", err)
+		}
+		if len(got) != len(data) {
+			t.Fatalf("bytes = %d, want %d", len(got), len(data))
+		}
+	})
 }
 
 // waitForReadActive blocks until the fake driver reports at least one in-flight
@@ -411,62 +414,64 @@ func waitForReadActive(t *testing.T, driver *FakeDriver, want int) {
 // share fetch too. A budget of one with 512 KiB parts used to issue three
 // concurrent 8 MiB requests.
 func TestSourceReadHonorsPartSizeAndInFlightBudget(t *testing.T) {
-	const total = 24 << 20
-	data := bytes.Repeat([]byte("q"), total)
-	driver := seededDriver(t, data, CapabilityParallelRange)
-	release := make(chan struct{})
-	driver.ReadBehavior.GateFunc = func(_, size int64) <-chan struct{} {
-		if size == 1 {
-			// The capability probe must not be gated behind the parts.
-			return nil
+	synctest.Test(t, func(t *testing.T) {
+		const total = 24 << 20
+		data := bytes.Repeat([]byte("q"), total)
+		driver := seededDriver(t, data, CapabilityParallelRange)
+		release := make(chan struct{})
+		driver.ReadBehavior.GateFunc = func(_, size int64) <-chan struct{} {
+			if size == 1 {
+				// The capability probe must not be gated behind the parts.
+				return nil
+			}
+			return release
 		}
-		return release
-	}
-	profile := func() ReadPolicy {
-		p := DefaultReadPolicy()
-		p.Bulk.Streams = 3
-		p.Bulk.MinParallelBytes = 1
-		p.MaxInFlight = 1
-		p.Bulk.PartBytes = int64(1) * ReadChunkSize
-		return p
-	}()
-	entry := Entry{ID: "0/file.bin", Size: total}
-	rc, err := readSourceWithPolicy(context.Background(), driver, entry, 0, 0, profile)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	done := make(chan readResult, 1)
-	go func() { data, err := io.ReadAll(rc); done <- readResult{data, err} }()
-	waitForReadActive(t, driver.FakeDriver, 1)
-	time.Sleep(100 * time.Millisecond)
-	if stats := driver.ReadStats(); stats.Active != 1 || stats.MaxConcurrent != 1 {
-		t.Fatalf("in-flight reads = %d (max %d), want the one-permit budget", stats.Active, stats.MaxConcurrent)
-	}
-	for _, call := range driver.ReadCalls() {
-		if call.Size != 1 && call.Size != ReadChunkSize {
-			t.Fatalf("part = offset %d size %d, want %d-byte parts", call.Offset, call.Size, ReadChunkSize)
+		profile := func() ReadPolicy {
+			p := DefaultReadPolicy()
+			p.Bulk.Streams = 3
+			p.Bulk.MinParallelBytes = 1
+			p.MaxInFlight = 1
+			p.Bulk.PartBytes = int64(1) * ReadChunkSize
+			return p
+		}()
+		entry := Entry{ID: "0/file.bin", Size: total}
+		rc, err := readSourceWithPolicy(context.Background(), driver, entry, 0, 0, profile)
+		if err != nil {
+			t.Fatalf("open: %v", err)
 		}
-	}
-	close(release)
-	result := <-done
-	got, err := result.data, result.err
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if err := rc.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Fatal("direct read returned different bytes")
-	}
-	wantParts := int(total / ReadChunkSize)
-	if calls := driver.ReadCalls(); len(calls) != wantParts {
-		t.Fatalf("reads = %d, want %d bounded parts", len(calls), wantParts)
-	}
+		type readResult struct {
+			data []byte
+			err  error
+		}
+		done := make(chan readResult, 1)
+		go func() { data, err := io.ReadAll(rc); done <- readResult{data, err} }()
+		waitForReadActive(t, driver.FakeDriver, 1)
+		time.Sleep(100 * time.Millisecond)
+		if stats := driver.ReadStats(); stats.Active != 1 || stats.MaxConcurrent != 1 {
+			t.Fatalf("in-flight reads = %d (max %d), want the one-permit budget", stats.Active, stats.MaxConcurrent)
+		}
+		for _, call := range driver.ReadCalls() {
+			if call.Size != 1 && call.Size != ReadChunkSize {
+				t.Fatalf("part = offset %d size %d, want %d-byte parts", call.Offset, call.Size, ReadChunkSize)
+			}
+		}
+		close(release)
+		result := <-done
+		got, err := result.data, result.err
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if err := rc.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatal("direct read returned different bytes")
+		}
+		wantParts := int(total / ReadChunkSize)
+		if calls := driver.ReadCalls(); len(calls) != wantParts {
+			t.Fatalf("reads = %d, want %d bounded parts", len(calls), wantParts)
+		}
+	})
 }
 
 // A request below the profile's split threshold stays one Range even when the
@@ -653,66 +658,70 @@ func TestDirectReadTotalTimeoutPropagatesStallCause(t *testing.T) {
 // A caller cancel must stay a caller cancel: marking it as a stall would make
 // drivers rotate connections for aborted downloads.
 func TestDirectReadCallerCancelKeepsPlainCause(t *testing.T) {
-	causes := make(chan error, 8)
-	entry := Entry{ID: "0/file.bin", Size: 1 << 20}
-	driver := stalledDirectDriver(t, 1<<20, causes)
-	profile := func() ReadPolicy {
-		p := DefaultReadPolicy()
-		p.Bulk.Streams = 1
-		p.Fetch.Idle = 5 * time.Second
-		p.Fetch.Total = 5 * time.Second
-		return p
-	}()
-	ctx, cancel := context.WithCancel(context.Background())
-	rc, err := readSourceWithPolicy(ctx, driver, entry, 0, 0, profile)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
-	}()
-	_, err = io.ReadAll(rc)
-	_ = rc.Close()
-	if err == nil {
-		t.Fatal("read succeeded after the caller canceled")
-	}
-	cause := readCauses(t, causes, 1)[0]
-	if errors.Is(cause, ReadIdleStall) {
-		t.Fatalf("caller cancel reported as a stall: %v", cause)
-	}
-	if !errors.Is(cause, context.Canceled) {
-		t.Fatalf("cancel cause = %v, want context.Canceled", cause)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		causes := make(chan error, 8)
+		entry := Entry{ID: "0/file.bin", Size: 1 << 20}
+		driver := stalledDirectDriver(t, 1<<20, causes)
+		profile := func() ReadPolicy {
+			p := DefaultReadPolicy()
+			p.Bulk.Streams = 1
+			p.Fetch.Idle = 5 * time.Second
+			p.Fetch.Total = 5 * time.Second
+			return p
+		}()
+		ctx, cancel := context.WithCancel(context.Background())
+		rc, err := readSourceWithPolicy(ctx, driver, entry, 0, 0, profile)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+		}()
+		_, err = io.ReadAll(rc)
+		_ = rc.Close()
+		if err == nil {
+			t.Fatal("read succeeded after the caller canceled")
+		}
+		cause := readCauses(t, causes, 1)[0]
+		if errors.Is(cause, ReadIdleStall) {
+			t.Fatalf("caller cancel reported as a stall: %v", cause)
+		}
+		if !errors.Is(cause, context.Canceled) {
+			t.Fatalf("cancel cause = %v, want context.Canceled", cause)
+		}
+	})
 }
 
 // The chunked path abandons each stalled part with the same cause.
 func TestDirectPartAbandonPropagatesStallCause(t *testing.T) {
-	causes := make(chan error, 8)
-	entry := Entry{ID: "0/file.bin", Size: 16 << 20}
-	driver := stalledDirectDriver(t, 16<<20, causes)
-	profile := func() ReadPolicy {
-		p := DefaultReadPolicy()
-		p.Bulk.Streams = 2
-		p.Bulk.MinParallelBytes = 1
-		p.Fetch.Idle = 50 * time.Millisecond
-		p.Fetch.Total = 5 * time.Second
-		return p
-	}()
-	rc, err := readSourceWithPolicy(context.Background(), driver, entry, 0, 0, profile)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	_, err = io.ReadAll(rc)
-	_ = rc.Close()
-	if !IsFetchTimeout(err) {
-		t.Fatalf("read error = %v, want a fetch timeout", err)
-	}
-	for _, cause := range readCauses(t, causes, 1) {
-		if !errors.Is(cause, ReadIdleStall) {
-			t.Fatalf("part cancel cause = %v, want ReadIdleStall", cause)
+	synctest.Test(t, func(t *testing.T) {
+		causes := make(chan error, 8)
+		entry := Entry{ID: "0/file.bin", Size: 16 << 20}
+		driver := stalledDirectDriver(t, 16<<20, causes)
+		profile := func() ReadPolicy {
+			p := DefaultReadPolicy()
+			p.Bulk.Streams = 2
+			p.Bulk.MinParallelBytes = 1
+			p.Fetch.Idle = 50 * time.Millisecond
+			p.Fetch.Total = 5 * time.Second
+			return p
+		}()
+		rc, err := readSourceWithPolicy(context.Background(), driver, entry, 0, 0, profile)
+		if err != nil {
+			t.Fatalf("open: %v", err)
 		}
-	}
+		_, err = io.ReadAll(rc)
+		_ = rc.Close()
+		if !IsFetchTimeout(err) {
+			t.Fatalf("read error = %v, want a fetch timeout", err)
+		}
+		for _, cause := range readCauses(t, causes, 1) {
+			if !errors.Is(cause, ReadIdleStall) {
+				t.Fatalf("part cancel cause = %v, want ReadIdleStall", cause)
+			}
+		}
+	})
 }
 
 // Two concurrent direct reads of the same file share one per-file in-flight

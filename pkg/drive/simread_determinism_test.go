@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/testsupport/simread"
 )
@@ -37,10 +38,14 @@ func TestSimReadSourceRetryDeterminism(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new read source: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		clk := testclock.NewFake(time.Unix(1_700_000_000, 0))
+		ctx, cancel := context.WithTimeout(drive.WithClock(context.Background(), clk), 30*time.Second)
 		defer cancel()
+		done := make(chan struct{})
+		go pumpFakeClock(clk, 10*time.Millisecond, 400, done)
 		entry := drive.Entry{ID: "0/file.bin", Name: "file.bin", Size: size}
 		data, err := source.Fetch(ctx, entry, drive.RangePlan{Offset: 0, Size: size, Streams: 1})
+		close(done)
 		if err != nil {
 			t.Fatalf("fetch: %v", err)
 		}

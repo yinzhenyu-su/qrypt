@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -92,90 +93,92 @@ func TestProgressiveRangeFailureBoundaries(t *testing.T) {
 	data := bytes.Repeat([]byte("x"), 3*ReadChunkSize+17)
 	for _, scenario := range []string{"short", "empty-tail", "idle", "overlong", "close", "cancel", "total"} {
 		t.Run(scenario, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			var offsets, sizes []int64
-			var got []byte
-			publishCount := 0
-			delivery := &rangeDelivery{emit: func(offset int64, b []byte) {
-				if offset != int64(len(got)) {
-					t.Errorf("duplicate or missing delivery: %d vs %d", offset, len(got))
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var offsets, sizes []int64
+				var got []byte
+				publishCount := 0
+				delivery := &rangeDelivery{emit: func(offset int64, b []byte) {
+					if offset != int64(len(got)) {
+						t.Errorf("duplicate or missing delivery: %d vs %d", offset, len(got))
+					}
+					got = append(got, b...)
+					publishCount++
+					if scenario == "cancel" {
+						cancel()
+					}
+				}}
+				terminal := errors.New("close failure")
+				open := func(attemptCtx context.Context, _ Entry, offset, size int64) (io.ReadCloser, error) {
+					offsets = append(offsets, offset)
+					sizes = append(sizes, size)
+					if len(offsets) == 1 {
+						switch scenario {
+						case "short":
+							return io.NopCloser(bytes.NewReader(data[:ReadChunkSize+123])), nil
+						case "empty-tail":
+							return io.NopCloser(bytes.NewReader(data[:ReadChunkSize])), nil
+						case "idle", "total":
+							return &gatedChunkBody{ctx: attemptCtx, head: bytes.NewReader(data[:ReadChunkSize]), tail: bytes.NewReader(nil), release: make(chan struct{})}, nil
+						case "overlong":
+							return io.NopCloser(bytes.NewReader(append(append([]byte{}, data...), 1))), nil
+						case "close":
+							return closeErrorChunkBody{Reader: bytes.NewReader(data), err: terminal}, nil
+						}
+					}
+					return io.NopCloser(bytes.NewReader(data[offset : offset+size])), nil
 				}
-				got = append(got, b...)
-				publishCount++
-				if scenario == "cancel" {
-					cancel()
+				// The bounds only have to separate the timeout kinds from the
+				// classification under test; they are not what makes an attempt
+				// slow. Keep them far from any plausible scheduling delay: a 20ms
+				// idle limit tripped while a race-enabled CI runner drained an
+				// in-memory body, which silently turned every scenario into an
+				// idle-replay case before the intended path ran. Only the two
+				// scenarios that wait for a bound to expire use the tighter
+				// 300ms limit (15x the flake that bit us); the rest stay wide
+				// because they never wait on the timer.
+				bounds := FetchTimeouts{Idle: time.Second, Total: 15 * time.Second}
+				switch scenario {
+				case "idle":
+					bounds = FetchTimeouts{Idle: 300 * time.Millisecond, Total: 15 * time.Second}
+				case "total":
+					// The gated body publishes its head immediately and then
+					// stalls, so a wide total budget still expires during the
+					// fetch while the prefix is already delivered.
+					bounds = FetchTimeouts{Idle: 15 * time.Second, Total: 300 * time.Millisecond}
 				}
-			}}
-			terminal := errors.New("close failure")
-			open := func(attemptCtx context.Context, _ Entry, offset, size int64) (io.ReadCloser, error) {
-				offsets = append(offsets, offset)
-				sizes = append(sizes, size)
-				if len(offsets) == 1 {
-					switch scenario {
-					case "short":
-						return io.NopCloser(bytes.NewReader(data[:ReadChunkSize+123])), nil
-					case "empty-tail":
-						return io.NopCloser(bytes.NewReader(data[:ReadChunkSize])), nil
-					case "idle", "total":
-						return &gatedChunkBody{ctx: attemptCtx, head: bytes.NewReader(data[:ReadChunkSize]), tail: bytes.NewReader(nil), release: make(chan struct{})}, nil
-					case "overlong":
-						return io.NopCloser(bytes.NewReader(append(append([]byte{}, data...), 1))), nil
-					case "close":
-						return closeErrorChunkBody{Reader: bytes.NewReader(data), err: terminal}, nil
+				_, extra, err := fetchRange(ctx, Entry{Size: int64(len(data))}, 0, int64(len(data)), bounds, open, delivery)
+				switch scenario {
+				case "short", "empty-tail", "idle":
+					if err != nil || !bytes.Equal(got, data) || len(offsets) != 2 || offsets[1] != ReadChunkSize || sizes[1] != int64(len(data)-ReadChunkSize) {
+						t.Fatalf("resume failed: err=%v offsets=%v sizes=%v bytes=%d extra=%v", err, offsets, sizes, len(got), extra)
+					}
+					if publishCount != 4 {
+						t.Fatalf("publish count=%d", publishCount)
+					}
+				default:
+					if err == nil {
+						t.Fatal("terminal failure accepted")
+					}
+					if len(offsets) != 1 {
+						t.Fatalf("terminal failure retried: %v", offsets)
+					}
+					want := 3 * ReadChunkSize
+					if scenario == "cancel" || scenario == "total" {
+						want = ReadChunkSize
+					}
+					if len(got) != want {
+						t.Fatalf("unsafe or missing prefix: %d want %d", len(got), want)
+					}
+					if scenario == "cancel" && !errors.Is(err, context.Canceled) {
+						t.Fatal(err)
+					}
+					if scenario == "total" && !IsFetchTimeout(err) {
+						t.Fatal(err)
 					}
 				}
-				return io.NopCloser(bytes.NewReader(data[offset : offset+size])), nil
-			}
-			// The bounds only have to separate the timeout kinds from the
-			// classification under test; they are not what makes an attempt
-			// slow. Keep them far from any plausible scheduling delay: a 20ms
-			// idle limit tripped while a race-enabled CI runner drained an
-			// in-memory body, which silently turned every scenario into an
-			// idle-replay case before the intended path ran. Only the two
-			// scenarios that wait for a bound to expire use the tighter
-			// 300ms limit (15x the flake that bit us); the rest stay wide
-			// because they never wait on the timer.
-			bounds := FetchTimeouts{Idle: time.Second, Total: 15 * time.Second}
-			switch scenario {
-			case "idle":
-				bounds = FetchTimeouts{Idle: 300 * time.Millisecond, Total: 15 * time.Second}
-			case "total":
-				// The gated body publishes its head immediately and then
-				// stalls, so a wide total budget still expires during the
-				// fetch while the prefix is already delivered.
-				bounds = FetchTimeouts{Idle: 15 * time.Second, Total: 300 * time.Millisecond}
-			}
-			_, extra, err := fetchRange(ctx, Entry{Size: int64(len(data))}, 0, int64(len(data)), bounds, open, delivery)
-			switch scenario {
-			case "short", "empty-tail", "idle":
-				if err != nil || !bytes.Equal(got, data) || len(offsets) != 2 || offsets[1] != ReadChunkSize || sizes[1] != int64(len(data)-ReadChunkSize) {
-					t.Fatalf("resume failed: err=%v offsets=%v sizes=%v bytes=%d extra=%v", err, offsets, sizes, len(got), extra)
-				}
-				if publishCount != 4 {
-					t.Fatalf("publish count=%d", publishCount)
-				}
-			default:
-				if err == nil {
-					t.Fatal("terminal failure accepted")
-				}
-				if len(offsets) != 1 {
-					t.Fatalf("terminal failure retried: %v", offsets)
-				}
-				want := 3 * ReadChunkSize
-				if scenario == "cancel" || scenario == "total" {
-					want = ReadChunkSize
-				}
-				if len(got) != want {
-					t.Fatalf("unsafe or missing prefix: %d want %d", len(got), want)
-				}
-				if scenario == "cancel" && !errors.Is(err, context.Canceled) {
-					t.Fatal(err)
-				}
-				if scenario == "total" && !IsFetchTimeout(err) {
-					t.Fatal(err)
-				}
-			}
+			})
 		})
 	}
 }

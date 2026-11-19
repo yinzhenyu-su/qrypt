@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
+
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -29,6 +31,19 @@ type Options struct {
 	Foreground         bool
 	ReadyTimeout       time.Duration
 	UnmountOnError     bool
+	// Clock is the time seam for the mount-readiness timeout. Production
+	// leaves it nil, which means the wall clock; a test that exercises the
+	// timeout path installs a testclock.Fake and advances it.
+	Clock testclock.Clock
+}
+
+// clockOrDefault returns the configured clock so production and tests share one
+// code path; a nil Clock means the wall clock.
+func (o Options) clockOrDefault() testclock.Clock {
+	if o.Clock != nil {
+		return o.Clock
+	}
+	return testclock.Real
 }
 
 type Session struct {
@@ -75,8 +90,9 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 	// its mount point directory: FspFileSystemPreflight reports an existing
 	// directory as STATUS_OBJECT_NAME_COLLISION ("mount point in use") and
 	// creates the directory itself at mount time.
+	clock := opts.clockOrDefault()
 	if runtime.GOOS != "windows" {
-		if err := ensureMountPoint(opts.MountPoint); err != nil {
+		if err := ensureMountPointWithClock(opts.MountPoint, clock); err != nil {
 			return nil, err
 		}
 	}
@@ -112,8 +128,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		// against a dead mount.
 		close(session.done)
 	}()
-	readyTimer := time.NewTimer(opts.ReadyTimeout)
-	defer readyTimer.Stop()
+	readyTimer := clock.After(opts.ReadyTimeout)
 
 	select {
 	case <-ctx.Done():
@@ -130,7 +145,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		return session, nil
 	case <-ad.ready:
 		return session, nil
-	case <-readyTimer.C:
+	case <-readyTimer:
 		return session, nil
 	}
 }

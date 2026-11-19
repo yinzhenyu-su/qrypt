@@ -52,7 +52,7 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 	}
 	// One deadline covers every attempt: an idle-stall replay or a status
 	// backoff may only spend what is left of the range's total budget.
-	deadline := time.Now().Add(timeouts.Total)
+	deadline := clockFrom(ctx).Now().Add(timeouts.Total)
 	var lastErr error
 	attempts := 0
 	timeoutCount := 0
@@ -64,7 +64,7 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 		return fetchStats{attempts: attempts, timeouts: timeoutCount, timeoutKind: timeoutKind, retryReason: retryReason}
 	}
 	for {
-		remaining := time.Until(deadline)
+		remaining := deadline.Sub(clockFrom(ctx).Now())
 		if remaining <= 0 {
 			break
 		}
@@ -113,7 +113,7 @@ func fetchRange(ctx context.Context, entry Entry, offset, size int64, timeouts F
 		statusRetries++
 		retryReason = reason
 		backoff := fetchStatusBackoff(statusRetries)
-		if backoff >= time.Until(deadline) {
+		if backoff >= deadline.Sub(clockFrom(ctx).Now()) {
 			// The wait would outlive the range's budget: reporting the provider
 			// failure is more useful than the timeout we would cause.
 			return nil, stats(), err
@@ -180,12 +180,10 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return nil
 	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-timer.C:
+	case <-wakeAfter(ctx, d):
 		return nil
 	}
 }
