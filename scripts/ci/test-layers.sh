@@ -116,31 +116,57 @@ qrypt_temp_root() {
   printf '%s\n' "${tmp//\\//}"
 }
 
-# mount_point_active <path> reports whether <path> is an active mount point.
-mount_point_active() {
-  local mount_point="$1"
-  if command -v mountpoint >/dev/null 2>&1; then
-    mountpoint -q "$mount_point" 2>/dev/null && return 0
+# canonical_path resolves the symlinks of <path>'s parent directory. The parent
+# is always a plain directory, unlike <path> itself, which may be a dead FUSE
+# mount; and on macOS /tmp and /var are symlinks, so mount output names the
+# resolved path (/private/var/...) rather than the path a test created.
+canonical_path() {
+  local path="$1" parent base resolved
+  parent=$(dirname "$path")
+  base=$(basename "$path")
+  if resolved=$(cd "$parent" 2>/dev/null && pwd -P); then
+    printf '%s/%s\n' "${resolved%/}" "$base"
+  else
+    printf '%s\n' "$path"
   fi
-  mount 2>/dev/null | grep -F " on $mount_point " >/dev/null 2>&1
+}
+
+# mount_point_active <path> reports whether <path> is an active mount point.
+# Both the literal and the canonical path are checked: the literal one is what
+# the caller created, the canonical one is what the platform's mount table
+# lists. macOS has no mountpoint(1), so the mount table is authoritative there.
+mount_point_active() {
+  local mount_point="$1" canonical
+  canonical=$(canonical_path "$mount_point")
+  if command -v mountpoint >/dev/null 2>&1; then
+    if mountpoint -q "$mount_point" 2>/dev/null || mountpoint -q "$canonical" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  mount 2>/dev/null | grep -F -e " on $mount_point " -e " on $canonical " >/dev/null 2>&1
 }
 
 # unmount_point force-detaches <path> and reports success. It is only used when
 # QRYPT_TEMP_FORCE_UNMOUNT=1: a live session's mount must never be detached by
 # an automatic sweep, because the running command would lose its filesystem.
 unmount_point() {
-  local mount_point="$1"
-  case "$(uname -s)" in
-    Darwin)
-      umount -f "$mount_point" 2>/dev/null ||
-        diskutil unmount force "$mount_point" >/dev/null 2>&1
-      ;;
-    *)
-      umount "$mount_point" 2>/dev/null ||
-        fusermount3 -u "$mount_point" 2>/dev/null ||
-        fusermount -u "$mount_point" 2>/dev/null
-      ;;
-  esac
+  local mount_point="$1" canonical
+  canonical=$(canonical_path "$mount_point")
+  detach_path() {
+    case "$(uname -s)" in
+      Darwin)
+        umount -f "$1" 2>/dev/null ||
+          diskutil unmount force "$1" >/dev/null 2>&1
+        ;;
+      *)
+        umount "$1" 2>/dev/null ||
+          fusermount3 -u "$1" 2>/dev/null ||
+          fusermount -u "$1" 2>/dev/null
+        ;;
+    esac
+  }
+  detach_path "$mount_point"
+  mount_point_active "$mount_point" && [ "$canonical" != "$mount_point" ] && detach_path "$canonical"
   ! mount_point_active "$mount_point"
 }
 
