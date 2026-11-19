@@ -3,6 +3,7 @@ package read
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 type readScopeKey struct {
@@ -19,7 +20,30 @@ type ReadScope struct {
 	jobs   sync.WaitGroup
 	mu     sync.Mutex
 	reason string
+	// busy counts speculative jobs in flight for this scope. It lets Quiesce
+	// report when no lookahead work is outstanding without waiting on a
+	// WaitGroup that a later Acquire may add to.
+	busy atomic.Int32
+	// onChange wakes Quiesce waiters when the last job finishes.
+	onChange func()
 }
+
+// beginJob registers one speculative job with the scope.
+func (s *ReadScope) beginJob() {
+	s.jobs.Add(1)
+	s.busy.Add(1)
+}
+
+// endJob retires one speculative job and wakes quiesce waiters on the last.
+func (s *ReadScope) endJob() {
+	if s.busy.Add(-1) == 0 && s.onChange != nil {
+		s.onChange()
+	}
+	s.jobs.Done()
+}
+
+// idle reports whether no speculative job is running in this scope.
+func (s *ReadScope) idle() bool { return s.busy.Load() == 0 }
 
 func (s *ReadScope) setReason(reason string) {
 	s.mu.Lock()
@@ -42,6 +66,23 @@ type ScopeRegistry struct {
 	byCache   map[string]map[readScopeKey]struct{}
 	bySession map[uint64]map[readScopeKey]struct{}
 	closed    bool
+	// onChange wakes Quiesce waiters when a scope's job count changes.
+	onChange func()
+}
+
+// idle reports whether every registered scope has retired its speculative jobs.
+func (r *ScopeRegistry) idle() bool {
+	if r == nil {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, scope := range r.scopes {
+		if !scope.idle() {
+			return false
+		}
+	}
+	return true
 }
 
 func newScopeRegistry() *ScopeRegistry {
@@ -63,12 +104,12 @@ func (r *ScopeRegistry) Acquire(ctx context.Context, cacheKey string) (*ReadScop
 		r.mu.Unlock()
 		scopeCtx, cancel := context.WithCancel(context.Background())
 		cancel()
-		return &ReadScope{ctx: scopeCtx, cancel: cancel}, func() {}
+		return &ReadScope{ctx: scopeCtx, cancel: cancel, onChange: r.onChange}, func() {}
 	}
 	scope := r.scopes[key]
 	if scope == nil {
 		scopeCtx, cancel := context.WithCancel(context.Background())
-		scope = &ReadScope{ctx: scopeCtx, cancel: cancel}
+		scope = &ReadScope{ctx: scopeCtx, cancel: cancel, onChange: r.onChange}
 		r.scopes[key] = scope
 		if cacheKey != "" {
 			addScopeIndex(r.byCache, cacheKey, key)

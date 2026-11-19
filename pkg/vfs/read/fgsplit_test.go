@@ -90,17 +90,11 @@ func callsInWindow(calls [][2]int64, firstChunk int64, chunks int64) int {
 // threshold restoration in cleanup cannot race with a running fetch.
 func waitWindowIdle(t *testing.T, reader *Reader) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitState(t, reader.state, "window fetch to finish", func() bool {
 		reader.state.windows.mu.Lock()
-		active := len(reader.state.windows.loads)
-		reader.state.windows.mu.Unlock()
-		if active == 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("window fetch did not finish")
+		defer reader.state.windows.mu.Unlock()
+		return len(reader.state.windows.loads) == 0
+	})
 }
 
 func setSlowStreak(t *testing.T, reader *Reader, windows int) {

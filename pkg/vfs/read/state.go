@@ -66,7 +66,7 @@ type State struct {
 // initialization stay in one place. cache may be nil (nil-safe: read
 // paths fall back to no caching).
 func NewState(cache Cache) *State {
-	return &State{
+	s := &State{
 		cache:     cache,
 		history:   newHistoryState(),
 		scheduler: NewScheduler(DefaultSchedulerConfig()),
@@ -75,6 +75,8 @@ func NewState(cache Cache) *State {
 		windows:   newWindowState(),
 		scopes:    newScopeRegistry(),
 	}
+	s.scopes.onChange = s.quiesceSignal
+	return s
 }
 
 // Cache returns the durable chunk store (nil when disabled).

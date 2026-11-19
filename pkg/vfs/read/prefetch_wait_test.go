@@ -34,17 +34,18 @@ func wideLookaheadProfile() drive.ReadPolicy {
 // foreground's single chunk, which is the window these tests hold open.
 func waitForWideLookahead(t *testing.T, r *stagedReader, offset int64) stagedCall {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for {
 		for _, call := range r.host.recorded() {
 			if call.Prefetch && call.Size > ChunkSize && call.Offset == offset {
 				return call
 			}
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-r.host.changed:
+		case <-deadline:
 			t.Fatalf("no wide lookahead at %d issued: %+v", offset, r.host.recorded())
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 

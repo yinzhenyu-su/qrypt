@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"testing"
-	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -172,7 +171,6 @@ func TestPrefetchFailureWaitsForTheNextRead(t *testing.T) {
 	r.reader.schedulePrefetch(ctx, r.host.entry, 2, 1, true, plan)
 	r.host.waitCall(t, 1)
 	waitPrefetchIdle(t, r)
-	time.Sleep(10 * time.Millisecond)
 	if got := r.host.callCount(); got != 1 {
 		t.Fatalf("failure retried without a read: %d calls", got)
 	}

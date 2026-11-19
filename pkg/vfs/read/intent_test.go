@@ -243,7 +243,8 @@ func TestReadStreamWithoutReadPrefetchDoesNotPrefetch(t *testing.T) {
 		data:     data,
 		cacheKey: "cache",
 	}
-	reader := newTestReader(testReaderDeps{Host: host, State: NewState(nil), Profile: drive.DefaultReadPolicy()})
+	state := NewState(nil)
+	reader := newTestReader(testReaderDeps{Host: host, State: state, Profile: drive.DefaultReadPolicy()})
 
 	ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentBulk))
 	rc, err := reader.ReadStream(ctx, "/file")
@@ -253,7 +254,10 @@ func TestReadStreamWithoutReadPrefetchDoesNotPrefetch(t *testing.T) {
 	if _, err := rc.Read(make([]byte, ChunkSize)); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	waitState(t, state, "stream read to settle", func() bool {
+		windows, prefetches, _ := state.RuntimeStats()
+		return windows == 0 && prefetches == 0
+	})
 	if got := host.readCount(); got != 1 {
 		t.Fatalf("driver reads = %d, want 1 (prefetch disabled)", got)
 	}

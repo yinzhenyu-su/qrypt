@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -62,28 +63,30 @@ func rangeEntry() drive.Entry {
 // after a backoff instead of failing the read, and the replay is visible in the
 // window extras.
 func TestReadWindowRangeReplaysTransientStatus(t *testing.T) {
-	backend := &scriptedReadBackend{failures: []error{providerStatus(t, http.StatusInternalServerError)}}
-	started := time.Now()
-	data, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
-	if err != nil {
-		t.Fatalf("read failed despite a transient 500: %v", err)
-	}
-	if len(data) != ChunkSize {
-		t.Fatalf("bytes = %d, want %d", len(data), ChunkSize)
-	}
-	if backend.calls != 2 {
-		t.Fatalf("driver calls = %d, want the failed attempt plus one replay", backend.calls)
-	}
-	if got := extra["fetch_attempts"]; got != 2 {
-		t.Fatalf("fetch_attempts = %v, want 2", got)
-	}
-	if got := extra["fetch_retry_reason"]; got != "status_5xx" {
-		t.Fatalf("fetch_retry_reason = %v, want status_5xx", got)
-	}
-	// The replay must wait, not hammer the provider that just failed.
-	if elapsed := time.Since(started); elapsed < (200*time.Millisecond)*3/4 {
-		t.Fatalf("replayed after %s, want at least ~%s", elapsed, (200 * time.Millisecond))
-	}
+	synctest.Test(t, func(t *testing.T) {
+		backend := &scriptedReadBackend{failures: []error{providerStatus(t, http.StatusInternalServerError)}}
+		started := time.Now()
+		data, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
+		if err != nil {
+			t.Fatalf("read failed despite a transient 500: %v", err)
+		}
+		if len(data) != ChunkSize {
+			t.Fatalf("bytes = %d, want %d", len(data), ChunkSize)
+		}
+		if backend.calls != 2 {
+			t.Fatalf("driver calls = %d, want the failed attempt plus one replay", backend.calls)
+		}
+		if got := extra["fetch_attempts"]; got != 2 {
+			t.Fatalf("fetch_attempts = %v, want 2", got)
+		}
+		if got := extra["fetch_retry_reason"]; got != "status_5xx" {
+			t.Fatalf("fetch_retry_reason = %v, want status_5xx", got)
+		}
+		// The replay must wait, not hammer the provider that just failed.
+		if elapsed := time.Since(started); elapsed < (200*time.Millisecond)*3/4 {
+			t.Fatalf("replayed after %s, want at least ~%s", elapsed, (200 * time.Millisecond))
+		}
+	})
 }
 
 // shortReadBackend serves the requested range but ends the body early,
@@ -147,17 +150,19 @@ func TestReadWindowRangeStopsAfterTruncatedBodyBudget(t *testing.T) {
 // layer adds no window-level retry on top, so the driver sees exactly those
 // attempts and any retry remains in one place.
 func TestStatusRetryExhaustionIsOwnedByDrive(t *testing.T) {
-	backend := &scriptedReadBackend{failures: []error{
-		providerStatus(t, http.StatusInternalServerError),
-		providerStatus(t, http.StatusBadGateway),
-		providerStatus(t, http.StatusServiceUnavailable),
-	}}
-	if _, _, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err == nil {
-		t.Fatal("read succeeded despite three 5xx answers")
-	}
-	if backend.calls != 3 {
-		t.Fatalf("driver calls = %d, want the three drive-layer status attempts", backend.calls)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		backend := &scriptedReadBackend{failures: []error{
+			providerStatus(t, http.StatusInternalServerError),
+			providerStatus(t, http.StatusBadGateway),
+			providerStatus(t, http.StatusServiceUnavailable),
+		}}
+		if _, _, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err == nil {
+			t.Fatal("read succeeded despite three 5xx answers")
+		}
+		if backend.calls != 3 {
+			t.Fatalf("driver calls = %d, want the three drive-layer status attempts", backend.calls)
+		}
+	})
 }
 
 // bodyErrorBackend fails the first body read like an aborted HTTP/2 stream or
@@ -210,40 +215,44 @@ func TestReadWindowRangeReplaysClosedBody(t *testing.T) {
 // keeps the fast failure path - bounded attempts, the provider error (not a
 // timeout we caused), and no unbounded retry loop.
 func TestReadWindowRangeStopsAfterStatusBudget(t *testing.T) {
-	status := providerStatus(t, http.StatusInternalServerError)
-	backend := &scriptedReadBackend{failures: []error{status, status, status, status, status}}
-	_, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
-	if err == nil {
-		t.Fatal("read succeeded despite a persistent 500")
-	}
-	if drive.IsFetchTimeout(err) {
-		t.Fatalf("error = %v, want the provider error, not a fetch timeout", err)
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Fatalf("error = %v, want it to carry the provider status", err)
-	}
-	if backend.calls != 3 {
-		t.Fatalf("driver calls = %d, want %d", backend.calls, 3)
-	}
-	if got := extra["fetch_attempts"]; got != 3 {
-		t.Fatalf("fetch_attempts = %v, want 3", got)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		status := providerStatus(t, http.StatusInternalServerError)
+		backend := &scriptedReadBackend{failures: []error{status, status, status, status, status}}
+		_, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
+		if err == nil {
+			t.Fatal("read succeeded despite a persistent 500")
+		}
+		if drive.IsFetchTimeout(err) {
+			t.Fatalf("error = %v, want the provider error, not a fetch timeout", err)
+		}
+		if !strings.Contains(err.Error(), "500") {
+			t.Fatalf("error = %v, want it to carry the provider status", err)
+		}
+		if backend.calls != 3 {
+			t.Fatalf("driver calls = %d, want %d", backend.calls, 3)
+		}
+		if got := extra["fetch_attempts"]; got != 3 {
+			t.Fatalf("fetch_attempts = %v, want 3", got)
+		}
+	})
 }
 
 // TestReadWindowRangeReplaysRateLimit: 429 reaches the read path as
 // drive.ErrRateLimit and is replayed with the rate-limit reason.
 func TestReadWindowRangeReplaysRateLimit(t *testing.T) {
-	backend := &scriptedReadBackend{failures: []error{
-		fmt.Errorf("%w: 429 Too Many Requests", drive.ErrRateLimit),
-	}}
-	if _, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err != nil {
-		t.Fatalf("read failed despite a transient 429: %v", err)
-	} else if got := extra["fetch_retry_reason"]; got != "rate_limited" {
-		t.Fatalf("fetch_retry_reason = %v, want rate_limited", got)
-	}
-	if backend.calls != 2 {
-		t.Fatalf("driver calls = %d, want the failed attempt plus one replay", backend.calls)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		backend := &scriptedReadBackend{failures: []error{
+			fmt.Errorf("%w: 429 Too Many Requests", drive.ErrRateLimit),
+		}}
+		if _, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err != nil {
+			t.Fatalf("read failed despite a transient 429: %v", err)
+		} else if got := extra["fetch_retry_reason"]; got != "rate_limited" {
+			t.Fatalf("fetch_retry_reason = %v, want rate_limited", got)
+		}
+		if backend.calls != 2 {
+			t.Fatalf("driver calls = %d, want the failed attempt plus one replay", backend.calls)
+		}
+	})
 }
 
 // TestReadWindowRangeDoesNotReplayPermanentFailures: classified failures keep
@@ -276,20 +285,22 @@ func TestReadWindowRangeDoesNotReplayPermanentFailures(t *testing.T) {
 // TestReadWindowRangeStatusBackoffHonorsContext: the backoff never outlives the
 // caller's context, and the caller's cancellation is what surfaces.
 func TestReadWindowRangeStatusBackoffHonorsContext(t *testing.T) {
-	ctx, cancel := context.WithTimeout(rangeRetryContext(t), 50*time.Millisecond)
-	defer cancel()
-	backend := &scriptedReadBackend{failures: []error{providerStatus(t, http.StatusInternalServerError)}}
-	started := time.Now()
-	_, _, err := testReadRange(ctx, rangeEntry(), 0, 0, backend)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want the caller's deadline", err)
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("read returned after %s, want it bounded by the caller's context", elapsed)
-	}
-	if backend.calls != 1 {
-		t.Fatalf("driver calls = %d, want 1", backend.calls)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(rangeRetryContext(t), 50*time.Millisecond)
+		defer cancel()
+		backend := &scriptedReadBackend{failures: []error{providerStatus(t, http.StatusInternalServerError)}}
+		started := time.Now()
+		_, _, err := testReadRange(ctx, rangeEntry(), 0, 0, backend)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want the caller's deadline", err)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("read returned after %s, want it bounded by the caller's context", elapsed)
+		}
+		if backend.calls != 1 {
+			t.Fatalf("driver calls = %d, want 1", backend.calls)
+		}
+	})
 }
 
 // TestFetchStatusBackoffDoublesAndCaps pins the backoff sequence so a future

@@ -79,7 +79,7 @@ func TestParallelPolicyMatchesDirectRead(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			base := drive.NewFakeDriver()
-			content := make([]byte, 16<<20)
+			content := make([]byte, 8<<20)
 			if err := base.Seed(map[string]string{"file.bin": string(content)}); err != nil {
 				t.Fatalf("Seed: %v", err)
 			}

@@ -84,10 +84,9 @@ func TestForegroundConsumesPrefetchBlockWhileTailBlocked(t *testing.T) {
 			break
 		}
 		select {
+		case <-r.state.quiesceChanged():
 		case <-deadline:
 			t.Fatal("foreground readers did not join live prefix")
-		default:
-			time.Sleep(time.Millisecond)
 		}
 	}
 	close(head)

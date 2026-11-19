@@ -214,7 +214,7 @@ func TestScenarioFakeDriverPrefetchCancelsOnInvalidate(t *testing.T) {
 	r.host.waitCall(t, 2)
 
 	r.state.InvalidateFile("cache")
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for {
 		for _, call := range r.host.recorded() {
 			if call.Offset == ChunkSize && call.Err != nil {
@@ -224,9 +224,10 @@ func TestScenarioFakeDriverPrefetchCancelsOnInvalidate(t *testing.T) {
 				return
 			}
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-r.host.changed:
+		case <-deadline:
 			t.Fatal("invalidate did not cancel the prefetch body")
 		}
-		time.Sleep(time.Millisecond)
 	}
 }

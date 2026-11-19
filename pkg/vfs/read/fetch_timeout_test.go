@@ -237,17 +237,10 @@ func TestTimedOutReplayExhaustionFailsWindow(t *testing.T) {
 
 func waitPrefetchDone(t *testing.T, state *State) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	waitState(t, state, "prefetch to finish", func() bool {
 		windows, prefetches, _ := state.RuntimeStats()
-		if windows == 0 && prefetches == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("prefetch did not finish: windows=%d prefetches=%d", windows, prefetches)
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return windows == 0 && prefetches == 0
+	})
 }
 
 func TestPrefetchTimeoutIsSilentAndCounted(t *testing.T) {

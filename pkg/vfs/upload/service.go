@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -414,6 +415,10 @@ type ServiceOptions struct {
 	// Scheduler is an optional callback scheduling test seam. When nil,
 	// production workers pull from the journal-backed deadline index.
 	Scheduler UploadScheduler
+	// Clock is the time seam for debounce deadlines and the worker wait loop.
+	// Production leaves it nil; NewService then uses the wall clock, so
+	// behavior is identical to the time package.
+	Clock testclock.Clock
 }
 
 // --- service ---
@@ -439,6 +444,7 @@ type Service struct {
 	delay       time.Duration
 	workers     int
 	done        chan struct{}
+	clock       testclock.Clock
 }
 
 type scheduledUpload struct {
@@ -449,6 +455,10 @@ type scheduledUpload struct {
 
 // NewService builds the upload domain state together.
 func NewService(opts ServiceOptions) *Service {
+	clock := opts.Clock
+	if clock == nil {
+		clock = testclock.Real
+	}
 	return &Service{
 		store:     opts.Store,
 		queue:     make(chan PendingUpload, 128),
@@ -461,6 +471,7 @@ func NewService(opts ServiceOptions) *Service {
 		delay:     opts.UploadDelay,
 		workers:   opts.UploadWorkers,
 		done:      opts.Done,
+		clock:     clock,
 	}
 }
 
@@ -468,7 +479,17 @@ func NewService(opts ServiceOptions) *Service {
 
 func (s *Service) PendingByID(id string) (PendingUpload, bool) { return s.store.PendingByID(id) }
 func (s *Service) PendingUploads() []PendingUpload             { return s.store.PendingUploads() }
-func (s *Service) RemoveUpload(path string) error              { return s.store.RemoveUpload(path) }
+func (s *Service) RemoveUpload(path string) error {
+	err := s.store.RemoveUpload(path)
+	if err == nil {
+		// A store-only removal still changes the idle condition that WaitIdle
+		// observes, so it must broadcast like every other state transition.
+		s.scheduledMu.Lock()
+		s.notifyLocked()
+		s.scheduledMu.Unlock()
+	}
+	return err
+}
 
 // --- hash tracker ---
 
@@ -604,7 +625,10 @@ func (s *Service) QuietDelay(p PendingUpload) time.Duration {
 		return 0
 	}
 	if !p.AppliedAt.IsZero() {
-		return remainingWindow(qw, time.Since(p.AppliedAt))
+		// Measured on the injected clock: production Real is time.Now and
+		// keeps the monotonic reading AppliedAt carries, while a fake clock
+		// lets a test cross the window without sleeping.
+		return remainingWindow(qw, s.clock.Now().Sub(p.AppliedAt))
 	}
 	if p.UpdatedAt <= 0 {
 		return 0
@@ -709,7 +733,7 @@ func (s *Service) CancelChildUploads(dir string) {
 }
 
 func (s *Service) scheduleUpload(p PendingUpload, delay time.Duration) {
-	task := &scheduledUpload{pending: p, deadline: time.Now().Add(delay), index: -1}
+	task := &scheduledUpload{pending: p, deadline: s.clock.Now().Add(delay), index: -1}
 	s.scheduledMu.Lock()
 	if s.closed {
 		s.scheduledMu.Unlock()
@@ -788,7 +812,7 @@ func (s *Service) Receive(ctx context.Context) (PendingUpload, bool) {
 			s.scheduledMu.Unlock()
 			return PendingUpload{}, false
 		}
-		now := time.Now()
+		now := s.clock.Now()
 		var selected string
 		var earliest time.Time
 		if len(s.deadlines) > 0 {
@@ -816,24 +840,18 @@ func (s *Service) Receive(ctx context.Context) (PendingUpload, bool) {
 		wake := s.wake
 		done := s.done
 		s.scheduledMu.Unlock()
-		var timer *time.Timer
+		// The deadline wait goes through the clock seam: a fake clock lets a
+		// test make a pending debounce due without sleeping.
 		var due <-chan time.Time
 		if !earliest.IsZero() {
-			timer = time.NewTimer(time.Until(earliest))
-			due = timer.C
+			due = s.clock.After(earliest.Sub(now))
 		}
 		select {
 		case <-ctx.Done():
 		case <-done:
-			if timer != nil {
-				timer.Stop()
-			}
 			return PendingUpload{}, false
 		case <-wake:
 		case <-due:
-		}
-		if timer != nil {
-			timer.Stop()
 		}
 	}
 }

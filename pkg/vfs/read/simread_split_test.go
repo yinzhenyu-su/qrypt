@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -92,63 +93,65 @@ func assertRangeTiling(t *testing.T, requests []simread.Request, start, end int6
 // rate stays at the per-connection rate and the split is not dropped again by
 // the exit threshold.
 func TestSimAdaptiveForegroundSplitUnderBandwidth(t *testing.T) {
-	const chunkCount = 3
-	reader, sim, content := newSimSplitReader(t, chunkCount, simread.Config{
-		TimeScale:       2,
-		RateBytesPerSec: 150 << 10,
-	})
+	synctest.Test(t, func(t *testing.T) {
+		const chunkCount = 3
+		reader, sim, content := newSimSplitReader(t, chunkCount, simread.Config{
+			TimeScale:       2,
+			RateBytesPerSec: 150 << 10,
+		})
 
-	start := time.Now()
-	first := readChunkAt(t, reader, 0)
-	single := time.Since(start)
-	if !bytes.Equal(first, content[:ChunkSize]) {
-		t.Fatalf("first chunk content mismatch")
-	}
-	if single < time.Second/2 {
-		t.Fatalf("first chunk read in %s, expected an unthrottled single stream to be paced", single)
-	}
-	if n := len(sim.Requests()); n != 1 {
-		t.Fatalf("first window opened %d ranges (%+v), want exactly one single-stream range", n, sim.Requests())
-	}
-	if req := sim.Requests()[0]; req.Size != ChunkSize {
-		t.Fatalf("first window range = [%d,%d), want one %d-byte chunk", req.Offset, req.Offset+req.Size, ChunkSize)
-	}
-
-	start = time.Now()
-	second := readChunkAt(t, reader, 1)
-	third := readChunkAt(t, reader, 2)
-	split := time.Since(start)
-	if !bytes.Equal(second, content[ChunkSize:2*ChunkSize]) {
-		t.Fatalf("second chunk content mismatch")
-	}
-	if !bytes.Equal(third, content[2*ChunkSize:]) {
-		t.Fatalf("third chunk content mismatch")
-	}
-
-	requests := sim.Requests()
-	assertRangeTiling(t, requests, ChunkSize, int64(chunkCount)*ChunkSize)
-	parts := requests[1:]
-	if len(parts) != 2*foregroundSplitStreams {
-		t.Fatalf("split windows opened %d ranges, want %d (4 parts per chunk): %+v",
-			len(parts), 2*foregroundSplitStreams, requests)
-	}
-	wantPart := ChunkSize / int64(foregroundSplitStreams)
-	for _, part := range parts {
-		if part.Size != wantPart {
-			t.Fatalf("split part = [%d,%d), want %d-byte parts: %+v", part.Offset, part.Offset+part.Size, wantPart, parts)
+		start := time.Now()
+		first := readChunkAt(t, reader, 0)
+		single := time.Since(start)
+		if !bytes.Equal(first, content[:ChunkSize]) {
+			t.Fatalf("first chunk content mismatch")
 		}
-	}
+		if single < time.Second/2 {
+			t.Fatalf("first chunk read in %s, expected an unthrottled single stream to be paced", single)
+		}
+		if n := len(sim.Requests()); n != 1 {
+			t.Fatalf("first window opened %d ranges (%+v), want exactly one single-stream range", n, sim.Requests())
+		}
+		if req := sim.Requests()[0]; req.Size != ChunkSize {
+			t.Fatalf("first window range = [%d,%d), want one %d-byte chunk", req.Offset, req.Offset+req.Size, ChunkSize)
+		}
 
-	singleRate := float64(ChunkSize) / single.Seconds()
-	splitRate := float64(2*ChunkSize) / split.Seconds()
-	ratio := splitRate / singleRate
-	if ratio < 1.5 {
-		t.Fatalf("split aggregate = %.0f B/s vs single stream %.0f B/s (%.2fx); want >= 1.5x",
-			splitRate, singleRate, ratio)
-	}
-	if stats := sim.Stats(); stats.MaxConcurrent < 2 {
-		t.Fatalf("peak concurrent ranges = %d, want the split window's parts in flight together", stats.MaxConcurrent)
-	}
-	t.Logf("single-stream %.0f B/s, split aggregate %.0f B/s (%.2fx), peak concurrent %d",
-		singleRate, splitRate, ratio, sim.Stats().MaxConcurrent)
+		start = time.Now()
+		second := readChunkAt(t, reader, 1)
+		third := readChunkAt(t, reader, 2)
+		split := time.Since(start)
+		if !bytes.Equal(second, content[ChunkSize:2*ChunkSize]) {
+			t.Fatalf("second chunk content mismatch")
+		}
+		if !bytes.Equal(third, content[2*ChunkSize:]) {
+			t.Fatalf("third chunk content mismatch")
+		}
+
+		requests := sim.Requests()
+		assertRangeTiling(t, requests, ChunkSize, int64(chunkCount)*ChunkSize)
+		parts := requests[1:]
+		if len(parts) != 2*foregroundSplitStreams {
+			t.Fatalf("split windows opened %d ranges, want %d (4 parts per chunk): %+v",
+				len(parts), 2*foregroundSplitStreams, requests)
+		}
+		wantPart := ChunkSize / int64(foregroundSplitStreams)
+		for _, part := range parts {
+			if part.Size != wantPart {
+				t.Fatalf("split part = [%d,%d), want %d-byte parts: %+v", part.Offset, part.Offset+part.Size, wantPart, parts)
+			}
+		}
+
+		singleRate := float64(ChunkSize) / single.Seconds()
+		splitRate := float64(2*ChunkSize) / split.Seconds()
+		ratio := splitRate / singleRate
+		if ratio < 1.5 {
+			t.Fatalf("split aggregate = %.0f B/s vs single stream %.0f B/s (%.2fx); want >= 1.5x",
+				splitRate, singleRate, ratio)
+		}
+		if stats := sim.Stats(); stats.MaxConcurrent < 2 {
+			t.Fatalf("peak concurrent ranges = %d, want the split window's parts in flight together", stats.MaxConcurrent)
+		}
+		t.Logf("single-stream %.0f B/s, split aggregate %.0f B/s (%.2fx), peak concurrent %d",
+			singleRate, splitRate, ratio, sim.Stats().MaxConcurrent)
+	})
 }

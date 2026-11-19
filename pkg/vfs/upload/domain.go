@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -25,6 +26,9 @@ type DomainOptions struct {
 	SchedulingEnabled     func() bool
 	SourceUploadSupported bool
 	HealthResult          func(string, error)
+	// Clock is the time seam for debounce deadlines and the worker wait loop.
+	// Production leaves it nil, which means the wall clock.
+	Clock testclock.Clock
 }
 
 // Domain is the single owner of upload state and transitions for one mount.
@@ -44,6 +48,7 @@ func NewDomain(opts DomainOptions) *Domain {
 		Store:         opts.Store,
 		Done:          opts.Done,
 		HashOps:       hashes,
+		Clock:         opts.Clock,
 	})
 	domain := &Domain{
 		service:               service,
@@ -68,6 +73,14 @@ func NewDomain(opts DomainOptions) *Domain {
 func (d *Domain) schedulingAllowed() bool {
 	return d.schedulingEnabled == nil || d.schedulingEnabled()
 }
+
+// Idle reports whether the upload engine has drained (no queued, scheduled,
+// claimed, in-flight or journal-pending work).
+func (d *Domain) Idle() bool { return d.service.Idle() }
+
+// WaitIdle blocks until the upload engine has drained or ctx is done. It is
+// the quiescence primitive tests use instead of polling for an empty journal.
+func (d *Domain) WaitIdle(ctx context.Context) error { return d.service.WaitIdle(ctx) }
 
 func (d *Domain) ProcessPending(ctx context.Context, pending PendingUpload) error {
 	return d.service.ProcessPending(ctx, pending, ProcessOptions{

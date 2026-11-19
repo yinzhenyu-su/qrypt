@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -40,6 +41,9 @@ type Reader struct {
 	fgMu       sync.Mutex
 	fgSplit    map[string]*fgSplitState
 	fgLastSlow time.Time
+	// inflight counts foreground Read calls so Quiesce can wait for them.
+	inflight atomic.Int32
+
 	// Adaptive split knobs live on the reader so tests can tune one reader
 	// without mutating shared package state.
 	fgEnterBytesPerSec int64
@@ -210,6 +214,14 @@ func (r *Reader) pendingUpload(path string) (vfstypes.PendingUpload, bool, error
 // from staging when present and otherwise reading remote chunks through
 // the cache window machinery.
 func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc io.ReadCloser, err error) {
+	if r.inflight.Add(1) == 1 {
+		r.state.quiesceSignal()
+	}
+	defer func() {
+		if r.inflight.Add(-1) == 0 {
+			r.state.quiesceSignal()
+		}
+	}()
 	silent := silentReadEvents(ctx)
 	if !silent {
 		defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
@@ -1443,9 +1455,9 @@ func (r *Reader) startPrefetchWindow(ctx context.Context, entry drive.Entry, sta
 		}
 	})
 
-	scope.jobs.Add(1)
+	scope.beginJob()
 	go func() {
-		defer scope.jobs.Done()
+		defer scope.endJob()
 		defer job.Close()
 		defer releaseScope()
 		defer stopScope()

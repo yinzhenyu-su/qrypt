@@ -657,7 +657,8 @@ func TestCredentialLoginTimeoutAfterProviderDoesNotSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
-	time.Sleep(time.Millisecond)
+	// Wait for the deadline to fire instead of sleeping a millisecond.
+	<-ctx.Done()
 	rt := testRuntime(cfg, path)
 	rt.ShutdownContextFn = func(*cobra.Command) (context.Context, func()) { return ctx, cancel }
 

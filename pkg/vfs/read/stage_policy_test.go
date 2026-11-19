@@ -105,7 +105,10 @@ func TestStageZeroDepthDisablesLookahead(t *testing.T) {
 	r.read(t, sessionContext(1, 1), 0, ChunkSize)
 	r.read(t, sessionContext(1, 2), ChunkSize, ChunkSize)
 	r.read(t, sessionContext(1, 3), 2*ChunkSize, ChunkSize)
-	time.Sleep(100 * time.Millisecond)
+	waitState(t, r.state, "reads to settle", func() bool {
+		windows, prefetches, _ := r.state.RuntimeStats()
+		return windows == 0 && prefetches == 0
+	})
 	for _, call := range r.host.recorded() {
 		if call.Prefetch {
 			t.Fatalf("lookahead ran despite depth zero: %+v", call)
@@ -161,7 +164,10 @@ func TestStageDepthBoundsLookahead(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("lookahead calls = %d, want 3: %+v", len(calls), calls)
 		}
-		time.Sleep(time.Millisecond)
+		select {
+		case <-r.host.changed:
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 
@@ -169,7 +175,10 @@ func TestStagePrefetchDisabledBeatsSuggestion(t *testing.T) {
 	r := newStagedReaderWithProfile(t, 8<<20, stageProfile())
 	ctx := WithoutReadPrefetch(sessionContext(1, 1))
 	r.read(t, ctx, 0, ChunkSize)
-	time.Sleep(50 * time.Millisecond)
+	waitState(t, r.state, "read to settle", func() bool {
+		windows, prefetches, _ := r.state.RuntimeStats()
+		return windows == 0 && prefetches == 0
+	})
 	if calls := r.host.recorded(); len(calls) != 1 {
 		t.Fatalf("ranges = %+v, want only the target read", calls)
 	}
@@ -181,6 +190,7 @@ func TestStageSuggestionKeepsCacheAdmission(t *testing.T) {
 		entry:    drive.Entry{ID: "0/file.bin", Size: 8 << 20, ModTime: time.Unix(1700000000, 0)},
 		data:     stagedContent(8 << 20),
 		cacheKey: "cache",
+		changed:  make(chan struct{}, 1),
 	}
 	state := NewState(cache)
 	t.Cleanup(func() { _ = state.Close() })
@@ -242,6 +252,9 @@ func TestStageSequentialDepthTwoKeepsTwoLookaheads(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("lookaheads = %d, want two: %+v", len(lookaheads), r.host.recorded())
 		}
-		time.Sleep(time.Millisecond)
+		select {
+		case <-r.host.changed:
+		case <-time.After(time.Millisecond):
+		}
 	}
 }

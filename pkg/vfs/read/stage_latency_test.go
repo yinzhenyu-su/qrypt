@@ -60,6 +60,19 @@ type stagedHost struct {
 	// plan is the last read plan carried into a driver Range, so tests can
 	// assert the resolved stage without reaching into the reader.
 	plan ReadPlan
+	// changed wakes waiters after a call is recorded or finishes. Tests wait on
+	// it instead of polling so async prefetch/session work resolves as soon as
+	// it happens; the buffer keeps a signal from being lost between a failed
+	// condition check and the select.
+	changed chan struct{}
+}
+
+// signalChanged wakes a waiter without blocking when no one is listening.
+func (h *stagedHost) signalChanged() {
+	select {
+	case h.changed <- struct{}{}:
+	default:
+	}
 }
 
 func (h *stagedHost) Resolve(context.Context, string) (drive.Entry, error) { return h.entry, nil }
@@ -91,11 +104,13 @@ func (h *stagedHost) DriverRead(ctx context.Context, _ drive.Entry, offset, size
 		h.maxActive = h.active
 	}
 	h.mu.Unlock()
+	h.signalChanged()
 
 	done := func() {
 		h.mu.Lock()
 		h.active--
 		h.mu.Unlock()
+		h.signalChanged()
 	}
 	if release != nil {
 		select {
@@ -140,6 +155,7 @@ func (h *stagedHost) markCallError(index int, err error) {
 		h.calls[index].Err = err
 	}
 	h.mu.Unlock()
+	h.signalChanged()
 }
 
 func (h *stagedHost) callCount() int {
@@ -196,29 +212,31 @@ func (h *stagedHost) rangesOverlapping(start, end int64) []stagedCall {
 // synchronously after the foreground read returns.
 func (h *stagedHost) waitRangeSize(t *testing.T, size int64) stagedCall {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for {
 		for _, call := range h.recorded() {
 			if call.Size == size {
 				return call
 			}
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-h.changed:
+		case <-deadline:
 			t.Fatalf("no %d-byte lookahead Range issued: %+v", size, h.recorded())
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
 // waitCall blocks until at least n Range requests have been issued.
 func (h *stagedHost) waitCall(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for h.callCount() < n {
-		if time.Now().After(deadline) {
+		select {
+		case <-h.changed:
+		case <-deadline:
 			t.Fatalf("driver ranges = %d, want at least %d", h.callCount(), n)
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -228,10 +246,21 @@ type stagedReader struct {
 	host   *stagedHost
 }
 
+// stagedPattern is tiled into fixture buffers. A tiled pattern keeps fixture
+// construction cheap under the race detector; the bytes only have to be
+// deterministic for the bytes served by stagedHost to match the fixture.
+var stagedPattern = func() []byte {
+	p := make([]byte, 4096)
+	for i := range p {
+		p[i] = byte(i*7 + i/251)
+	}
+	return p
+}()
+
 func stagedContent(size int) []byte {
 	data := make([]byte, size)
-	for i := range data {
-		data[i] = byte(i*7 + i/251)
+	for off := 0; off < size; off += len(stagedPattern) {
+		copy(data[off:], stagedPattern)
 	}
 	return data
 }
@@ -247,6 +276,7 @@ func newStagedReaderWithProfile(t *testing.T, size int, profile drive.ReadPolicy
 		entry:    drive.Entry{ID: "0/file.bin", Name: "file.bin", Size: int64(size), ModTime: time.Unix(1700000000, 0)},
 		data:     stagedContent(size),
 		cacheKey: "cache",
+		changed:  make(chan struct{}, 1),
 	}
 	state := NewState(nil)
 	reader := newTestReader(testReaderDeps{Host: host, State: state, Profile: profile})
@@ -413,7 +443,7 @@ func TestStageSessionReleaseCancelsOnlyItsPrefetch(t *testing.T) {
 	// closed, so only cancellation can release the blocked Range.
 	r.state.cancelScopesBySession(1, "seek")
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for {
 		r.host.mu.Lock()
 		active := r.host.active
@@ -421,9 +451,10 @@ func TestStageSessionReleaseCancelsOnlyItsPrefetch(t *testing.T) {
 		if active == 0 {
 			return
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-r.host.changed:
+		case <-deadline:
 			t.Fatalf("gated prefetch still active (%d) after session cancel", active)
 		}
-		time.Sleep(time.Millisecond)
 	}
 }

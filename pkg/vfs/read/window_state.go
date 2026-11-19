@@ -115,6 +115,9 @@ func (w *windowLoad) chunkAvailable(index int64) bool {
 type windowState struct {
 	mu    sync.Mutex
 	loads map[string]*windowLoad
+	// changed wakes Quiesce waiters whenever the set of in-flight loads or
+	// speculative jobs changes. Buffered so signaling never blocks a reader.
+	changed chan struct{}
 	// dedupedChunks counts chunks the scheduler did not admit because an
 	// in-flight window already covers them; overlappingChunks counts chunks a
 	// newly admitted window shares with another in-flight window, which the
@@ -133,8 +136,33 @@ type windowState struct {
 
 func newWindowState() *windowState {
 	return &windowState{
-		loads: map[string]*windowLoad{},
+		loads:   map[string]*windowLoad{},
+		changed: make(chan struct{}, 1),
 	}
+}
+
+// quiesceSignal wakes Quiesce waiters. The send is non-blocking, so callers
+// may hold windows.mu or scope locks.
+func (s *State) quiesceSignal() {
+	if s == nil || s.windows == nil {
+		return
+	}
+	select {
+	case s.windows.changed <- struct{}{}:
+	default:
+	}
+}
+
+// quiesceChanged returns the channel signaled on every quiesce-relevant change.
+func (s *State) quiesceChanged() <-chan struct{} {
+	return s.windows.changed
+}
+
+// windowsEmpty reports whether no window load is in flight.
+func (s *State) windowsEmpty() bool {
+	s.windows.mu.Lock()
+	defer s.windows.mu.Unlock()
+	return len(s.windows.loads) == 0
 }
 
 func (s *State) beginWindowLoad(key string, load *windowLoad) (*windowLoad, bool) {
@@ -154,6 +182,7 @@ func (s *State) beginWindowLoad(key string, load *windowLoad) (*windowLoad, bool
 		s.windows.interactiveLoads++
 		s.windows.interactiveChunks += chunks
 	}
+	s.quiesceSignal()
 	return load, false
 }
 
@@ -216,10 +245,14 @@ func (s *State) endWindowLoad(load *windowLoad) {
 		return
 	}
 	s.windows.mu.Lock()
-	if s.windows.loads[load.key] == load {
+	removed := s.windows.loads[load.key] == load
+	if removed {
 		delete(s.windows.loads, load.key)
 	}
 	s.windows.mu.Unlock()
+	if removed {
+		s.quiesceSignal()
+	}
 }
 
 func (s *State) findWindow(cacheKey string, index int64, streams int, maxChunks int64, session uint64) *windowLoad {
@@ -311,8 +344,16 @@ func (s *State) attachWindow(load *windowLoad) (func(), bool) {
 		return nil, false
 	}
 	load.waiters++
+	s.quiesceSignal()
 	var once sync.Once
-	return func() { once.Do(func() { s.windows.mu.Lock(); load.waiters--; s.windows.mu.Unlock() }) }, true
+	return func() {
+		once.Do(func() {
+			s.windows.mu.Lock()
+			load.waiters--
+			s.windows.mu.Unlock()
+			s.quiesceSignal()
+		})
+	}, true
 }
 
 func (s *State) abandonWindow(load *windowLoad, session uint64, scopeEnded bool) bool {
