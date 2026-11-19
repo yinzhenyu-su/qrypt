@@ -272,3 +272,17 @@ call opens and closes. A suppressed trace reports global delivery only. The
 [measurement reference](../../.agents/skills/qrypt-read-tuning/references/playback-measurements.md)
 describes cache boundaries, interleaving and interpretation. Keep raw JSON and
 reports local.
+
+## Measured driver profiles
+
+Every non-default policy number is a measurement, not an opinion. The table
+records what was measured, on which provider state, and with which command; add
+a row when a driver policy changes.
+
+| Driver | Interactive window | Lookahead | Bulk shape | Measurement evidence |
+|---|---|---|---|---|
+| quark | sequential fixed 2 MiB (initial/seek caller) | four 2 MiB windows | 4 MiB window, 3 streams, 8 MiB parts, min parallel 4 MiB | 32 MiB playback-shaped reads: 2 MiB sequential window 1.55× the one-chunk caller window (4/4 rounds, median); bulk 4-way aggregate optimum from `probe bench read` |
+| koofr | sequential fixed 4 MiB (initial/seek caller) | four default lookahead windows | 16 MiB window, 2×8 MiB parts, min parallel 8 MiB | 32 MiB cold mounted reads: interactive 2.0–2.5× the caller window; bulk 16 MiB/2 parts ~8% faster and more stable than 8 MiB single-stream; raw ceiling 3.7–4.5 MB/s at 1–4 connections |
+
+Re-measure with `probe tune read` (interactive window and depth, then bulk
+window and streams) on a read-only mount; it prints the TOML block above.
