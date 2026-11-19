@@ -174,7 +174,10 @@ for the default same-user local workflow.
 | Verify VFS upload behavior | `probe test fs --mount NAME` |
 | Measure full mounted-file read latency and throughput | `probe test read --mount NAME --mount-point PATH` |
 | Clear one mount's read cache for a cold run | `probe cache clear --mount NAME` |
-| Drop one file's read cache | `probe cache invalidate --path REMOTE` |
+| Drop one file's read cache | `probe cache invalidate --mount NAME --path REMOTE` |
+| Warm one file's read cache through the mount | `probe cache fill --mount NAME --path REMOTE --bytes 64m` |
+| Verify the read shape the provider actually executed | `probe verify read --mount NAME --path REMOTE --window 4MiB --streams 3` |
+| Print stable diagnostics JSON | `debug events --json`, `debug ops --json`, `debug read-memory --json` |
 | Reproduce a stalled or truncated provider read | `probe fault read --path REMOTE --kind stall` |
 | Emulate a per-connection provider throttle | `probe fault read --path REMOTE --kind rate --rate 150k` |
 | Verify same-directory batch upload caching | `probe test batchupload --mount NAME` |
@@ -194,6 +197,43 @@ runs nightly against real providers.
 Use `collect` first when you are unsure. Use `raw` when you already know which
 endpoint you need. Use `watch` when the issue only appears during a time window,
 for example upload retries or stale reads.
+
+### Read Structured Diagnostics JSON
+
+The read-only diagnostics commands also print one stable JSON object when you
+pass `--json`. The object keeps the raw endpoint payload under `data` and adds
+the fields a log pipeline can key on:
+
+```json
+{
+  "schema_version": 1,
+  "command": "debug events",
+  "generated_at": "2026-11-19T05:00:00Z",
+  "socket": "/Users/me/.qrypt/run/debug.sock",
+  "data": { "schema_version": 2, "generated_at": "...", "events": [] }
+}
+```
+
+`debug read-memory --json` follows the same shape. With `--watch` it prints one
+compact envelope per poll as JSON Lines, so `--json --watch` can be piped into
+`jq` or a log shipper. Without `--json` the default output is unchanged: the raw
+endpoint body for `read-memory`, and one line per event or operation for the new
+commands.
+
+```sh
+# Warnings and errors, filtered like /v1/events supports.
+qrypt debug events --level warn --limit 200 --mount quark-encrypt --json
+qrypt debug events --component QUARK --path /quark-encrypt/videos/movie.mp4
+
+# In-flight read, chunk, window, and prefetch operations.
+qrypt debug ops --mount quark-encrypt --json
+```
+
+`debug events` accepts `--level` (default `warn`), `--limit` (default 100),
+`--path` (substring over the message), `--component`, and repeated `--mount`.
+`debug ops` accepts repeated `--mount`. Human output prints one operation per
+line with `op=`, `id=`, requested bytes, offset, background flag, wait reason,
+and age in milliseconds.
 
 ## Inspect Uploads And Upload
 
@@ -473,8 +513,29 @@ To make one file cold without clearing the whole mount, invalidate just that
 path:
 
 ```sh
-qrypt probe cache invalidate --path /quark-encrypt/videos/movie.mp4
+qrypt probe cache invalidate --mount quark-encrypt --path /quark-encrypt/videos/movie.mp4
 ```
+
+`--mount` is optional but recommended when the virtual path spelling matters:
+the probe socket resolves the mount from the path, so a path that belongs to a
+different mount fails the command instead of silently dropping another mount's
+chunks. `probe cache invalidate --json` prints the stable diagnostics envelope.
+
+To warm one file instead, read it through the mount before measuring. The fill
+command goes through the same VFS read path as a player, so it populates the
+durable chunks and hot chunks a mount actually serves:
+
+```sh
+qrypt probe cache fill --mount quark-encrypt --path /quark-encrypt/videos/movie.mp4 --bytes 64m
+qrypt probe cache fill --mount quark-encrypt --path /quark-encrypt/videos/movie.mp4 --bytes 0 --json
+```
+
+`--bytes 0` fills the whole file up to the server cap (1 GiB); `--block-size`
+controls the per-read granularity (default 1 MiB, 4 KiB–16 MiB). The command
+returns the file size, the bytes actually read, the read-call count, the
+duration, and the read-cache byte count before and after, so a warm-up can be
+confirmed in the same JSON. `probe cache clear` and `probe cache invalidate` also
+accept `--json` and emit the same stable envelope as the diagnostics commands.
 
 For seek tests where every jump should start cold, pass `--cold-every-seek`
 instead of clearing the whole mount on each seek:
@@ -511,6 +572,43 @@ provider result. `--require-parallel` turns the executed shape into a gate: the
 run fails when every window ran single-stream, which is how a declared
 `parallel_range` capability or a bulk stream policy is proven to reach the
 provider instead of only being configured.
+
+### Verify The Executed Read Shape
+
+Plan overrides and driver defaults describe intent; `probe verify read` checks
+the shape the provider actually executed. It clears the mount's read cache,
+reads the file once with the requested window, streams, prefetch depth, and
+optional part size, then compares the executed window/stream/prefetch shape
+against the request:
+
+```sh
+qrypt probe verify read --mount quark-encrypt \
+  --path /quark-encrypt/videos/movie.mp4 \
+  --window 4MiB --streams 3 --prefetch-depth 2 --length 16m
+```
+
+The command resolves the mount point from the config, clamps `--length` to the
+file size, and runs `probe test read` internally with a cold cache and one
+sample. It exits `0` when the executed shape matches and `4` when it does not;
+use `4` as the regression signal in scripts. `--json` prints the flat report
+(`requested`, `executed`, `counters`, `measurements`, `mismatches`, `warnings`)
+instead of the human summary.
+
+The comparison covers four facts:
+
+- window bytes must equal the requested window rounded up to the 512 KiB read
+  chunk, and the executed chunk count must match;
+- requested streams greater than one must run multi-stream (a single-stream
+  execution is a mismatch; adaptive split above the request is only a warning);
+- a requested part size must be the executed part size (an executed zero is a
+  warning, not a mismatch);
+- a prefetch depth greater than zero must produce prefetch windows, read from
+  `executed_prefetch_windows` or the `/v1/read-memory` prefetch counter delta.
+
+Cache hits and read or prefetch timeouts add warnings instead of mismatches.
+Each measurement still carries the `executed_streams`,
+`executed_window_chunks`, `executed_window_bytes`, `executed_part_bytes`, and
+`executed_prefetch_windows` fields documented for `probe test read`.
 
 ### Inject Read Faults
 
@@ -841,6 +939,7 @@ Common endpoints:
 | `/v1/staging?mount=NAME` | Staging files and orphan staging files | Grows with staging files |
 | `/v1/cache?mount=NAME` | Read cache and pending journal health | Grows with cache files |
 | `/v1/events?level=warn&limit=100&mount=NAME&component=CACHE` | Recent warnings/errors, filtered by mount and component fields | Limited by `limit` |
+| `/v1/debug/cache/fill?mount=NAME&path=PATH&bytes=N&block_size=N` | Warms one file through the mount read path (probe socket only) | Bounded by `bytes`/1 GiB cap |
 | `/v1/driver?mount=NAME&limit=200&since=2m` | Driver debug snapshot and metrics | Driver dependent, metrics filtered server-side |
 | `/v1/mounts/health?mount=NAME` | Recent operation health | Small |
 | `/v1/resolve?path=PATH` | Resolve a virtual path | Small |

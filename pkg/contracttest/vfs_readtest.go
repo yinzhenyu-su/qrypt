@@ -103,6 +103,10 @@ type MountedReadMeasurement struct {
 	ExecutedWindowChunks int   `json:"executed_window_chunks,omitempty"`
 	ExecutedWindowBytes  int64 `json:"executed_window_bytes,omitempty"`
 	ExecutedPartBytes    int64 `json:"executed_part_bytes,omitempty"`
+	// ExecutedPrefetchWindows counts speculative prefetch windows the read
+	// triggered, so `probe verify read` can prove --prefetch-depth reached the
+	// scheduler instead of silently clamping it.
+	ExecutedPrefetchWindows int `json:"executed_prefetch_windows,omitempty"`
 	// HoldOpen reports that this sample reused one mounted handle instead of
 	// opening the file itself.
 	HoldOpen bool `json:"hold_open,omitempty"`
@@ -1639,6 +1643,9 @@ func measureExecutedShape(measurement *MountedReadMeasurement, events []drive.Me
 		}
 		if part := metricExtraInt64(event.Extra, "part_bytes"); part > 0 {
 			measurement.ExecutedPartBytes = part
+		}
+		if event.Phase == "prefetch_window" {
+			measurement.ExecutedPrefetchWindows++
 		}
 	}
 	measurement.ExecutedWindowBytes = windowBytes

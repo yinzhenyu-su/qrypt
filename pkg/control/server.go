@@ -150,6 +150,7 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc("/v1/debug/reset", s.handleDebugReset)
 		mux.HandleFunc("/v1/debug/cache/clear", s.handleCacheClear)
 		mux.HandleFunc("/v1/debug/cache/invalidate", s.handleCacheInvalidate)
+		mux.HandleFunc("/v1/debug/cache/fill", s.handleCacheFill)
 		mux.HandleFunc("/v1/debug/faults/read", s.handleReadFaults)
 		mux.HandleFunc("/v1/bench", s.handleBench)
 		mux.HandleFunc("/v1/driver/test", s.handleDriverTest)

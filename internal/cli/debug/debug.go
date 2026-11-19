@@ -31,6 +31,8 @@ health, state, uploads, reads, events, cache, and staging snapshots.`,
 	cmd.AddCommand(withDebugSocketFlag(rt, NewWatchCmd(rt)))
 	cmd.AddCommand(withDebugSocketFlag(rt, NewUploadMemoryCmd(rt)))
 	cmd.AddCommand(withDebugSocketFlag(rt, NewReadMemoryCmd(rt)))
+	cmd.AddCommand(withDebugSocketFlag(rt, NewEventsCmd(rt)))
+	cmd.AddCommand(withDebugSocketFlag(rt, NewOpsCmd(rt)))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugRawCmd(rt)))
 	return cmd
 }
@@ -51,6 +53,7 @@ data. Unlike debug, these commands use the mutable control socket.`,
 	cmd.AddCommand(NewBenchCmd(rt))
 	cmd.AddCommand(NewTestCmd(rt))
 	cmd.AddCommand(NewCacheCmd(rt))
+	cmd.AddCommand(NewVerifyCmd(rt))
 	cmd.AddCommand(NewFaultCmd(rt))
 	cmd.AddCommand(NewTuneCmd(rt))
 	return cmd
