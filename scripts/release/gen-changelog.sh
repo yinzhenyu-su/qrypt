@@ -66,6 +66,7 @@ if [ -f "$CHANGELOG" ]; then
 fi
 if [ -f "$CHANGELOG" ] && grep -q '^## Unreleased[[:space:]]*$' "$CHANGELOG"; then
   stripped="$(mktemp)"
+  trap 'rm -f "$stripped"' EXIT
   awk '
     /^## Unreleased[[:space:]]*$/ { skip = 1; next }
     skip && /^## / { skip = 0 }

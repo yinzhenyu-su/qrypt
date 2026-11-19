@@ -110,6 +110,24 @@ is_mounted() {
   fi
 }
 
+# detach_mount force-detaches a mount whose helper died without unmounting.
+# Removing WORKDIR through a live mount would delete the entries it shows, so
+# cleanup must detach before recursing.
+detach_mount() {
+  case "$(uname -s)" in
+    Darwin)
+      umount -f "$MOUNT_POINT" 2>/dev/null ||
+        diskutil unmount force "$MOUNT_POINT" >/dev/null 2>&1
+      ;;
+    *)
+      umount "$MOUNT_POINT" 2>/dev/null ||
+        fusermount3 -u "$MOUNT_POINT" 2>/dev/null ||
+        fusermount -u "$MOUNT_POINT" 2>/dev/null
+      ;;
+  esac
+  ! is_mounted
+}
+
 stop_mount_process() {
   if [ -z "$MOUNT_PID" ] || ! kill -0 "$MOUNT_PID" 2>/dev/null; then
     [ -z "$MOUNT_PID" ] || wait "$MOUNT_PID" 2>/dev/null || true
@@ -125,7 +143,7 @@ cleanup() {
   trap - EXIT INT TERM
 
   stop_mount_process
-  if is_mounted; then
+  if is_mounted && ! detach_mount; then
     echo "mount point is still active; preserving temporary directory: $WORKDIR" >&2
     status=1
   else

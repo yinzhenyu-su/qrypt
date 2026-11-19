@@ -399,6 +399,7 @@ PATH="$HOME/.cache/qrypt-tools:$PATH" ./scripts/ci/check-all.sh
 ./scripts/ci/test-layers.sh race-changed   # PR 等价：只跑 diff 可达包的 -race，diff 无法落到包上时自动回退全量 race
 ./scripts/ci/test-layers.sh race-shard 1/4 # nightly 等价：只跑一个 race 分片（1..4）
 ./scripts/ci/test-layers.sh race-shard-all # 本机一次跑完 1..4 全部分片
+./scripts/ci/test-layers.sh clean-temp    # 清理被杀/超时测试留下的临时目录与残留挂载（默认只清 10 分钟前的）
 ./scripts/ci/check-hygiene.sh              # 仓库卫生：tidy -diff、actionlint、pinned shellcheck、空白/冲突标记
 ./scripts/ci/check-coverage.sh -print      # 覆盖率快照（不 gate）
 ./scripts/ci/fuzz-nightly.sh 10s           # 本地 fuzz（每 fuzzer 10s）
@@ -468,6 +469,26 @@ diff 可达的包加 `-race`（本机实测：改一个 driver 文件可达 11 �
 把本机 CPU 超额订阅；它只用于本机自检，不是 CI 的墙钟预期。任何 `go test -json`
 层加 `QRYPT_TEST_TIMINGS=1` 会额外打印最慢的 10 个单测（并写进 CI step summary），
 用来区分「包变慢」是哪个用例造成的。
+
+### 临时目录与残留挂载
+
+测试二进制被 kill 或撞上 `-timeout` 时不会执行 `t.Cleanup`，于是 `$TMPDIR` 下的
+isolated CLI home、session 日志目录、`qrypt-receive-test-*`/`qrypt-share-test-*`/
+`qrypt-offline-test-*`/`qrypt-isolated-*` 工作目录和 debug socket 会留到下一次运行；
+`debug-mount.sh` 的 helper 被 SIGKILL 时还会留下一个仍然挂着的 FUSE 目录。
+`test-layers.sh` 在**每个** layer 开头调用 `clean_orphan_temp` 自愈上一次运行：
+只清 `qrypt-` 前缀、且 mtime 早于 `QRYPT_TEMP_MAX_AGE_MIN`（默认 10 分钟）的条目，
+避免误删并发运行的目录。`$TMPDIR` 和 `/tmp` 都会扫（`debug-mount.sh` 在 socket
+路径过长时会回退到 `/tmp`）。`qrypt-mount-test.*` 和 `qrypt-isolated-*` 里若有活跃
+挂载，默认打印 `clean-orphan-temp: leaving still-mounted temp dir` 并**保留**——自动
+清理从不卸载可能属于活跃会话的挂载，也绝不在活挂载上 `rm -rf`（那会顺着挂载删
+云盘条目）；确认挂载属主已退出后，可用 `QRYPT_TEMP_FORCE_UNMOUNT=1` 先强制卸载
+再清理。脚本自己创建的临时路径（`measure` 的 JSON 文件、`run_repeated`/
+`race-shard-all`/diff-closure 的工作目录）登记在 registry 里，由 EXIT/INT/TERM trap
+清理，Ctrl-C 不再留目录。`clean-temp` 可在不跑层的情况下手动执行；
+`QRYPT_TEMP_MAX_AGE_MIN=0` 会连新条目一起清（仅在确认无其它测试进程时用）。
+注意 `check-all.sh` 为稳定复用把 `GOCACHE` 固定到 `/tmp/qrypt-go-build`（可用
+`GOCACHE` 覆盖），它是有意保留的构建缓存，涨大时手动删除即可。
 
 两类进程级状态让测试不能并行，且都看不出自测试自身：
 

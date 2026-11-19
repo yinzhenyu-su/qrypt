@@ -100,34 +100,170 @@ RACE_PATTERNS=(
   ./cmd/qrypt
 )
 
-# Reclaim temp left behind by a test binary that was killed or hit -timeout:
-# such a process never reaches its own exit path, so the isolated CLI home, the
-# shared session-log roots, and the debug-server sockets under the process temp
-# root outlive it. Running this at the start of every layer makes each
-# invocation heal the previous one. Only qrypt-named entries are swept -- `Test*`
-# directories are t.TempDir's generic naming and belong to every Go tree on the
-# host, not just this one -- and a failed run's own temp is deliberately left
-# for inspection.
-clean_orphan_temp() {
-  # Resolve the temp root the way os.TempDir() does, so the sweep looks where
-  # the tests wrote under them: $TMPDIR on Unix, %TMP% then %TEMP% on Windows
-  # (Git Bash hands those over backslashed).
+# ── Temp hygiene ────────────────────────────────────────────────────
+# A test binary that is killed or hits -timeout never reaches its own exit
+# path, so two kinds of leftovers outlive it: entries under the process temp
+# root (isolated CLI homes, session-log roots, sockets, harness work areas) and
+# an active FUSE mount whose helper was SIGKILLed. Every layer invocation first
+# reclaims the previous one, and every temp path this script creates is
+# registered for removal on the normal and the interrupt path.
+
+# qrypt_temp_root resolves the temp root the way os.TempDir() does, so the
+# sweep looks where the tests wrote: $TMPDIR on Unix, %TMP% then %TEMP% on
+# Windows (Git Bash hands those over backslashed).
+qrypt_temp_root() {
   local tmp="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
-  tmp="${tmp//\\//}"
+  printf '%s\n' "${tmp//\\//}"
+}
+
+# mount_point_active <path> reports whether <path> is an active mount point.
+mount_point_active() {
+  local mount_point="$1"
+  if command -v mountpoint >/dev/null 2>&1; then
+    mountpoint -q "$mount_point" 2>/dev/null && return 0
+  fi
+  mount 2>/dev/null | grep -F " on $mount_point " >/dev/null 2>&1
+}
+
+# unmount_point force-detaches <path> and reports success. It is only used when
+# QRYPT_TEMP_FORCE_UNMOUNT=1: a live session's mount must never be detached by
+# an automatic sweep, because the running command would lose its filesystem.
+unmount_point() {
+  local mount_point="$1"
+  case "$(uname -s)" in
+    Darwin)
+      umount -f "$mount_point" 2>/dev/null ||
+        diskutil unmount force "$mount_point" >/dev/null 2>&1
+      ;;
+    *)
+      umount "$mount_point" 2>/dev/null ||
+        fusermount3 -u "$mount_point" 2>/dev/null ||
+        fusermount -u "$mount_point" 2>/dev/null
+      ;;
+  esac
+  ! mount_point_active "$mount_point"
+}
+
+# reclaim_mounted_temp <dir> <mount subpath> decides what to do with a temp
+# directory that still has an active mount inside. Deleting through a live
+# mount would remove the entries it shows, so the default is to leave it for a
+# human; QRYPT_TEMP_FORCE_UNMOUNT=1 force-detaches first (only safe when the
+# owning test/debug process is known to be gone).
+reclaim_mounted_temp() {
+  local dir="$1" mount_point="$1/$2"
+  if ! mount_point_active "$mount_point"; then
+    rm -rf "$dir" 2>/dev/null || true
+    return
+  fi
+  if [ "${QRYPT_TEMP_FORCE_UNMOUNT:-0}" != "1" ] || ! unmount_point "$mount_point"; then
+    printf 'clean-orphan-temp: leaving still-mounted temp dir: %s\n' "$dir" >&2
+    return
+  fi
+  rm -rf "$dir" 2>/dev/null || true
+}
+
+# clean_orphan_temp_root sweeps one temp root. It is a separate function
+# because debug-mount.sh falls back to /tmp when the platform temp path is too
+# long for a Unix socket, so leftovers can live outside $TMPDIR.
+clean_orphan_temp_root() {
+  local tmp="$1" max_age entry pattern sock
   [ -d "$tmp" ] || return 0
-  # Best-effort: a leftover another process still holds open is common on
-  # Windows and must not abort the layer that follows.
-  rm -rf "$tmp"/qrypt-cli-test-home-* "$tmp"/qrypt-core-test-logs \
-    "$tmp"/qrypt-mobile-test-logs "$tmp"/qrypt-mount-test.* || true
-  # Test sockets carry a nanosecond timestamp. Runtime sockets for the
-  # mount-debug helper live under its temporary QRYPT_HOME and are removed
-  # with that work directory.
-  local sock
+  # A concurrent run may own a fresh qrypt-* entry, and deleting it would break
+  # that run. Only entries older than the threshold are reclaimed; leftovers
+  # from a killed or timed-out run are always older than that. Set
+  # QRYPT_TEMP_MAX_AGE_MIN=0 to force an immediate sweep.
+  max_age="${QRYPT_TEMP_MAX_AGE_MIN:-10}"
+  # find(1) has no "any age" predicate that also works on BSD: +N requires an
+  # age over N minutes, so a zero threshold switches to a large negative bound
+  # (-mmin -N matches anything younger than N minutes, i.e. everything).
+  local mmin="+$max_age"
+  if [ "$max_age" -le 0 ]; then
+    mmin="-5256000"
+  fi
+
+  # Killed mount helpers leave their work directory mounted. A still-mounted
+  # tree is never deleted through the mount; it is left for inspection unless
+  # QRYPT_TEMP_FORCE_UNMOUNT=1 says the owner is definitely gone.
+  for entry in "$tmp"/qrypt-mount-test.*; do
+    [ -d "$entry" ] || continue
+    [ -n "$(find "$entry" -maxdepth 0 -mmin "$mmin" 2>/dev/null)" ] || continue
+    reclaim_mounted_temp "$entry" mount
+  done
+  # `qrypt mount --isolated` keeps its FUSE mount in <root>/mnt.
+  for entry in "$tmp"/qrypt-isolated-*; do
+    [ -d "$entry" ] || continue
+    [ -n "$(find "$entry" -maxdepth 0 -mmin "$mmin" 2>/dev/null)" ] || continue
+    reclaim_mounted_temp "$entry" mnt
+  done
+
+  # Test homes, session-log roots, generated-doc staging, and harness work
+  # areas. The explicit prefixes keep the sweep from matching unrelated user
+  # files; new test temp roots must start with qrypt- so this heal covers them.
+  for pattern in \
+    'qrypt-cli-test-home-*' 'qrypt-core-test-logs' 'qrypt-mobile-test-logs' \
+    'qrypt-receive-test-*' 'qrypt-share-test-*' 'qrypt-offline-test-*' \
+    'qrypt-cache-*' 'qrypt-generated-*' \
+    'qrypt-install.*' 'qrypt-smoke.*' 'qrypt-shellcheck.*' \
+    'qrypt-read-ab-*' 'qrypt-tune-*'; do
+    find "$tmp" -maxdepth 1 -name "$pattern" -mmin "$mmin" \
+      -exec rm -rf {} + 2>/dev/null || true
+  done
+
+  # Sockets carry a nanosecond timestamp; a leftover socket file is safe to
+  # unlink even when fresh because nothing will connect to its dead server.
   for sock in "$tmp"/qrypt-[0-9]*.sock "$tmp"/qrypt-test-[0-9]*.sock; do
     [ -e "$sock" ] || continue
-    rm -f "$sock" || true
+    rm -f "$sock" 2>/dev/null || true
   done
 }
+
+clean_orphan_temp() {
+  local root roots
+  roots=$(qrypt_temp_root)
+  # debug-mount.sh uses /tmp when the platform temp path is long enough to
+  # overflow the Unix socket limit, so sweep it too unless it is the same root.
+  if [ "$roots" != "/tmp" ]; then
+    roots=$(printf '%s\n/tmp\n' "$roots")
+  fi
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    clean_orphan_temp_root "$root"
+  done <<<"$roots"
+}
+
+# temp_registry records every temp path this run creates so cleanup also runs
+# when the script is interrupted (measure and the repeated/sharded layers used
+# to leave their work behind on Ctrl-C).
+temp_registry=$(mktemp) || exit 1
+
+cleanup_temp_paths() {
+  local path
+  [ -n "$temp_registry" ] || return 0
+  while IFS= read -r path; do
+    [ -n "$path" ] && rm -rf "$path" 2>/dev/null
+  done <"$temp_registry"
+  rm -f "$temp_registry"
+  temp_registry=""
+}
+trap 'cleanup_temp_paths' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# new_temp_dir / new_temp_file print a fresh path and register it for removal.
+new_temp_dir() {
+  local dir
+  dir=$(mktemp -d) || return 1
+  printf '%s\n' "$dir" >>"$temp_registry"
+  printf '%s\n' "$dir"
+}
+
+new_temp_file() {
+  local file
+  file=$(mktemp) || return 1
+  printf '%s\n' "$file" >>"$temp_registry"
+  printf '%s\n' "$file"
+}
+
 clean_orphan_temp
 
 # slowest_tests <json file> [limit] prints "<elapsed>\t<package>\t<test>" for
@@ -173,7 +309,7 @@ measure() {
     # JSON mode: stream to a temp file so the slowest packages can be
     # reported afterwards. The grep -q exit code drives the result.
     local tmp json_ok
-    tmp=$(mktemp)
+    tmp=$(new_temp_file)
     "$@" | tee "$tmp" >/dev/null || true
     json_ok=0
     grep -q '"Action":"fail"' "$tmp" && json_ok=1
@@ -277,7 +413,7 @@ measure() {
 run_repeated() {
   local repeats="$1"; shift
   local tmp i status=0
-  tmp=$(mktemp -d)
+  tmp=$(new_temp_dir)
   local pids=() logs=()
   for ((i = 0; i < repeats; i++)); do
     logs+=("$tmp/run-$i.log")
@@ -319,7 +455,7 @@ run_repeated() {
 diff_packages() {
   local root work rc
   root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
-  work=$(mktemp -d) || return 1
+  work=$(new_temp_dir) || return 1
 
   {
     git diff --name-only "${QRYPT_DIFF_BASE:-HEAD}" -- 2>/dev/null
@@ -364,7 +500,7 @@ affected_packages() {
   case "$seeds" in *'!'*) return 1 ;; esac
 
   module=$(go list -m 2>/dev/null) || return 1
-  work=$(mktemp -d) || return 1
+  work=$(new_temp_dir) || return 1
 
   printf '%s\n' "$seeds" > "$work/seeds"
   go list -deps -test -f '{{.ImportPath}}{{"\t"}}{{join .Deps " "}}' ./... \
@@ -642,7 +778,7 @@ case "${1:-fast}" in
       if [ "$shard_p" -lt 2 ]; then shard_p=2; fi
       export RACE_P="$shard_p"
     fi
-    tmp=$(mktemp -d)
+    tmp=$(new_temp_dir)
     logs=()
     pids=()
     start=$(date +%s)
@@ -676,6 +812,13 @@ case "${1:-fast}" in
     measure "vfs-stability: 3x go test -count=1 ./pkg/vfs/..." \
       run_repeated 3 go test -count=1 ./pkg/vfs/...
     ;;
+  clean-temp)
+    # Reclaim temp left by killed/timed-out runs without starting a layer.
+    # The sweep is age-gated so a concurrent run's fresh entries survive; set
+    # QRYPT_TEMP_MAX_AGE_MIN=0 to reclaim everything (do that only when no
+    # other test process is running).
+    clean_orphan_temp
+    ;;
   smoke)
     measure "smoke: localfs" scripts/ci/smoke-localfs.sh
     ;;
@@ -700,7 +843,7 @@ case "${1:-fast}" in
     done
     ;;
   *)
-    echo "usage: $0 [fast|changed|race|race-changed|race-shard <index>/<count>|race-shard-all [count]|vfs-stability|smoke|all|integration <mount>...]" >&2
+    echo "usage: $0 [fast|changed|race|race-changed|race-shard <index>/<count>|race-shard-all [count]|vfs-stability|smoke|clean-temp|all|integration <mount>...]" >&2
     exit 2
     ;;
 esac
