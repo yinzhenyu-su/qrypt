@@ -1,6 +1,8 @@
 package mount
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
@@ -37,5 +39,30 @@ func TestApplyIsolatedOverrides(t *testing.T) {
 		if !m.TestEnabled {
 			t.Fatalf("mount %q should accept probes in an isolated run", m.Name)
 		}
+	}
+}
+
+func TestRemoveIsolatedHomeDeletesPlainTrees(t *testing.T) {
+	root := t.TempDir()
+	mnt := filepath.Join(root, "mnt")
+	if err := os.MkdirAll(filepath.Join(mnt, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mnt, "sub", "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The mount point is a plain directory on the host filesystem, so the tree
+	// can be removed as usual without detaching anything.
+	if err := removeIsolatedHome(root, mnt); err != nil {
+		t.Fatalf("remove isolated home: %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("isolated home still exists: %v", err)
+	}
+}
+
+func TestRemoveIsolatedHomeToleratesMissingTree(t *testing.T) {
+	if err := removeIsolatedHome(filepath.Join(t.TempDir(), "gone"), ""); err != nil {
+		t.Fatalf("remove missing isolated home: %v", err)
 	}
 }

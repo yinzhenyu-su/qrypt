@@ -133,6 +133,23 @@ func detachRootFor(mountPoint string) string {
 	return mountPoint
 }
 
+// FuseMountRoot returns the root of the FUSE filesystem that covers path, when
+// the platform can report it. Cleanup code uses it to decide whether a
+// directory tree can be deleted: while a FUSE mount is still attached under it,
+// walking the tree with RemoveAll would delete entries inside the mounted
+// filesystem instead of the tree itself.
+func FuseMountRoot(path string) (string, bool) {
+	return fuseMountRoot(path)
+}
+
+// DetachMount force-detaches the FUSE mount that covers path. It covers both
+// the busy mount a normal unmount could not remove and the dead mount left by a
+// process that was killed before it could unmount: the same platform commands
+// clear either one.
+func DetachMount(path string) error {
+	return detachStaleMount(detachRootFor(path))
+}
+
 // fuseMountRoot returns the canonical root of the FUSE filesystem that contains
 // path when the platform can report it (macOS does; see statfsMount).
 func fuseMountRoot(path string) (string, bool) {

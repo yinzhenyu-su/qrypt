@@ -73,6 +73,7 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			isolated, _ := cmd.Flags().GetBool("isolated")
 			isolatedKeep, _ := cmd.Flags().GetBool("isolated-keep")
 			isolatedRoot := ""
+			var isolatedMountPoint string
 			if isolated {
 				root, err := os.MkdirTemp("", "qrypt-isolated-")
 				if err != nil {
@@ -95,7 +96,7 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 						fmt.Fprintf(cmd.ErrOrStderr(), "isolated home kept: %s\n", root)
 						return
 					}
-					if err := os.RemoveAll(root); err != nil {
+					if err := removeIsolatedHome(root, isolatedMountPoint); err != nil {
 						logging.L.Warnf("[CLI] remove isolated home: %v", err)
 					}
 				}()
@@ -181,6 +182,9 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			}
 
 			mountPointExpanded := util.ExpandHome(mountPoint)
+			if isolated {
+				isolatedMountPoint = mountPointExpanded
+			}
 			loc := i18n.FromCommand(cmd)
 			logging.L.Infof("Mounting at %s ...", mountPointExpanded)
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.mount.mounting", mountPointExpanded))
@@ -557,6 +561,22 @@ func newListCmd(rt cliruntime.Runtime) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// removeIsolatedHome deletes an --isolated temporary home. The unmount defer
+// runs first, but it can fail (a busy mount) or the mount helper can be
+// already dead, and deleting the tree while a FUSE filesystem is attached
+// under it would walk into the mounted filesystem instead. Detach such a
+// leftover mount first and report the home as kept when even that fails.
+func removeIsolatedHome(root, mountPoint string) error {
+	if mountPoint != "" {
+		if _, mounted := mount.FuseMountRoot(mountPoint); mounted {
+			if err := mount.DetachMount(mountPoint); err != nil {
+				return fmt.Errorf("detach leftover mount at %s: %w", mountPoint, err)
+			}
+		}
+	}
+	return os.RemoveAll(root)
 }
 
 // isolatedMountInfo is printed once an --isolated mount is serving, so test

@@ -160,7 +160,7 @@ qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH]
 qrypt mount --isolated --name quark-encrypt --isolated-log-level debug
 ```
 
-挂载成功后会向标准输出打印一段 JSON（`mount_point`、`qrypt_home`、`config`、`mounts`），供脚本定位临时挂载点；退出时自动卸载并删除临时目录。`--isolated-cache` 调整读缓存大小（默认 `2G`），`--isolated-log-file` 把结构化日志写到指定文件，`--isolated-keep` 保留临时目录以便排查。也可以在隔离挂载上运行 `qrypt probe tune read`、`qrypt probe test read --path` 等只读探针，不需要修改配置文件里的 `test_enabled`。
+挂载成功后会向标准输出打印一段 JSON（`mount_point`、`qrypt_home`、`config`、`mounts`），供脚本定位临时挂载点；正常退出（`Ctrl+C`、`SIGTERM`、`SIGHUP`）或出错返回时自动卸载并删除临时目录。进程被 `SIGKILL` 或机器断电时来不及清理，会留下临时目录和失联的挂载点，可用 `./scripts/ci/test-layers.sh clean-temp` 回收（残留挂载需要 `QRYPT_TEMP_FORCE_UNMOUNT=1` 才强制卸载）。`--isolated-cache` 调整读缓存大小（默认 `2G`），`--isolated-log-file` 把结构化日志写到指定文件，`--isolated-keep` 保留临时目录以便排查。也可以在隔离挂载上运行 `qrypt probe tune read`、`qrypt probe test read --path` 等只读探针，不需要修改配置文件里的 `test_enabled`。
 
 ## 文件系统操作
 
