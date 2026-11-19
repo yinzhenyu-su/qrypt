@@ -21,6 +21,10 @@ import (
 )
 
 const (
+	// vfsReadChunkSize mirrors the read layer's publication chunk so probe
+	// windows express bytes while PlanOverride carries chunk counts.
+	vfsReadChunkSize = vfsread.ChunkSize
+
 	DefaultMountedReadTestSize       int64 = 256 << 20
 	DefaultMountedReadTestBlockSize  int64 = 1 << 20
 	MaxMountedReadTestSize           int64 = 2 << 30
@@ -62,7 +66,7 @@ type MountedReadTestResult struct {
 // size for the duration of one measurement. The VFS implements it behind
 // probe test read; production paths never set an override.
 type readPlanOverrider interface {
-	SetReadPlanOverride(mount string, maxStreams int, windowBytes int64, idle, total time.Duration) error
+	SetReadPlanOverride(mount string, override vfs.ReadPlanOverride) error
 	ClearReadPlanOverride()
 }
 
@@ -382,6 +386,18 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	if req.WindowBytes > 0 {
 		retryCommand += fmt.Sprintf(" --window %d", req.WindowBytes)
 	}
+	if req.PrefetchWindowBytes > 0 {
+		retryCommand += fmt.Sprintf(" --prefetch-window %d", req.PrefetchWindowBytes)
+	}
+	if req.PrefetchDepth != nil {
+		retryCommand += fmt.Sprintf(" --prefetch-depth %d", *req.PrefetchDepth)
+	}
+	if req.PartBytes != nil {
+		retryCommand += fmt.Sprintf(" --part-size %d", *req.PartBytes)
+	}
+	if req.MinParallelBytes != nil {
+		retryCommand += fmt.Sprintf(" --min-parallel %d", *req.MinParallelBytes)
+	}
 	if req.Offset != "" || req.Length != "" {
 		retryCommand += fmt.Sprintf(" --offset %s --length %s", req.Offset, req.Length)
 	}
@@ -423,20 +439,35 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		err = optionErr
 	}
 	step := fsStep("validate")
-	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "offset": startOffset, "length": rangeLength, "streams": req.Streams, "window_bytes": req.WindowBytes, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String(), "fetch_idle_timeout": fetchIdleTimeout.String(), "fetch_total_timeout": fetchTotalTimeout.String()}
+	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "offset": startOffset, "length": rangeLength, "streams": req.Streams, "window_bytes": req.WindowBytes, "prefetch_window_bytes": req.PrefetchWindowBytes, "prefetch_depth": req.PrefetchDepth, "part_bytes": req.PartBytes, "min_parallel_bytes": req.MinParallelBytes, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String(), "fetch_idle_timeout": fetchIdleTimeout.String(), "fetch_total_timeout": fetchTotalTimeout.String()}
 	step.finish(time.Now(), err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
 		return result
 	}
 
-	if req.Streams > 0 || req.WindowBytes > 0 || fetchIdleTimeout > 0 || fetchTotalTimeout > 0 {
+	shape := vfs.ReadPlanOverride{
+		MaxStreams:        req.Streams,
+		PartBytes:         req.PartBytes,
+		MinParallelBytes:  req.MinParallelBytes,
+		PrefetchDepth:     req.PrefetchDepth,
+		FetchIdleTimeout:  fetchIdleTimeout,
+		FetchTotalTimeout: fetchTotalTimeout,
+	}
+	if req.WindowBytes > 0 {
+		shape.WindowChunks = int((req.WindowBytes + vfsReadChunkSize - 1) / vfsReadChunkSize)
+	}
+	if req.PrefetchWindowBytes > 0 {
+		shape.PrefetchChunks = int((req.PrefetchWindowBytes + vfsReadChunkSize - 1) / vfsReadChunkSize)
+	}
+	if shape.MaxStreams > 0 || shape.WindowChunks > 0 || shape.PrefetchChunks > 0 || shape.PrefetchDepth != nil ||
+		shape.PartBytes != nil || shape.MinParallelBytes != nil || fetchIdleTimeout > 0 || fetchTotalTimeout > 0 {
 		overrider, ok := fs.(readPlanOverrider)
 		if !ok {
 			result.Steps = append(result.Steps, failedFSStep("read_override", fmt.Errorf("this filesystem does not support read plan overrides")))
 			return result
 		}
-		if err := overrider.SetReadPlanOverride(mount, req.Streams, req.WindowBytes, fetchIdleTimeout, fetchTotalTimeout); err != nil {
+		if err := overrider.SetReadPlanOverride(mount, shape); err != nil {
 			result.Steps = append(result.Steps, failedFSStep("read_override", err))
 			return result
 		}

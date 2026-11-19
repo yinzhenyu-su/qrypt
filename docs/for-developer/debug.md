@@ -385,6 +385,37 @@ a single read's rate drop is the question. The script needs a client config with
 credentials (default: repository `qrypt.toml`) and Python 3.11+; `--keep` keeps
 the temporary binaries, logs, and results for inspection.
 
+### Tune A Read Shape
+
+`probe tune read` sweeps read shapes against one existing mounted file and
+prints the fastest one as a TOML block. It needs the running mount's control
+socket and the mount point, writes nothing remote, and therefore also works on
+a read-only mount:
+
+```sh
+qrypt probe tune read --mount quark-encrypt \
+  --mount-point /mnt/qrypt/quark-encrypt \
+  --path /videos/sample.mp4 --size 32m --rounds 3
+```
+
+The run measures playback-shaped cold reads for the interactive window
+(`caller`, 1, 2, 4, 8 MiB), then lookahead depth at the best window, then bulk
+downloads (`8`/`16` MiB window with one or two streams). Every variant is
+measured with the same block size and fresh region, and the order rotates per
+round so a provider rate change cannot favour one shape. The table reports the
+median/min/max of each variant; the evidence lines name the winner of each
+phase, and the config block is ready to paste under the mount in `qrypt.toml`.
+Add `--json` to keep the raw result (including every sample) for a report.
+
+The measurement uses the same plan override as `probe test read`, which is
+also reachable through its individual flags: `--window`, `--prefetch-window`,
+`--prefetch-depth` (`--no-prefetch` for depth 0), `--streams`, `--part-size`
+and `--min-parallel` set the executed shape for one measurement, with `0`
+keeping the resolved value for `--streams` and `auto` meaning an even split for
+`--part-size`. The override is applied through the mount's read layer, so it
+affects the same code path a real playback read takes; the same flags are
+covered by `probe test read` when a single shape needs confirmation.
+
 ### Measure Cache-Miss Load Time
 
 `playback-sim.py` bypasses the OS page cache by default but still reads through

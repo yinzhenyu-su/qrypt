@@ -303,11 +303,12 @@ qrypt probe cache invalidate --path REMOTE
 qrypt probe fault read --path REMOTE --kind KIND [flags]
 qrypt probe fault list
 qrypt probe fault clear [--id ID]
+qrypt probe tune read --mount NAME --mount-point DIR --path REMOTE [--size SIZE] [--rounds N]
 ```
 
 `collect`、`watch` 和 `bundle` 需要用 `--mount NAME` 指定挂载；`--mount` 可重复传入，确需检查全部挂载时使用 `--all-mounts`。`debug watch --jsonl` 适合管道式消费。
 
-`probe test` / `probe bench` 只使用配置中设置了 `test_enabled = true` 的挂载。`probe cache clear` 清空指定挂载的持久化和内存读缓存，`probe cache invalidate --path` 只清理单个文件；两者都保持挂载运行，适合脚本测量缓存未命中的加载速度。`probe fault read` 在运行中的挂载上注入一次读故障（`stall`、`truncate`、`status` 或 `delay`），用于验证超时、重放和状态重试，规则用 `probe fault list/clear` 查看和清除。测试项、输出含义和完整调试流程见[调试文档](../for-developer/debug.md)。
+`probe test` / `probe bench` 只使用配置中设置了 `test_enabled = true` 的挂载。`probe cache clear` 清空指定挂载的持久化和内存读缓存，`probe cache invalidate --path` 只清理单个文件；两者都保持挂载运行，适合脚本测量缓存未命中的加载速度。`probe fault read` 在运行中的挂载上注入一次读故障（`stall`、`truncate`、`status`、`delay` 或 `rate`），用于验证超时、重放和状态重试，规则用 `probe fault list/clear` 查看和清除。`probe tune read` 对一个已存在的文件扫描交互窗口、预读深度和批量下载形状，输出最快形状和可直接粘贴的 `qrypt.toml` 配置；它只读文件，不需要写权限。测试项、输出含义和完整调试流程见[调试文档](../for-developer/debug.md)。
 
 任务控制：
 

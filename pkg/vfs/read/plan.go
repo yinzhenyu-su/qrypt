@@ -70,10 +70,17 @@ func (p ReadPlan) prefetchHorizonChunks() int64 {
 	return int64(p.PrefetchChunks) * int64(p.PrefetchDepth)
 }
 
-// PlanOverride is restricted to measurement tools.
+// PlanOverride is restricted to measurement tools. Zero MaxStreams and
+// WindowChunks mean "keep the resolved value"; the pointer fields separate
+// "keep" from a meaningful zero (PrefetchDepth 0 disables lookahead,
+// PartBytes 0 asks for an even split, MinParallelBytes 0 removes the gate).
 type PlanOverride struct {
 	MaxStreams        int
 	WindowChunks      int
+	PrefetchChunks    int
+	PrefetchDepth     *int
+	PartBytes         *int64
+	MinParallelBytes  *int64
 	FetchIdleTimeout  time.Duration
 	FetchTotalTimeout time.Duration
 }

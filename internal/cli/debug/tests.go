@@ -93,6 +93,11 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 		cmd.Flags().String("total-timeout", "", "override the read fetch total timeout for this measurement")
 		cmd.Flags().Int("streams", 0, "override concurrent read streams for this measurement (0 = driver default)")
 		cmd.Flags().String("window", "", "override read window in bytes or KiB/MiB for this measurement")
+		cmd.Flags().String("prefetch-window", "", "override the lookahead window in bytes or KiB/MiB (default: read window)")
+		cmd.Flags().Int("prefetch-depth", 0, "override lookahead windows kept ahead (1-4)")
+		cmd.Flags().Bool("no-prefetch", false, "disable lookahead for this measurement")
+		cmd.Flags().String("part-size", "", "override the split part ceiling in bytes, KiB/MiB, or auto")
+		cmd.Flags().String("min-parallel", "", "override the smallest window eligible for parallel splitting")
 		cmd.Flags().String("block-size", "", "read block size in bytes, or k/m/g suffix (default 1m)")
 		cmd.Flags().String("cache-mode", "both", "cache mode: cold, warm, or both")
 		cmd.Flags().String("pattern", "sequential", "read pattern: sequential, seek, or both")
@@ -175,6 +180,47 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 		}
 		req.WindowBytes = n
 	}
+	if flag := cmd.Flags().Lookup("prefetch-window"); flag != nil && flag.Changed {
+		value, _ := cmd.Flags().GetString("prefetch-window")
+		n, err := config.ParseSize(value)
+		if err != nil || n <= 0 || n > 32<<20 {
+			return fmt.Errorf("read test --prefetch-window must be between 1 byte and 32 MiB")
+		}
+		req.PrefetchWindowBytes = n
+	}
+	if flag := cmd.Flags().Lookup("no-prefetch"); flag != nil && flag.Changed {
+		if disabled, _ := cmd.Flags().GetBool("no-prefetch"); disabled {
+			zero := 0
+			req.PrefetchDepth = &zero
+		}
+	}
+	if flag := cmd.Flags().Lookup("prefetch-depth"); flag != nil && flag.Changed {
+		value, _ := cmd.Flags().GetInt("prefetch-depth")
+		if value < 1 || value > 4 {
+			return fmt.Errorf("read test --prefetch-depth must be between 1 and 4 (use --no-prefetch to disable)")
+		}
+		req.PrefetchDepth = &value
+	}
+	if flag := cmd.Flags().Lookup("part-size"); flag != nil && flag.Changed {
+		value, _ := cmd.Flags().GetString("part-size")
+		var n int64
+		if strings.TrimSpace(value) != "auto" {
+			parsed, err := config.ParseSize(value)
+			if err != nil || parsed <= 0 || parsed > 32<<20 {
+				return fmt.Errorf("read test --part-size must be between 1 byte and 32 MiB, or auto")
+			}
+			n = parsed
+		}
+		req.PartBytes = &n
+	}
+	if flag := cmd.Flags().Lookup("min-parallel"); flag != nil && flag.Changed {
+		value, _ := cmd.Flags().GetString("min-parallel")
+		n, err := config.ParseSize(value)
+		if err != nil || n < 0 || n > 32<<20 {
+			return fmt.Errorf("read test --min-parallel must be between 0 and 32 MiB")
+		}
+		req.MinParallelBytes = &n
+	}
 	if flag := cmd.Flags().Lookup("block-size"); flag != nil {
 		req.BlockSize, _ = cmd.Flags().GetString("block-size")
 	}
@@ -256,7 +302,7 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		}
 	case "read":
 		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
-			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --offset, --length, --idle-timeout, --total-timeout, --streams, --window, --size, --block-size, --cache-mode, --pattern, --samples, --fresh-offsets, --offset-step, --hold-open, --timeline, and seek options")
+			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --offset, --length, --idle-timeout, --total-timeout, --streams, --window, --prefetch-window, --prefetch-depth, --no-prefetch, --part-size, --min-parallel, --size, --block-size, --cache-mode, --pattern, --samples, --fresh-offsets, --offset-step, --hold-open, --timeline, and seek options")
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("read test requires --mount")

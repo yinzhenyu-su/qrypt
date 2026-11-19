@@ -117,26 +117,36 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.Rea
 	return v.reader.Read(ctx, path, offset, size)
 }
 
-// SetReadPlanOverride applies a measurement-only stream/window/timeout
-// override to every read until ClearReadPlanOverride. Probe read benchmarks
-// use it to compare configurations without rebuilding or remounting. It is not
-// exposed through the CLI or config.
-func (v *VFS) SetReadPlanOverride(mount string, maxStreams int, windowBytes int64, idle, total time.Duration) error {
+// ReadPlanOverride is the measurement-only read shape probe benchmarks apply
+// before a run. Zero MaxStreams and WindowChunks keep the resolved shape.
+type ReadPlanOverride = read.PlanOverride
+
+// SetReadPlanOverride applies a measurement-only shape override to every read
+// until ClearReadPlanOverride. Probe read benchmarks use it to compare
+// configurations without rebuilding or remounting. It is not exposed through
+// config or the FUSE surface.
+func (v *VFS) SetReadPlanOverride(mount string, override ReadPlanOverride) error {
 	if mount != "" && vfstypes.CleanMountName(mount) != vfstypes.CleanMountName(v.name) {
 		return fmt.Errorf("vfs: unknown mount %q", mount)
 	}
-	if maxStreams < 0 || maxStreams > 32 || windowBytes < 0 || windowBytes > drive.MaxReadWindowBytes {
+	if override.MaxStreams < 0 || override.MaxStreams > 32 || override.WindowChunks < 0 || override.PrefetchChunks < 0 {
 		return fmt.Errorf("vfs: invalid read measurement override")
 	}
-	if maxStreams > 1 && !v.readSource.Policy().Limits.Parallel {
+	if int64(override.WindowChunks)*int64(read.ChunkSize) > drive.MaxReadWindowBytes || int64(override.PrefetchChunks)*int64(read.ChunkSize) > drive.MaxReadWindowBytes {
+		return fmt.Errorf("vfs: read measurement window exceeds %d bytes", drive.MaxReadWindowBytes)
+	}
+	if override.PrefetchDepth != nil && (*override.PrefetchDepth < 0 || *override.PrefetchDepth > 4) {
+		return fmt.Errorf("vfs: read measurement prefetch depth must be 0..4")
+	}
+	for _, size := range []*int64{override.PartBytes, override.MinParallelBytes} {
+		if size != nil && (*size < 0 || *size > drive.MaxReadWindowBytes) {
+			return fmt.Errorf("vfs: read measurement part size must be 0..%d", drive.MaxReadWindowBytes)
+		}
+	}
+	if override.MaxStreams > 1 && !v.readSource.Policy().Limits.Parallel {
 		return fmt.Errorf("vfs: driver does not support shared parallel ranges")
 	}
-	v.reader.SetPlanOverride(read.PlanOverride{
-		MaxStreams:        maxStreams,
-		WindowChunks:      int((windowBytes + read.ChunkSize - 1) / read.ChunkSize),
-		FetchIdleTimeout:  idle,
-		FetchTotalTimeout: total,
-	})
+	v.reader.SetPlanOverride(override)
 	return nil
 }
 

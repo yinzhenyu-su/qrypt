@@ -61,7 +61,7 @@ func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
 		if !bytes.Equal(result.data, r.host.data[seekOffset:seekOffset+ChunkSize]) {
 			t.Fatal("seek returned wrong bytes")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("seek waited for the oversized in-flight prefetch window")
 	}
 

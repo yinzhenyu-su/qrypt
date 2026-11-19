@@ -426,7 +426,7 @@ func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 }
 
 // SetReadPlanOverride applies a measurement-only override to one mount.
-func (n *Namespace) SetReadPlanOverride(mount string, maxStreams int, windowBytes int64, idle, total time.Duration) error {
+func (n *Namespace) SetReadPlanOverride(mount string, override ReadPlanOverride) error {
 	name := vfstypes.CleanMountName(mount)
 	n.mu.RLock()
 	fs := n.mounts[name]
@@ -434,7 +434,7 @@ func (n *Namespace) SetReadPlanOverride(mount string, maxStreams int, windowByte
 	if fs == nil {
 		return fmt.Errorf("vfs: unknown mount %q", name)
 	}
-	return fs.SetReadPlanOverride("", maxStreams, windowBytes, idle, total)
+	return fs.SetReadPlanOverride("", override)
 }
 
 // ClearReadPlanOverride removes the measurement override from every mount.

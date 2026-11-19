@@ -171,6 +171,30 @@ func (r *Reader) applyPlanOverride(plan *ReadPlan) bool {
 		plan.WindowChunks = override.WindowChunks
 		changed = true
 	}
+	if override.PrefetchChunks > 0 {
+		plan.PrefetchChunks = override.PrefetchChunks
+		if plan.PrefetchDepth <= 0 {
+			plan.PrefetchDepth = 1
+		}
+		changed = true
+	}
+	if override.PrefetchDepth != nil {
+		plan.PrefetchDepth = *override.PrefetchDepth
+		if plan.PrefetchDepth <= 0 {
+			plan.PrefetchChunks = 0
+		} else if plan.PrefetchChunks <= 0 {
+			plan.PrefetchChunks = plan.WindowChunks
+		}
+		changed = true
+	}
+	if override.PartBytes != nil {
+		plan.PartBytes = *override.PartBytes
+		changed = true
+	}
+	if override.MinParallelBytes != nil {
+		plan.MinParallelBytes = *override.MinParallelBytes
+		changed = true
+	}
 	return changed
 }
 

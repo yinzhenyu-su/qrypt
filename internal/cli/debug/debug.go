@@ -52,6 +52,7 @@ data. Unlike debug, these commands use the mutable control socket.`,
 	cmd.AddCommand(NewTestCmd(rt))
 	cmd.AddCommand(NewCacheCmd(rt))
 	cmd.AddCommand(NewFaultCmd(rt))
+	cmd.AddCommand(NewTuneCmd(rt))
 	return cmd
 }
 
