@@ -1,6 +1,9 @@
 package read
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLookaheadAccountingSeparatesDedupeFromOverlap(t *testing.T) {
 	state := NewState(nil)
@@ -55,5 +58,29 @@ func TestWindowTakeoverPreservesOtherSessionsAndDependents(t *testing.T) {
 	state.endWindowLoad(load)
 	if state.windows.loads["key"] != fresh {
 		t.Fatal("late old cleanup deleted the replacement")
+	}
+}
+
+func TestAbandonedWindowWakesQuiesceWaiters(t *testing.T) {
+	state := NewState(nil)
+	defer state.Close()
+	load := &windowLoad{fid: "file", start: 0, end: 1, done: make(chan struct{})}
+	state.beginWindowLoad("key", load)
+	// Drain the registration signal so the assertion below only sees the
+	// abandonment notification.
+	select {
+	case <-state.quiesceChanged():
+	default:
+	}
+	if !state.abandonWindow(load, 0, true) {
+		t.Fatal("scope cleanup could not abandon an unshared window")
+	}
+	if !state.windowsEmpty() {
+		t.Fatal("abandoned window still registered")
+	}
+	select {
+	case <-state.quiesceChanged():
+	case <-time.After(time.Second):
+		t.Fatal("abandoning the last window did not wake quiesce waiters")
 	}
 }

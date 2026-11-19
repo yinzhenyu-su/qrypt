@@ -358,14 +358,19 @@ func (s *State) attachWindow(load *windowLoad) (func(), bool) {
 
 func (s *State) abandonWindow(load *windowLoad, session uint64, scopeEnded bool) bool {
 	s.windows.mu.Lock()
-	defer s.windows.mu.Unlock()
 	allowed := scopeEnded && load.waiters == 0 || !scopeEnded && session != 0 && load.sessionID == session && load.waiters == 1
 	if !allowed || load.abandoned {
+		s.windows.mu.Unlock()
 		return false
 	}
 	load.abandoned = true
 	if s.windows.loads[load.key] == load {
 		delete(s.windows.loads, load.key)
 	}
+	s.windows.mu.Unlock()
+	// Removing the last load empties the domain; Quiesce and the settle waits
+	// watch quiesceChanged instead of polling, so the transition must be
+	// announced like beginWindowLoad/endWindowLoad do.
+	s.quiesceSignal()
 	return true
 }
