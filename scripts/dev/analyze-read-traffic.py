@@ -231,6 +231,9 @@ def parse_trace(path):
                     "local_wait_us": as_int(extra.get("local_wait_us")),
                     "queue_us": as_int(extra.get("queue_us")),
                     "fetch_attempts": max(1, as_int(extra.get("fetch_attempts", 1))),
+                    "read_intent": str(extra.get("read_intent", "")),
+                    "window_chunks": as_int(extra.get("window_chunks")),
+                    "part_bytes": as_int(extra.get("part_bytes")),
                 }
             )
     return {
@@ -603,6 +606,31 @@ def coverage_summary(windows):
     }
 
 
+def intent_summary(windows):
+    """Group executed windows by read intent.
+
+    Playback and downloads share one executor, so the only per-intent evidence
+    in the log is what the window rows themselves recorded. Downloads report
+    few, wide windows while playback keeps one narrow window per read; a bulk
+    run that matches the playback shape is a policy that never took effect.
+    """
+    groups = {}
+    for window in windows:
+        intent = window.get("read_intent") or "unspecified"
+        group = groups.setdefault(
+            intent,
+            {"windows": 0, "chunks": 0, "body_bytes": 0, "max_window_chunks": 0, "part_bytes": 0},
+        )
+        group["windows"] += 1
+        chunks = window.get("window_chunks", 0)
+        group["chunks"] += chunks
+        group["max_window_chunks"] = max(group["max_window_chunks"], chunks)
+        group["body_bytes"] += window.get("body_bytes", 0)
+        if group["part_bytes"] == 0 and window.get("part_bytes", 0) > 0:
+            group["part_bytes"] = window["part_bytes"]
+    return groups
+
+
 def summarize_windows(windows):
     """Classify window rows by the stall their own timings show.
 
@@ -620,6 +648,7 @@ def summarize_windows(windows):
         "classification": {},
         "slowest": [],
         "coverage": coverage_summary(windows),
+        "intent": intent_summary(windows),
     }
     slowest = []
     for window in windows:
@@ -968,6 +997,7 @@ def self_check():
         assert report["passes"]["seek-01"]["cross_pass_delivered_bytes"] == 0, report["passes"]
         assert totals["complete"] is True and totals["completeness_problems"] == [], totals
     self_check_coverage()
+    self_check_intent()
     self_check_review()
     print("read-traffic self-check passed")
 
@@ -986,6 +1016,25 @@ def self_check_coverage():
     assert coverage["redundant_bytes_estimate"] == 2 * READ_CHUNK_SIZE, coverage
     assert coverage["max_chunk_visits"] == 2, coverage
     assert coverage["top_duplicates"][0]["chunk"] == 1, coverage
+
+
+def self_check_intent():
+    """Pin the per-intent shape summary that replaces rate-limited event rows."""
+    windows = [
+        {"phase": "fetch_window", "offset": 0, "size": 2 * 1024 * 1024,
+         "read_intent": "interactive", "window_chunks": 4, "body_bytes": 1000, "part_bytes": 524288},
+        {"phase": "prefetch_window", "offset": 2 * 1024 * 1024, "size": 512 * 1024,
+         "read_intent": "interactive", "window_chunks": 1, "body_bytes": 100},
+        {"phase": "fetch_window", "offset": 4 * 1024 * 1024, "size": 16 * 1024 * 1024,
+         "read_intent": "bulk", "window_chunks": 32, "body_bytes": 5000, "part_bytes": 8 * 1024 * 1024},
+        {"phase": "fetch_window", "offset": 0, "size": 1024 * 1024, "window_chunks": 2, "body_bytes": 10},
+    ]
+    groups = intent_summary(windows)
+    assert groups["interactive"]["windows"] == 2, groups
+    assert groups["interactive"]["chunks"] == 5, groups
+    assert groups["bulk"]["windows"] == 1 and groups["bulk"]["max_window_chunks"] == 32, groups
+    assert groups["bulk"]["part_bytes"] == 8 * 1024 * 1024, groups
+    assert groups["unspecified"]["windows"] == 1 and groups["unspecified"]["chunks"] == 2, groups
 
 
 def self_check_review():
@@ -1298,6 +1347,12 @@ def main():
     for row in coverage["top_duplicates"]:
         print(
             f"duplicate offset={row['offset']} extra_visits={row['extra_visits']}"
+        )
+    for intent, group in sorted(summary["intent"].items()):
+        print(
+            f"intent={intent} windows={group['windows']} chunks={group['chunks']} "
+            f"max_window_chunks={group['max_window_chunks']} "
+            f"part_bytes={group['part_bytes']} body_bytes={group['body_bytes']}"
         )
     for row in summary["slowest"][:3]:
         print(

@@ -96,6 +96,13 @@ type MountedReadMeasurement struct {
 	CacheHitRate   float64            `json:"cache_hit_rate"`
 	WireBytes      int64              `json:"wire_bytes,omitempty"`
 	Amplification  float64            `json:"amplification,omitempty"`
+	// Executed shape of the windows this sample triggered. The event log is
+	// rate limited, so these come from the same rows the sample's own reads
+	// produced and answer "did the override actually execute".
+	ExecutedStreams      int   `json:"executed_streams,omitempty"`
+	ExecutedWindowChunks int   `json:"executed_window_chunks,omitempty"`
+	ExecutedWindowBytes  int64 `json:"executed_window_bytes,omitempty"`
+	ExecutedPartBytes    int64 `json:"executed_part_bytes,omitempty"`
 	// HoldOpen reports that this sample reused one mounted handle instead of
 	// opening the file itself.
 	HoldOpen bool `json:"hold_open,omitempty"`
@@ -217,6 +224,9 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 			size = info.Size()
 			if req.Size != "" && ParseXferSize(req.Size) != size {
 				optionErr = fmt.Errorf("read test size %q does not match %s (%d bytes)", req.Size, existingPath, size)
+			}
+			if err := ensureRemoteSettled(fs, mount, existingPath); err != nil {
+				optionErr = err
 			}
 		}
 	}
@@ -532,6 +542,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
 				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
 				measureAmplification(&measurement, events)
+				measureExecutedShape(&measurement, events)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
@@ -566,6 +577,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
 				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
 				measureAmplification(&measurement, events)
+				measureExecutedShape(&measurement, events)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
@@ -645,6 +657,46 @@ func mountedTestPath(mountPoint, virtualPath string) (string, error) {
 		return "", fmt.Errorf("mount point is not a directory: %s", abs)
 	}
 	return filepath.Join(abs, filepath.FromSlash(strings.TrimPrefix(virtualPath, "/"))), nil
+}
+
+// ensureRemoteSettled rejects a read target whose bytes may still be local.
+// A just-written file is served from upload staging until the upload drains,
+// so measuring it reports the local disk as if it were the provider. This is
+// the guard that catches the "fake 28 MB/s" mistake instead of a benchmark
+// that silently reports staging speed.
+func ensureRemoteSettled(fs any, mount, virtualPath string) error {
+	snapshotter, ok := fs.(vfsDebugSnapshotter)
+	if !ok {
+		return nil
+	}
+	target := cleanVirtualPath(virtualPath)
+	for _, mountState := range snapshotter.DebugSnapshot().Mounts {
+		if !debugMountNameMatches(mountState.Identity.Name, mount) {
+			continue
+		}
+		for _, pending := range mountState.PendingUploads() {
+			if cleanVirtualPath(pending.Path) == target {
+				return fmt.Errorf("read target %q still has a pending upload; its bytes may come from local staging — wait for the upload to drain or measure another file", virtualPath)
+			}
+		}
+		for _, upload := range mountState.ActiveUploads() {
+			if cleanVirtualPath(upload.Path) == target {
+				return fmt.Errorf("read target %q is still uploading (%d/%d bytes); measuring now would read local staging — wait for the upload to drain or measure another file", virtualPath, upload.BytesUploaded, upload.BytesTotal)
+			}
+		}
+	}
+	return nil
+}
+
+func cleanVirtualPath(virtualPath string) string {
+	cleaned := strings.TrimSpace(virtualPath)
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = "/" + cleaned
+	}
+	for len(cleaned) > 1 && strings.HasSuffix(cleaned, "/") {
+		cleaned = strings.TrimSuffix(cleaned, "/")
+	}
+	return cleaned
 }
 
 func createMountedReadFixture(ctx context.Context, fs vfs.FileSystem, file, dir, mount string, size int64) (string, error) {
@@ -1529,6 +1581,72 @@ func measureAmplification(measurement *MountedReadMeasurement, events []drive.Me
 	if measurement.Bytes > 0 {
 		measurement.Amplification = float64(wire) / float64(measurement.Bytes)
 	}
+}
+
+// measureExecutedShape records the widest window shape the sample executed.
+// A plan override that never reached the provider shows up as the old shape,
+// which a rate-limited event log alone cannot prove.
+func measureExecutedShape(measurement *MountedReadMeasurement, events []drive.MetricEvent) {
+	var windowBytes int64
+	for _, event := range events {
+		if event.Phase != "fetch_window" && event.Phase != "prefetch_window" {
+			continue
+		}
+		streams := metricExtraInt(event.Extra, "read_streams")
+		if streams == 0 {
+			streams = metricExtraInt(event.Extra, "granted_streams")
+		}
+		if streams > measurement.ExecutedStreams {
+			measurement.ExecutedStreams = streams
+		}
+		chunks := metricExtraInt(event.Extra, "window_chunks")
+		if chunks > measurement.ExecutedWindowChunks {
+			measurement.ExecutedWindowChunks = chunks
+		}
+		bytes := metricExtraInt64(event.Extra, "window_bytes")
+		if bytes == 0 {
+			bytes = metricExtraInt64(event.Extra, "requested")
+		}
+		if bytes > windowBytes {
+			windowBytes = bytes
+		}
+		if part := metricExtraInt64(event.Extra, "part_bytes"); part > 0 {
+			measurement.ExecutedPartBytes = part
+		}
+	}
+	measurement.ExecutedWindowBytes = windowBytes
+}
+
+func metricExtraInt(extra map[string]any, key string) int {
+	switch v := extra[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+func metricExtraInt64(extra map[string]any, key string) int64 {
+	switch v := extra[key].(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // mountedReadWireBytes sums provider body bytes across the window events of one

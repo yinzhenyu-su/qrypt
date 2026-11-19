@@ -877,6 +877,7 @@
   "flag.probe.bench.read.mount.usage": "基准测试使用的挂载名",
   "flag.probe.bench.read.size.usage": "基准测试文件大小（字节），或使用 k/m/g 后缀",
   "flag.probe.bench.read.concurrency.usage": "逗号分隔的并发流数量（默认 1,2,4,8）",
+  "flag.probe.bench.read.path.usage": "直接通过驱动读取已有的虚拟文件，而不是先上传基准文件",
   "cmd.probe.bench.upload.example": "  qrypt probe bench upload --mount cloud --size 64m",
   "cmd.probe.bench.upload.long": "一次并发上传 1..N 个文件，并扫描驱动的上传分块大小。测量聚合上传吞吐，用于判断增加线程数或调整分片大小能否改善慢速挂载。",
   "cmd.probe.bench.upload.short": "运行上传并发与分块大小基准",

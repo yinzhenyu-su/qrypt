@@ -877,6 +877,7 @@
   "flag.probe.bench.read.mount.usage": "mount name for benchmark",
   "flag.probe.bench.read.size.usage": "benchmark fixture size in bytes, or k/m/g suffix",
   "flag.probe.bench.read.concurrency.usage": "comma-separated stream counts (default 1,2,4,8)",
+  "flag.probe.bench.read.path.usage": "benchmark an existing virtual file through its driver instead of uploading a fixture",
   "cmd.probe.bench.upload.example": "  qrypt probe bench upload --mount cloud --size 64m",
   "cmd.probe.bench.upload.long": "Upload 1..N files at once and sweep the driver's upload chunk size. It measures aggregate upload throughput and shows whether more threads or a different part size helps a slow mount.",
   "cmd.probe.bench.upload.short": "Run an upload concurrency and chunk-size benchmark",

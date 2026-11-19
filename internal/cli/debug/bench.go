@@ -63,6 +63,7 @@ func newDebugBenchCaseCmd(rt cliruntime.Runtime, test, short string) *cobra.Comm
 	if test == "read" {
 		cmd.Flags().String("size", "", "benchmark fixture size in bytes, or k/m/g suffix")
 		cmd.Flags().String("concurrency", "", "comma-separated stream counts (default 1,2,4,8)")
+		cmd.Flags().String("path", "", "benchmark an existing virtual file instead of uploading a fixture")
 	}
 	if test == "upload" {
 		cmd.Flags().String("size", "", "size of each uploaded file, or k/m/g suffix")
@@ -128,6 +129,10 @@ func runDebugDriverBench(cmd *cobra.Command, test string) error {
 	if flag := cmd.Flags().Lookup("concurrency"); flag != nil {
 		req.Concurrency, _ = cmd.Flags().GetString("concurrency")
 	}
+	if flag := cmd.Flags().Lookup("path"); flag != nil {
+		req.Path, _ = cmd.Flags().GetString("path")
+		req.Path = strings.TrimSpace(req.Path)
+	}
 	if flag := cmd.Flags().Lookup("chunk-size"); flag != nil {
 		req.ChunkSize, _ = cmd.Flags().GetString("chunk-size")
 	}
@@ -180,10 +185,13 @@ func ValidateDriverBenchRequest(req contracttest.DriverTestRequest) error {
 		}
 	case "read":
 		if req.Source != "" || req.Dest != "" || req.VFS {
-			return fmt.Errorf("read benchmark only supports --mount, --size, and --concurrency")
+			return fmt.Errorf("read benchmark only supports --mount, --size, --concurrency, and --path")
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("read benchmark requires --mount\n\nExample:\n  qrypt probe bench read --mount cloud --size 64m")
+		}
+		if req.Path != "" && !strings.HasPrefix(req.Path, "/") {
+			return fmt.Errorf("read benchmark --path must be an absolute virtual path")
 		}
 		if req.Size != "" {
 			size := contracttest.ParseXferSize(req.Size)

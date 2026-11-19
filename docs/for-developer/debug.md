@@ -416,6 +416,19 @@ keeping the resolved value for `--streams` and `auto` meaning an even split for
 affects the same code path a real playback read takes; the same flags are
 covered by `probe test read` when a single shape needs confirmation.
 
+### Benchmark An Existing File
+
+`probe bench read` uploads a generated fixture by default, which needs a
+writable mount. Add `--path` to read an existing virtual file through the
+driver instead, so read-only mounts and read-only drivers can be measured:
+
+```sh
+qrypt probe bench read --mount koofr --path "/My videos/movie.mp4" --size 32m --concurrency 1,2,4,8
+```
+
+The benchmark still bypasses the VFS and encryption layers; `--size` defaults
+to the smaller of the file and 32 MiB and is clamped to the file length.
+
 ### Measure Cache-Miss Load Time
 
 `playback-sim.py` bypasses the OS page cache by default but still reads through
@@ -471,7 +484,14 @@ behavior. When measuring an existing file with `--path`, add
 lands in a region no earlier sample fetched. Each measurement also reports
 `wire_bytes` and `amplification` (provider bytes per delivered byte) computed
 from the window events of that read, so over-fetch on a slow link shows up in
-the same output as the latency and throughput numbers.
+the same output as the latency and throughput numbers. `executed_streams`,
+`executed_window_chunks`, `executed_window_bytes` and `executed_part_bytes`
+report the shape the provider actually ran, so a plan override or a driver
+default can be checked against what executed instead of what was requested.
+When `--path` points at a file that is still uploading, the command refuses to
+measure it: reads of a pending file can come from local staging, so the run
+waits for the upload to drain instead of reporting local disk speed as a
+provider result.
 
 ### Inject Read Faults
 

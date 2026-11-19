@@ -18,6 +18,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
@@ -625,5 +626,57 @@ func TestMeasureMountedFileHeldHandleAndTimeline(t *testing.T) {
 	}
 	if got := sha256.Sum256(data[32<<10 : 64<<10]); second.ContentHash != fmt.Sprintf("%x", got) {
 		t.Fatalf("held second sample content hash = %s, want %x", second.ContentHash, got)
+	}
+}
+
+type settleFakeSnapshotter struct {
+	snapshot diagnostics.DebugSnapshot
+}
+
+func (f settleFakeSnapshotter) DebugSnapshot() diagnostics.DebugSnapshot { return f.snapshot }
+
+func settleSnapshot(mount string, pending []vfstypes.PendingUpload, active []upload.UploadSnapshot) diagnostics.DebugSnapshot {
+	return diagnostics.DebugSnapshot{Mounts: []diagnostics.MountSnapshot{{
+		Identity:    diagnostics.MountSnapshotIdentity{Name: mount},
+		Overlay:     diagnostics.MountSnapshotOverlay{Pending: pending},
+		UploadState: diagnostics.MountSnapshotUploads{Active: active},
+	}}}
+}
+
+func TestEnsureRemoteSettledRejectsStaging(t *testing.T) {
+	pending := settleFakeSnapshotter{snapshot: settleSnapshot("koofr", []vfstypes.PendingUpload{{Path: "/media/new.txt"}}, nil)}
+	if err := ensureRemoteSettled(pending, "koofr", "/media/new.txt"); err == nil || !strings.Contains(err.Error(), "pending upload") {
+		t.Fatalf("pending upload was not rejected: %v", err)
+	}
+
+	active := settleFakeSnapshotter{snapshot: settleSnapshot("koofr", nil, []upload.UploadSnapshot{{Path: "/media/uploading.txt", BytesUploaded: 10, BytesTotal: 40}})}
+	err := ensureRemoteSettled(active, "koofr", "/media/uploading.txt/")
+	if err == nil || !strings.Contains(err.Error(), "still uploading") || !strings.Contains(err.Error(), "10/40") {
+		t.Fatalf("active upload was not rejected with byte counts: %v", err)
+	}
+
+	if err := ensureRemoteSettled(active, "koofr", "/media/settled.txt"); err != nil {
+		t.Fatalf("settled target was rejected: %v", err)
+	}
+	if err := ensureRemoteSettled(pending, "other", "/media/new.txt"); err != nil {
+		t.Fatalf("staging on another mount blocked the read: %v", err)
+	}
+	if err := ensureRemoteSettled(struct{}{}, "koofr", "/media/new.txt"); err != nil {
+		t.Fatalf("filesystem without a snapshot was rejected: %v", err)
+	}
+}
+
+func TestMeasureExecutedShapeReportsWindowAndPartSize(t *testing.T) {
+	events := []drive.MetricEvent{
+		{Phase: "fetch_window", Extra: map[string]any{"read_streams": 2, "actual_in_flight": 2, "window_chunks": int64(4), "window_bytes": int64(2 << 20), "part_bytes": int64(1 << 20)}},
+		{Phase: "prefetch_window", Extra: map[string]any{"read_streams": 1, "window_chunks": 1, "requested": int64(512 << 10)}},
+	}
+	var measurement MountedReadMeasurement
+	measureExecutedShape(&measurement, events)
+	if measurement.ExecutedStreams != 2 || measurement.ExecutedWindowChunks != 4 {
+		t.Fatalf("executed streams/chunks = %d/%d, want 2/4", measurement.ExecutedStreams, measurement.ExecutedWindowChunks)
+	}
+	if measurement.ExecutedWindowBytes != 2<<20 || measurement.ExecutedPartBytes != 1<<20 {
+		t.Fatalf("executed window/part bytes = %d/%d, want 2MiB/1MiB", measurement.ExecutedWindowBytes, measurement.ExecutedPartBytes)
 	}
 }

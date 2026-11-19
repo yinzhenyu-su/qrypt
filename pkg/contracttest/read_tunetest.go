@@ -111,6 +111,9 @@ func RunVFSReadTune(ctx context.Context, fs vfs.FileSystem, mount string, req Dr
 	if _, err := os.Stat(mountedPath); err != nil {
 		return finish(fmt.Errorf("stat tuned file: %w", err))
 	}
+	if err := ensureRemoteSettled(fs, mount, req.Path); err != nil {
+		return finish(err)
+	}
 	size := int64(tuneDefaultSize)
 	if strings.TrimSpace(req.Size) != "" {
 		size = ParseXferSize(req.Size)
