@@ -680,3 +680,20 @@ func TestMeasureExecutedShapeReportsWindowAndPartSize(t *testing.T) {
 		t.Fatalf("executed window/part bytes = %d/%d, want 2MiB/1MiB", measurement.ExecutedWindowBytes, measurement.ExecutedPartBytes)
 	}
 }
+
+func TestMountedReadParallelGate(t *testing.T) {
+	serial := []MountedReadMeasurement{{ExecutedStreams: 1}, {ExecutedStreams: 1}}
+	if err := mountedReadParallelError(serial); err == nil || !strings.Contains(err.Error(), "single-stream") {
+		t.Fatalf("single-stream run passed the parallel gate: %v", err)
+	}
+	if observed := mountedReadMaxStreams(serial); observed != 1 {
+		t.Fatalf("observed max streams = %d, want 1", observed)
+	}
+	wide := []MountedReadMeasurement{{ExecutedStreams: 1}, {ExecutedStreams: 4}}
+	if err := mountedReadParallelError(wide); err != nil {
+		t.Fatalf("parallel run failed the gate: %v", err)
+	}
+	if observed := mountedReadMaxStreams(wide); observed != 4 {
+		t.Fatalf("observed max streams = %d, want 4", observed)
+	}
+}

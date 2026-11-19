@@ -491,7 +491,10 @@ default can be checked against what executed instead of what was requested.
 When `--path` points at a file that is still uploading, the command refuses to
 measure it: reads of a pending file can come from local staging, so the run
 waits for the upload to drain instead of reporting local disk speed as a
-provider result.
+provider result. `--require-parallel` turns the executed shape into a gate: the
+run fails when every window ran single-stream, which is how a declared
+`parallel_range` capability or a bulk stream policy is proven to reach the
+provider instead of only being configured.
 
 ### Inject Read Faults
 

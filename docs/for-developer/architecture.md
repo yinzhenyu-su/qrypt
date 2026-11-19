@@ -428,7 +428,10 @@ with a deadline.
   (`interactive_window_loads`/`interactive_window_chunks` and
   `bulk_window_loads`/`bulk_window_chunks`) show what shape playback and
   downloads actually admitted; read events are rate limited, so a download's
-  window shape would otherwise not appear in the log at all.
+  window shape would otherwise not appear in the log at all. The resolved read
+  policy in the same snapshot carries `warnings` for shapes that cannot execute
+  as written (bulk streams or lookahead depth above `max_in_flight`, a minimum
+  parallel size wider than the bulk window).
 
 ## Upload State Flow
 

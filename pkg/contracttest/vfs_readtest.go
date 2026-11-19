@@ -638,7 +638,34 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 			}
 		}
 	}
+	if req.RequireParallel {
+		step := fsStep("require_parallel")
+		observed := mountedReadMaxStreams(result.Measurements)
+		step.Input = map[string]any{"require_parallel": true, "observed_max_streams": observed}
+		step.finish(time.Now(), mountedReadParallelError(result.Measurements))
+		result.Steps = append(result.Steps, step)
+	}
 	return result
+}
+
+// mountedReadMaxStreams is the widest provider concurrency any measurement
+// executed.
+func mountedReadMaxStreams(measurements []MountedReadMeasurement) int {
+	observed := 0
+	for _, measurement := range measurements {
+		observed = max(observed, measurement.ExecutedStreams)
+	}
+	return observed
+}
+
+// mountedReadParallelError is the --require-parallel gate: a driver that
+// declares parallel_range must be shown executing more than one provider range
+// in flight, otherwise the declaration is documentation, not behaviour.
+func mountedReadParallelError(measurements []MountedReadMeasurement) error {
+	if mountedReadMaxStreams(measurements) > 1 {
+		return nil
+	}
+	return fmt.Errorf("requested parallel reads but every window executed single-stream: the declared parallel_range capability did not reach the provider, check the driver read policy, bulk streams, and max_in_flight")
 }
 
 func mountedTestPath(mountPoint, virtualPath string) (string, error) {

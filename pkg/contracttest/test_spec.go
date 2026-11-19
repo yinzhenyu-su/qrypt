@@ -51,10 +51,13 @@ type DriverTestRequest struct {
 	SeekOverlapTimeout  string `json:"seek_overlap_timeout,omitempty"`
 	FetchIdleTimeout    string `json:"fetch_idle_timeout,omitempty"`
 	FetchTotalTimeout   string `json:"fetch_total_timeout,omitempty"`
-	Fault               string `json:"fault,omitempty"`
-	FaultAfter          string `json:"fault_after,omitempty"`
-	Concurrency         string `json:"concurrency,omitempty"`
-	ChunkSize           string `json:"chunk_size,omitempty"`
+	// RequireParallel fails a mounted read when every window executed
+	// single-stream, proving the declared parallel shape reached the provider.
+	RequireParallel bool   `json:"require_parallel,omitempty"`
+	Fault           string `json:"fault,omitempty"`
+	FaultAfter      string `json:"fault_after,omitempty"`
+	Concurrency     string `json:"concurrency,omitempty"`
+	ChunkSize       string `json:"chunk_size,omitempty"`
 }
 
 // NormalizeMountName accepts either a configured mount name or the same name
