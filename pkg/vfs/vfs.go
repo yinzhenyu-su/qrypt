@@ -420,7 +420,7 @@ func (v *VFS) ClearReadCacheForMount(name string) error {
 }
 
 func (v *VFS) CloseReadCache() error {
-	return v.read.Close()
+	return v.read.CloseReadCache()
 }
 
 func (v *VFS) recordHealthResult(op string, err error) {

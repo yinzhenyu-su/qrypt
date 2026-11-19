@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	testclock "github.com/yinzhenyu/qrypt/pkg/clock"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"go.uber.org/goleak"
 )
@@ -172,19 +173,30 @@ func TestReaderReadTricklingBodyHitsTotalCap(t *testing.T) {
 }
 
 func TestReaderWindowWaitersShareTimeoutError(t *testing.T) {
-	reader, _, driver := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
+	clk := fakeClockForTest()
+	reader, state, driver := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
 		BodyFunc: func(ctx context.Context, _ []byte) io.ReadCloser {
 			return &stalledReadBody{ctx: ctx}
 		},
 	})
-	ctx := WithoutReadPrefetch(context.Background())
+	ctx := drive.WithClock(WithoutReadPrefetch(context.Background()), clk)
 	errs := make(chan error, 3)
 	for i := 0; i < 3; i++ {
 		go func() {
 			errs <- readError(t, reader, ctx, 0, ChunkSize)
 		}()
 	}
-	deadline := time.After(3 * time.Second)
+	// All three readers must join one shared window load before its idle
+	// timeout fires; letting them race the 50ms wall clock made the call count
+	// depend on scheduler load.
+	waitForWindowWaiters(t, state.windows, 3)
+	// Fire the stalled attempt's idle timeout and then the drive-layer replay's
+	// timeout on the fake clock, so the shared-load outcome is deterministic.
+	for attempt := 0; attempt < 2; attempt++ {
+		waitForPendingTimer(t, clk)
+		clk.Advance(reader.profile.Fetch.Idle + time.Millisecond)
+	}
+	deadline := time.After(5 * time.Second)
 	for i := 0; i < 3; i++ {
 		select {
 		case err := <-errs:
@@ -199,6 +211,41 @@ func TestReaderWindowWaitersShareTimeoutError(t *testing.T) {
 	if calls := driver.ReadStats().Calls; calls != 2 {
 		t.Fatalf("driver calls = %d, want the waiters to share one load (attempt plus replay)", calls)
 	}
+}
+
+// waitForWindowWaiters blocks until one window load reports want waiters.
+func waitForWindowWaiters(t *testing.T, windows *windowState, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		windows.mu.Lock()
+		joined := false
+		for _, load := range windows.loads {
+			if load.waiters >= want {
+				joined = true
+				break
+			}
+		}
+		windows.mu.Unlock()
+		if joined {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d window waiters", want)
+}
+
+// waitForPendingTimer blocks until the fake clock holds a timer to fire.
+func waitForPendingTimer(t *testing.T, clk *testclock.Fake) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if clk.Pending() > 0 {
+			return
+		}
+		time.Sleep(100 * time.Microsecond)
+	}
+	t.Fatal("no fetch timer registered on the fake clock")
 }
 
 func TestReadPathReplaysTimedOutFetchOnce(t *testing.T) {

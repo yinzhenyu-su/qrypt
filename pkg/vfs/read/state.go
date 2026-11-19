@@ -101,6 +101,21 @@ func (s *State) Close() error {
 	return s.cache.Close()
 }
 
+// CloseReadCache closes the durable read-cache writer and cancels speculative
+// work while keeping the read path usable: a later cache-miss read starts a
+// fresh scope and fetches from the provider. Only Close (VFS teardown) makes
+// the scope registry permanently refuse new scopes.
+func (s *State) CloseReadCache() error {
+	if s == nil {
+		return nil
+	}
+	s.cancelAllScopes("cache_close")
+	if s.cache == nil {
+		return nil
+	}
+	return s.cache.Close()
+}
+
 // RuntimeStats reports window/prefetch/range-hit counters for debug.
 func (s *State) RuntimeStats() (windowLoads, prefetches, rangeHits int) {
 	s.windows.mu.Lock()

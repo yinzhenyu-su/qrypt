@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.7.1 (2026-11-19)
+
+### Features
+- feat(read): rewrite the read pipeline around one streaming engine — read-layer part scheduling, progressive 512 KiB publication, stateless lookahead from the consumed cursor, single-owner window waits, and one read-cache budget with a per-file pin
+- feat(read): collapse the policy matrix to interactive and bulk shapes with per-mount overrides; Quark now defaults to a 2 MiB sequential window with default-on adaptive splitting, Drime to 4 MiB sequential / 16 MiB two-stream bulk, and Koofr to 4 MiB / 16 MiB two-part bulk
+- feat(probe): report the resolved read plan and mark truncated measurements untrusted, add interleaved `probe ab read` comparisons, and keep the tune/verify/cache read commands
+- feat(cli): 新增 offline rm 并修复读路径 idle 误判 (#27)
+
+### Bug fixes
+- fix(drive): publish first-byte timings when the clock ticks zero, so a coarse-timer platform no longer drops `first_body_us`/`first_chunk_us` before the window completes
+
+### Others
+- test: injectable clock seam and Quiesce/Flush/WaitUploadsIdle idle primitives, parameterized KDF costs for tests, per-test race timings, and race-changed/race-shard layers
+- test(ci): warn on host load and retry timer-bound packages once in isolation, keeping `QRYPT_STRICT_FLAKES=1` and CI strict
+- ci: gate machine-specific paths, add a history scrubber, reclaim orphaned test temp dirs and stale mounts, and run the docs gate in check-all
+- ci: 在 macOS 15 上构建 darwin 发布产物 (#26)
+
+---
+
 ## v0.7.0 (2026-11-16)
 
 ### Features
