@@ -154,6 +154,14 @@ qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH]
 
 `Ctrl+C`、`SIGTERM`、关闭终端或断开 SSH（`SIGHUP`）都会触发优雅卸载。如果上一次挂载进程被强行结束，qrypt 会在下次挂载时自动识别并清理残留挂载点；仍失败时参见[挂载点残留](troubleshooting.md#挂载点残留)。
 
+测量吞吐时可以用隔离挂载，它把挂载点、运行目录和缓存都放在临时目录，强制只读，并自动为该作用域开启探针测试：
+
+```sh
+qrypt mount --isolated --name quark-encrypt --isolated-log-level debug
+```
+
+挂载成功后会向标准输出打印一段 JSON（`mount_point`、`qrypt_home`、`config`、`mounts`），供脚本定位临时挂载点；退出时自动卸载并删除临时目录。`--isolated-cache` 调整读缓存大小（默认 `2G`），`--isolated-log-file` 把结构化日志写到指定文件，`--isolated-keep` 保留临时目录以便排查。也可以在隔离挂载上运行 `qrypt probe tune read`、`qrypt probe test read --path` 等只读探针，不需要修改配置文件里的 `test_enabled`。
+
 ## 文件系统操作
 
 ```sh

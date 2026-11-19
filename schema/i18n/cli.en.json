@@ -909,5 +909,10 @@
   "flag.probe.test.read.no-prefetch.usage": "disable lookahead for this measurement",
   "flag.probe.test.read.part-size.usage": "override the split part ceiling in bytes, KiB/MiB, or auto",
   "flag.probe.test.read.min-parallel.usage": "override the smallest window eligible for parallel splitting",
-  "flag.probe.fault.read.rate.usage": "body rate for --kind rate, e.g. 150k"
+  "flag.probe.fault.read.rate.usage": "body rate for --kind rate, e.g. 150k",
+  "flag.mount.isolated.usage": "mount into a temporary home and mount point, read-only with probe tests enabled",
+  "flag.mount.isolated-cache.usage": "read cache size for an --isolated mount",
+  "flag.mount.isolated-log-level.usage": "log level for an --isolated mount",
+  "flag.mount.isolated-keep.usage": "keep the temporary home of an --isolated mount after it stops",
+  "flag.mount.isolated-log-file.usage": "write an --isolated mount's log to this file instead of the temporary home"
 }

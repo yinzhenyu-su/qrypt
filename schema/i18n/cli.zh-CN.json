@@ -909,5 +909,10 @@
   "flag.probe.test.read.no-prefetch.usage": "本次测量关闭预读",
   "flag.probe.test.read.part-size.usage": "覆盖拆分的数据块上限（字节、KiB/MiB 或 auto）",
   "flag.probe.test.read.min-parallel.usage": "覆盖可并行拆分的最小窗口大小",
-  "flag.probe.fault.read.rate.usage": "rate 故障的 body 速率，例如 150k"
+  "flag.probe.fault.read.rate.usage": "rate 故障的 body 速率，例如 150k",
+  "flag.mount.isolated.usage": "挂载到临时 home 和挂载点，只读并启用探针测试",
+  "flag.mount.isolated-cache.usage": "隔离挂载的读缓存大小",
+  "flag.mount.isolated-log-level.usage": "隔离挂载的日志级别",
+  "flag.mount.isolated-keep.usage": "隔离挂载停止后保留临时 home",
+  "flag.mount.isolated-log-file.usage": "将隔离挂载的日志写入该文件，而不是临时 home"
 }
