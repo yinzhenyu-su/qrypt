@@ -56,10 +56,15 @@ type readTraceStats struct {
 
 	// Observed flags separate "this phase did not run" from "it ran in zero
 	// time": the diagnostics keep the same keys the map accumulator emitted.
-	attempted       bool
-	queueObserved   bool
-	openObserved    bool
-	deliverObserved bool
+	// The first-body and first-chunk timings need the same distinction: an
+	// in-memory provider can deliver the first bytes within one clock tick,
+	// which is a real measurement of zero on coarse-timer platforms.
+	attempted          bool
+	queueObserved      bool
+	openObserved       bool
+	deliverObserved    bool
+	firstBodyObserved  bool
+	firstChunkObserved bool
 }
 
 // ReadTrace collects actual execution counters for one logical window. It is
@@ -101,11 +106,13 @@ func (t *ReadTrace) bodyProgress(n int, offset, received int64, started time.Tim
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.stats.firstBodyUS == 0 {
+	if !t.stats.firstBodyObserved {
 		t.stats.firstBodyUS = time.Since(started).Microseconds()
+		t.stats.firstBodyObserved = true
 	}
-	if t.stats.firstChunkUS == 0 && received >= ReadChunkSize {
+	if !t.stats.firstChunkObserved && received >= ReadChunkSize {
 		t.stats.firstChunkUS = time.Since(started).Microseconds()
+		t.stats.firstChunkObserved = true
 	}
 	if end := offset + received; end > t.stats.progressEnd {
 		t.stats.progressEnd, t.progressAt = end, time.Now()
@@ -221,10 +228,10 @@ func (t *ReadTrace) Snapshot() map[string]any {
 	if t.stats.deliverObserved {
 		out["deliver_us"] = t.stats.deliverUS
 	}
-	if t.stats.firstBodyUS > 0 {
+	if t.stats.firstBodyObserved {
 		out["first_body_us"] = t.stats.firstBodyUS
 	}
-	if t.stats.firstChunkUS > 0 {
+	if t.stats.firstChunkObserved {
 		out["first_chunk_us"] = t.stats.firstChunkUS
 	}
 	if t.stats.grantedStreams > 0 {
