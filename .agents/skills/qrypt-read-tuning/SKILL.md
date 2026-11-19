@@ -131,6 +131,31 @@ finalists. Retain the current default when evidence is incomplete or conflicting
 Record the evidence, executed shape and parameter decision separately from the
 validation status; the reference includes a reusable decision record.
 
+## Deterministic harnesses
+
+Before spending real-cloud quota, check the same behavior locally. These are the
+repo's first-class read-path harnesses:
+
+- Simulated provider: `pkg/testsupport/simread` wraps a driver with
+  `simread.Wrap(driver, simread.Config{TimeScale, RateBytesPerSec})` and
+  records issued requests; use it for policy/split tests that must not depend on
+  CDN jitter.
+- Record/replay: `pkg/drive/cassette` records real provider traffic
+  (`NewRecorder`, `SaveFile`) and replays it (`LoadFile`, `NewReplayer` with
+  `cassette.WithTimeScale`), so an incident becomes a deterministic regression
+  test. Check `Stats()` for replay amplification.
+- Hermetic gate: `scripts/ci/read-gate.sh` runs the read-gate suite without a
+  cloud; `--real-cloud MOUNT --config PATH` adds the live lane when you need it.
+- Plan-vs-executed check: `qrypt probe verify read --mount cloud --path ...`
+  clears the file's read cache, runs the requested shape
+  (`--window/--streams/--prefetch-depth/--part-size/--min-parallel`) and exits
+  nonzero when the executed shape differs; `--json` for CI.
+- Cache warm-up/invalidations: `qrypt probe cache clear|fill|invalidate` keeps
+  the mount process alive while resetting one file's read cache, which makes
+  cold-read comparisons reproducible.
+- Structured reads: `debug events/ops/read-memory --json` (schema-versioned
+  envelope) for window/admission/duplicate analysis instead of parsing logs.
+
 ## Measure
 
 ### 1. Establish a control
