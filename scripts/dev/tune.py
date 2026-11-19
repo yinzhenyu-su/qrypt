@@ -32,7 +32,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from qrypt_ab import Side, format_size, load_config, parse_size  # noqa: E402
+from qrypt_ab import Side, format_size, parse_size  # noqa: E402
 
 
 def cli_size(n: int) -> str:
@@ -71,7 +71,6 @@ def main() -> int:
     cfg_path = Path(args.config).expanduser().resolve()
     if not cfg_path.is_file():
         raise SystemExit(f"config not found: {cfg_path}")
-    base_cfg = load_config(cfg_path)
 
     tmp = Path(tempfile.mkdtemp(prefix="qrypt-tune-"))
     side = None
@@ -89,13 +88,13 @@ def main() -> int:
             if build.returncode != 0:
                 raise SystemExit(f"go build failed:\n{build.stderr.strip()}")
 
-        side = Side("tune", binary, tmp / "side", args.mount, args.path, base_cfg, args.log_level)
-        side.start()
+        side = Side("tune", binary, tmp / "side", args.mount, args.path, cfg_path)
+        side.start(log_level=args.log_level)
         print(f"isolated mount: {side.mnt}  (QRYPT_HOME {side.home}, sample size {format_size(args.size)})")
         size = cli_size(args.size)
         argv = [
             str(binary), "probe", "tune", "read",
-            "-c", str(side.cfg_path),
+            "-c", str(side.config_path),
             "--mount", args.mount,
             "--mount-point", str(side.mnt),
             "--path", args.path,
@@ -122,9 +121,9 @@ def main() -> int:
             side.stop()
         if not args.keep:
             shutil.rmtree(tmp, ignore_errors=True)
-            print(f"\nworked for {time.time() - started:.0f}s; temporary mount and config removed")
+            print(f"\nworked for {time.time() - started:.0f}s; temporary mount removed")
         else:
-            print(f"\nkept {tmp} (contains the rewritten config; delete it when done)")
+            print(f"\nkept {tmp} (measurement logs only; delete it when done)")
 
 
 if __name__ == "__main__":

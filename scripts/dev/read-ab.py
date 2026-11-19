@@ -114,22 +114,22 @@ def wire_bytes(log_path: Path) -> int:
     return total
 
 
-def amplification_pass(args, base_cfg: dict, tmp: Path, binaries: dict[str, Path]) -> dict[str, float]:
+def amplification_pass(args, config_path: Path, tmp: Path, binaries: dict[str, Path]) -> dict[str, float]:
     print()
     print("amplification pass (debug logging, providers wire bytes per delivered byte)")
     sides = {
-        role: Side(role, binaries[role], tmp / f"amp-{role}", args.mount, args.path, base_cfg, "debug")
+        role: Side(role, binaries[role], tmp / f"amp-{role}", args.mount, args.path, config_path)
         for role in ("ctl", "cand")
     }
     try:
         for side in sides.values():
-            side.start()
+            side.start(log_level="debug")
         rows = []
         for role, side in sides.items():
-            before = wire_bytes(side.log_path)
+            before = wire_bytes(side.runtime_log_path)
             sample = side.read_sample(args.amplify_offset << 20, args.amplify_bytes)
             time.sleep(0.5)  # let the last window event reach the log
-            wire = wire_bytes(side.log_path) - before
+            wire = wire_bytes(side.runtime_log_path) - before
             delivered = sample["bytes"] or 1
             rows.append((role, wire, delivered, wire / delivered, sample))
         print(f"{'side':>6} {'wire':>10} {'delivered':>10} {'amp':>6} {'rate MB/s':>10} {'ttfb':>7}")
@@ -194,7 +194,7 @@ def main() -> int:
     tmp.mkdir(parents=True, exist_ok=True)
     os.chmod(tmp, 0o700)
     if args.keep or args.workdir:
-        print("warning: kept workdir contains generated configs with cloud credentials; delete it when done")
+        print("warning: kept workdir contains measurement logs; delete it when done")
     print(f"workdir: {tmp}")
 
     binaries = {"ctl": tmp / "bin" / "qrypt-ctl", "cand": tmp / "bin" / "qrypt-cand"}
@@ -214,7 +214,7 @@ def main() -> int:
             subprocess.run(["go", "build", "-o", str(binaries["cand"]), "./cmd/qrypt"], cwd=REPO, check=True)
 
         for role in ("ctl", "cand"):
-            sides[role] = Side(role, binaries[role], tmp / role, mount, args.path, base_cfg, "info")
+            sides[role] = Side(role, binaries[role], tmp / role, mount, args.path, config_path)
             sides[role].start()
         for side in sides.values():
             size = side.local_path.stat().st_size
@@ -294,14 +294,14 @@ def main() -> int:
                                    "rounds": args.rounds, "rows": rows}, indent=2))
         print(f"results: {out}")
 
-        ctl_mount_log = sides["ctl"].log_path
-        cand_mount_log = sides["cand"].log_path
+        ctl_mount_log = sides["ctl"].runtime_log_path
+        cand_mount_log = sides["cand"].runtime_log_path
         print(f"logs: {ctl_mount_log} {cand_mount_log}")
 
         if args.amplify:
             for side in sides.values():
                 side.stop()
-            amps = amplification_pass(args, base_cfg, tmp, binaries)
+            amps = amplification_pass(args, config_path, tmp, binaries)
             if args.max_amplification > 0:
                 cand_amp = amps.get("cand", 0.0)
                 if cand_amp > args.max_amplification:

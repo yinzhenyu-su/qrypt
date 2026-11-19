@@ -357,9 +357,9 @@ per-second series for comparison between runs.
 ### Compare Two Builds On The Same File
 
 `scripts/dev/read-ab.py` measures a control build against the working tree
-with isolated mounts: each side gets its own temporary mount point,
-`QRYPT_HOME`, and read cache, so the production mount, its cache, and its logs
-never affect the numbers. The script builds the control from a git ref in a
+with `qrypt mount --isolated` mounts: each side gets its own temporary mount
+point, `QRYPT_HOME`, read cache and log file, so the production mount, its
+cache, and its logs never affect the numbers. The script builds the control from a git ref in a
 temporary worktree (uncommitted changes stay untouched), mounts both sides with
 quiet logging and no bandwidth limit, and interleaves playback-shaped reads
 with rotating order. Each round reads a fresh region; samples where the
@@ -382,8 +382,10 @@ misses the threshold, so a nightly or pre-merge check needs no hand-written
 comparison. For sustained playback shape, add `--length 64MiB` and one offset;
 the per-second timeline comes from `probe test read --hold-open --timeline` when
 a single read's rate drop is the question. The script needs a client config with
-credentials (default: repository `qrypt.toml`) and Python 3.11+; `--keep` keeps
-the temporary binaries, logs, and results for inspection.
+credentials (default: repository `qrypt.toml`) and Python 3.11+. The control
+build must include `qrypt mount --isolated`, so compare against a revision at
+or after the isolated mount landed. `--keep` keeps the temporary binaries,
+logs, and results for inspection.
 
 ### Tune A Read Shape
 
@@ -408,9 +410,9 @@ phase, and the config block is ready to paste under the mount in `qrypt.toml`.
 Add `--json` to keep the raw result (including every sample) for a report.
 
 `scripts/dev/tune.py` wraps the common case: it builds the working tree (or
-reuses `--binary`), starts a read-only mount from the client config in a
-temporary home, runs the same sweep and removes the temporary mount and
-rewritten config on exit, so no credential-bearing file is left behind:
+reuses `--binary`), starts a read-only `qrypt mount --isolated` mount from the
+client config, runs the same sweep and removes the temporary mount on exit, so
+no rewritten credential config is left behind:
 
 ```sh
 scripts/dev/tune.py --mount quark-encrypt --path /videos/sample.mp4 \
@@ -418,7 +420,8 @@ scripts/dev/tune.py --mount quark-encrypt --path /videos/sample.mp4 \
 ```
 
 Use `--json` for the raw result, `--keep` to inspect the temporary mount and
-`--log-level debug` when a window shape needs to be checked in the log.
+`--log-level debug` when a window shape needs to be checked in the log (the
+mount writes it to `runtime.log` under the temporary root).
 
 The measurement uses the same plan override as `probe test read`, which is
 also reachable through its individual flags: `--window`, `--prefetch-window`,

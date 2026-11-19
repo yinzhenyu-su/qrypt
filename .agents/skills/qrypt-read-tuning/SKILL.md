@@ -356,9 +356,9 @@ applies to every read-path change: a 64 MiB sustained read through one handle
 median candidate/control ratio at or above 1.0x, and its trace must show zero
 duplicate chunk coverage (analyzer `coverage.duplicate_visits == 0`).
 `scripts/dev/tune.py --mount NAME --path "/abs/file"` runs `probe tune read`
-against an isolated temporary mount of the client config and removes the mount
-and rewritten config on exit; use it instead of hand-building a credential
-config per tuning session. `read-ab.py` returns nonzero when a requested gate
+against a `qrypt mount --isolated` temporary mount of the client config and
+removes it on exit; use it instead of hand-building a credential config per
+tuning session. `read-ab.py` returns nonzero when a requested gate
 misses. A speedup claim
 needs at least 20% improvement in two repeated rounds. Keep failed, interrupted,
 slow and superseded runs; do not hide a per-round regression behind pooled
