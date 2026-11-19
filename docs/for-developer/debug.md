@@ -407,6 +407,19 @@ median/min/max of each variant; the evidence lines name the winner of each
 phase, and the config block is ready to paste under the mount in `qrypt.toml`.
 Add `--json` to keep the raw result (including every sample) for a report.
 
+`scripts/dev/tune.py` wraps the common case: it builds the working tree (or
+reuses `--binary`), starts a read-only mount from the client config in a
+temporary home, runs the same sweep and removes the temporary mount and
+rewritten config on exit, so no credential-bearing file is left behind:
+
+```sh
+scripts/dev/tune.py --mount quark-encrypt --path /videos/sample.mp4 \
+  --size 32m --rounds 3
+```
+
+Use `--json` for the raw result, `--keep` to inspect the temporary mount and
+`--log-level debug` when a window shape needs to be checked in the log.
+
 The measurement uses the same plan override as `probe test read`, which is
 also reachable through its individual flags: `--window`, `--prefetch-window`,
 `--prefetch-depth` (`--no-prefetch` for depth 0), `--streams`, `--part-size`

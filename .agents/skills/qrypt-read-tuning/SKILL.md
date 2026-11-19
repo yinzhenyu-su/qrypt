@@ -355,7 +355,11 @@ applies to every read-path change: a 64 MiB sustained read through one handle
 64MiB --min-ratio 1.0 --amplify --max-amplification 1.1`) must keep the clean
 median candidate/control ratio at or above 1.0x, and its trace must show zero
 duplicate chunk coverage (analyzer `coverage.duplicate_visits == 0`).
-`read-ab.py` returns nonzero when a requested gate misses. A speedup claim
+`scripts/dev/tune.py --mount NAME --path "/abs/file"` runs `probe tune read`
+against an isolated temporary mount of the client config and removes the mount
+and rewritten config on exit; use it instead of hand-building a credential
+config per tuning session. `read-ab.py` returns nonzero when a requested gate
+misses. A speedup claim
 needs at least 20% improvement in two repeated rounds. Keep failed, interrupted,
 slow and superseded runs; do not hide a per-round regression behind pooled
 medians. Noise beyond the margin is inconclusive. These gates belong to that
