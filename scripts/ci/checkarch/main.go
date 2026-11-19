@@ -47,6 +47,7 @@ var packagePolicy = map[string]map[string]bool{
 	"share":        allow("drive", "task"),
 	"syncer":       allow("drive", "util", "vfs"),
 	"task":         allow("util"),
+	"testsupport":  allow("drive"),
 	"util":         {},
 	"vfs":          allow("drive", "logging", "readbudget", "task", "util"),
 }
