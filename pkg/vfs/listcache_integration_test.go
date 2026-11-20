@@ -12,15 +12,18 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
-// countingListDriver counts backend directory listings while delegating to a
-// real local filesystem driver.
+// countingListDriver counts backend listings of the VFS root while delegating
+// to a real local filesystem driver. Child-directory prefetches are
+// asynchronous, so counting every List call would make the assertions racy;
+// only the listing under test is counted.
 type countingListDriver struct {
 	drive.Driver
-	lists *atomic.Int64
+	rootID string
+	lists  *atomic.Int64
 }
 
 func (d *countingListDriver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	if d.lists != nil {
+	if d.lists != nil && parentID == d.rootID {
 		d.lists.Add(1)
 	}
 	return d.Driver.List(ctx, parentID)
@@ -28,7 +31,7 @@ func (d *countingListDriver) List(ctx context.Context, parentID string) ([]drive
 
 func newListCacheTestVFS(t *testing.T, root, cacheDir, identity string, lists *atomic.Int64) *VFS {
 	t.Helper()
-	fs, err := New(&countingListDriver{Driver: localfs.New(root), lists: lists}, Options{
+	fs, err := New(&countingListDriver{Driver: localfs.New(root), rootID: "0", lists: lists}, Options{
 		Name:              "m",
 		StorageDir:        t.TempDir(),
 		ListCacheDir:      cacheDir,
