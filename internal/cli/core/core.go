@@ -16,11 +16,13 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	clii18n "github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/control"
 	corepkg "github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/core/ownerlock"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 const (
@@ -131,6 +133,14 @@ func serveForeground(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime
 		return err
 	}
 	logging.L.Infof("[CORE] serve: pid %d listening on %s", os.Getpid(), controlListen)
+
+	// The runtime logger writes to files, so a foreground serve would otherwise
+	// look like it did nothing. Print one line to the terminal for humans.
+	logFile := util.ExpandHome(cfg.EffectiveLogFile())
+	if logFile == "" {
+		logFile = filepath.Join(corepkg.NewStorageLayout(cfg, runtime).LogDir, "qrypt.log")
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), clii18n.FromCommand(cmd).T("out.core.serve.ready", os.Getpid(), controlListen, logFile))
 
 	stopCh := make(chan struct{})
 	var stopOnce sync.Once
