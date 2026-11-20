@@ -63,16 +63,55 @@ func pathOf(parent, name string) string {
 	return parent + "/" + name
 }
 
-func (s coreFSService) Read(ctx context.Context, path string, offset, size int64) ([]byte, error) {
-	if size <= 0 {
-		size = 4 << 20
+func (s coreFSService) ReadStream(ctx context.Context, path string, offset, size int64, raw bool) (io.ReadCloser, error) {
+	if raw {
+		reader, ok := s.fs().(vfs.RawReader)
+		if !ok {
+			return nil, fmt.Errorf("core: raw read is unsupported by this filesystem")
+		}
+		return reader.ReadRaw(ctx, path, offset, size)
 	}
-	reader, err := s.fs().Read(ctx, path, offset, size)
+	return s.fs().Read(ctx, path, offset, size)
+}
+
+func (s coreFSService) Space(ctx context.Context) (control.FSSpace, error) {
+	provider, ok := s.fs().(vfs.SpaceProvider)
+	if !ok {
+		return control.FSSpace{}, drive.ErrSpaceUnsupported
+	}
+	space, err := provider.Space(ctx)
 	if err != nil {
+		return control.FSSpace{}, err
+	}
+	return control.FSSpace{Total: space.Total, Free: space.Free}, nil
+}
+
+func (s coreFSService) MountSpaces(ctx context.Context) ([]control.FSMountSpace, error) {
+	provider, ok := s.fs().(vfs.MountSpaceProvider)
+	if !ok {
+		return nil, drive.ErrSpaceUnsupported
+	}
+	mounts := provider.MountSpaces(ctx)
+	result := make([]control.FSMountSpace, 0, len(mounts))
+	for _, mount := range mounts {
+		item := control.FSMountSpace{Name: mount.Name, Total: mount.Space.Total, Free: mount.Space.Free}
+		if mount.Err != nil {
+			item.Error = mount.Err.Error()
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func (s coreFSService) PendingUploads(ctx context.Context) ([]vfs.PendingUpload, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	defer reader.Close()
-	return io.ReadAll(io.LimitReader(reader, size))
+	inspector, ok := s.fs().(vfs.UploadInspector)
+	if !ok {
+		return nil, nil
+	}
+	return inspector.PendingUploads(), nil
 }
 
 func (s coreFSService) Create(ctx context.Context, path string) error {

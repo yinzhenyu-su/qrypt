@@ -80,6 +80,26 @@ func (c *Client) PostJSON(ctx context.Context, path string, value any) ([]byte, 
 	return c.do(req, path)
 }
 
+// OpenStream issues a GET and returns the response body for the caller to
+// consume and close. It is used for streaming data (file reads) so the client
+// never buffers the whole payload.
+func (c *Client) OpenStream(ctx context.Context, path string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url(path), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		resp.Body.Close()
+		return nil, &TransportError{Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+	}
+	return resp.Body, nil
+}
+
 // TransportError is a non-2xx control response. It preserves the response
 // status and body so a caller (the CLI) can classify the server's failure,
 // while Error() keeps the historical message shape.

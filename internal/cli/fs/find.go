@@ -47,7 +47,7 @@ func runFind(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		// Normalize so results always carry canonical /mount/... paths even when
 		// the caller passed a relative or dot-prefixed path.
 		path = cliruntime.CleanListPath(path)
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}

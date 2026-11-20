@@ -139,11 +139,25 @@ full diagnostics surface on both `*VFS` and `*Namespace`
 ### CLI Data Plane
 
 `pkg/control` serves `/v1/fs/*` from the owner Core, and `pkg/fsclient` adapts
-that endpoint back into a `vfs.FileSystem`. The `fs list`, `fs stat`, `fs put`
-and `fs mv` commands connect through this client, so their reads and mutations
-land on the same VFS, overlay and worker pool as FUSE and (later) the HTTP gateway. `internal/cli/fs/core_client.go` owns the connect-or-lazily-start
-helper; the test suite pins `QRYPT_CORE_FS_REQUIRED=0` to keep exercising the
-legacy in-process path until the remaining commands migrate.
+that endpoint back into a `vfs.FileSystem`. The read commands (`fs list`,
+`fs stat`, `fs cat`, `fs find`, `fs du`, `fs df`, `fs pending`) and the write
+commands migrated so far (`fs put`, `fs mv`) connect through this client, so
+their reads and mutations land on the same VFS, overlay and worker pool as FUSE
+and (later) the HTTP gateway.
+
+Reads are streamed: `/v1/fs/read` copies the VFS reader straight to the response
+body (with an optional `raw=1` for `fs cat --raw`), and `pkg/fsclient` exposes
+the body as an `io.ReadCloser`, so `fs cat` never buffers the whole file.
+`fsclient.FS` declares the optional capabilities it implements
+(`raw_read`, `space`, `mount_space`, `upload_inspection`), which keeps
+capability-gated commands such as `fs df`, `fs cat --raw` and `fs pending`
+behaving as they do on a local VFS. Transport failures are mapped back to
+`drive.ErrNotFound`/timeout errors so CLI messages stay comparable.
+
+`internal/cli/fs/core_client.go` owns the connect-or-lazily-start helper; the
+test suite pins `QRYPT_CORE_FS_REQUIRED=0` to keep exercising the legacy
+in-process path until the remaining commands (`get`, `mkdir`, `rm`, `copy`,
+`sync`, `check`, `journal`, `crypt`) migrate in the write milestone or later.
 
 ### Single Writer and Resident Core
 
