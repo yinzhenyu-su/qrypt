@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/core/ownerlock"
 )
 
 // TestFSCommandsThroughCore exercises the data plane: put/list/stat/mv run
@@ -303,5 +305,29 @@ func TestFSSyncThroughCore(t *testing.T) {
 	// A second sync is a no-op but still has to settle through the Core.
 	if _, err := executeRoot(t, "fs", "--config", configPath, "sync", source, "/local/synced", "--json"); err != nil {
 		t.Fatalf("second fs sync via core: %v", err)
+	}
+}
+
+// TestFSListRootWithoutCore checks that listing the namespace root is derived
+// from the configuration and never starts the resident Core.
+func TestFSListRootWithoutCore(t *testing.T) {
+	base, err := os.MkdirTemp("", "qrypt-list-root-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	configPath, _ := writeCoreServeTestConfig(t, base)
+	t.Setenv("QRYPT_CORE_FS_REQUIRED", "1")
+
+	out, err := executeRoot(t, "fs", "--config", configPath, "list", "/", "--json")
+	if err != nil {
+		t.Fatalf("fs list /: %v", err)
+	}
+	if !strings.Contains(out, `"name": "local"`) {
+		t.Fatalf("root listing = %s, want the configured mount", out)
+	}
+	held, _ := ownerlock.Peek(filepath.Join(base, "work"))
+	if held {
+		t.Fatal("listing the namespace root started the resident Core")
 	}
 }
