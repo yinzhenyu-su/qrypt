@@ -11,6 +11,7 @@ import (
 	clidebug "github.com/yinzhenyu/qrypt/internal/cli/debug"
 	clidriver "github.com/yinzhenyu/qrypt/internal/cli/driver"
 	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
+	clihttp "github.com/yinzhenyu/qrypt/internal/cli/http"
 	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	climount "github.com/yinzhenyu/qrypt/internal/cli/mount"
 	clioffline "github.com/yinzhenyu/qrypt/internal/cli/offline"
@@ -68,6 +69,7 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	cmd.AddCommand(clidebug.NewProbeCommand(cliRuntime{}))
 	cmd.AddCommand(clicontrol.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clicore.NewCommand(cliRuntime{}))
+	cmd.AddCommand(clihttp.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clioffline.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clishare.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clireceive.NewCommand(cliRuntime{}))
