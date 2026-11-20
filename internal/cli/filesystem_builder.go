@@ -33,18 +33,27 @@ func buildFileSystemFromConfigMount(ctx context.Context, cfg *config.Config, mou
 }
 
 func buildFileSystemFromConfigMountMode(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool) (builtFS, func(), error) {
-	return buildFileSystemWithBandwidth(ctx, cfg, mountName, forceNamespace, nil)
+	return buildFileSystemWithBandwidth(ctx, cfg, "", mountName, forceNamespace, nil)
 }
 
 // buildFileSystemWithBandwidth builds a filesystem with an optional CLI
 // bandwidth override (nil means use the config [bandwidth] section).
-func buildFileSystemWithBandwidth(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool, bandwidth *config.BandwidthLimits) (builtFS, func(), error) {
+//
+// configPath is the config file the caller loaded; it opts this build into the
+// single-writer ownership contract. Callers that only have the parsed config
+// (the mount fast path) pass "" and rely on OpenCoreForMount's Core to hold
+// the lock instead.
+func buildFileSystemWithBandwidth(ctx context.Context, cfg *config.Config, configPath, mountName string, forceNamespace bool, bandwidth *config.BandwidthLimits) (builtFS, func(), error) {
 	applyQryptHomeOverride(cfg)
-	return core.BuildFileSystem(ctx, cfg, core.Options{
+	opts := core.Options{
 		MountName:      mountName,
 		ForceNamespace: forceNamespace,
 		Bandwidth:      bandwidth,
-	})
+	}
+	if configPath != "" {
+		opts.Owner = &core.OwnerOptions{ConfigPath: configPath}
+	}
+	return core.BuildFileSystem(ctx, cfg, opts)
 }
 
 func defaultCacheDir() string {

@@ -35,6 +35,7 @@ func (cliRuntime) OpenCoreForMount(ctx context.Context, cfg *config.Config, conf
 		DebugListen:   debugListen,
 		ControlListen: controlListen,
 		ProbeListen:   probeListen,
+		Owner:         &core.OwnerOptions{ConfigPath: configPath},
 	})
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	shareapi "github.com/yinzhenyu/qrypt/pkg/share"
 	"github.com/yinzhenyu/qrypt/pkg/task"
@@ -21,10 +22,34 @@ import (
 // methods.
 type CommandService = task.Controller
 
+// RuntimeStatus is the identity and liveness view of the process that owns a
+// control endpoint.
+type RuntimeStatus struct {
+	PID           int       `json:"pid"`
+	Version       string    `json:"version,omitempty"`
+	ConfigPath    string    `json:"config_path,omitempty"`
+	Fingerprint   string    `json:"fingerprint,omitempty"`
+	WorkDir       string    `json:"work_dir,omitempty"`
+	StartedAt     time.Time `json:"started_at"`
+	UptimeSeconds int64     `json:"uptime_seconds"`
+	Busy          bool      `json:"busy"`
+}
+
+// RuntimeService exposes process lifecycle over the command endpoint. It is
+// deliberately separate from CommandService so task-only controllers never
+// receive lifecycle authority.
+type RuntimeService interface {
+	Status(ctx context.Context) (RuntimeStatus, error)
+	// Shutdown asks the owning process to stop. It returns once the request is
+	// accepted; the process exits asynchronously.
+	Shutdown(ctx context.Context) error
+}
+
 type CommandServer struct {
 	network    string
 	address    string
 	service    CommandService
+	runtime    RuntimeService
 	offline    OfflineService
 	share      shareapi.Service
 	server     *http.Server
@@ -74,6 +99,8 @@ func (s *CommandServer) Start(ctx context.Context) error {
 	}
 	s.listener = listener
 	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/control/status", s.handleRuntimeStatus)
+	mux.HandleFunc("/v1/control/shutdown", s.handleRuntimeShutdown)
 	mux.HandleFunc("/v1/control/tasks/cancel", s.handleCancelTask)
 	mux.HandleFunc("/v1/control/tasks/retry", s.handleRetryTask)
 	mux.HandleFunc("/v1/control/offline/tasks", s.handleOfflineTasks)
@@ -157,6 +184,49 @@ func (s *CommandServer) shutdown() {
 		}
 	}
 	s.closeErr = errors.Join(errs...)
+}
+
+// SetRuntimeService installs the process-lifecycle surface. A command server
+// without one still serves task control; status and shutdown then report 503.
+func (s *CommandServer) SetRuntimeService(service RuntimeService) {
+	if s == nil {
+		return
+	}
+	s.runtime = service
+}
+
+func (s *CommandServer) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.runtime == nil {
+		http.Error(w, "runtime status unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	status, err := s.runtime.Status(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, status)
+}
+
+func (s *CommandServer) handleRuntimeShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.runtime == nil {
+		http.Error(w, "runtime shutdown unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.runtime.Shutdown(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, map[string]bool{"stopping": true})
 }
 
 type taskActionRequest struct {

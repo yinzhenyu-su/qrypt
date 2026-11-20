@@ -47,6 +47,10 @@ type Options struct {
 	ControlListen string
 	// ProbeListen starts the active test/benchmark server when non-empty.
 	ProbeListen string
+	// Owner opts this entry point into the single-writer ownership contract.
+	// Production CLI runtimes set it; embedded runtimes (mobile) leave it nil
+	// because the host process already owns its state root.
+	Owner *OwnerOptions
 }
 
 type UploadSourceProvider interface {
@@ -57,6 +61,7 @@ type Core struct {
 	fs                 BuiltFileSystem
 	cleanup            func()
 	configPath         string
+	startedAt          time.Time
 	runtimeLayout      RuntimeLayout
 	readCacheDir       string
 	thumbnailDir       string
@@ -120,6 +125,11 @@ type Core struct {
 	// task submission. Without it two simultaneous matching requests could
 	// both observe "no active task" and create two provider tasks.
 	offlineCreateMu sync.Mutex
+	// shutdownMu guards shutdownHandler, the process-loop callback invoked by
+	// a control shutdown request. Embedders without a process loop leave it nil
+	// and the endpoint reports that shutdown is unsupported.
+	shutdownMu      sync.Mutex
+	shutdownHandler func()
 }
 
 type RuntimeLayout struct {
@@ -184,7 +194,7 @@ func OpenConfig(ctx context.Context, cfg *config.Config, opts Options) (*Core, e
 	if readChunkLimit <= 0 {
 		readChunkLimit = DefaultReadChunkLimit
 	}
-	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), fuseMountPoint: cfg.EffectiveMountPoint(), vfsCancel: vfsCancel}
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, startedAt: time.Now().UTC(), runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), fuseMountPoint: cfg.EffectiveMountPoint(), vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
 	if !opts.DisableDebugAutoStart {
 		debugListen := opts.DebugListen
@@ -451,7 +461,23 @@ func BuildFileSystem(ctx context.Context, cfg *config.Config, opts Options) (Bui
 	if opts.Bandwidth != nil {
 		limits = *opts.Bandwidth
 	}
-	return buildNamespace(ctx, cfg, NewStorageLayout(cfg, opts.Runtime), bandwidthLimiter(limits), opts)
+	layout := NewStorageLayout(cfg, opts.Runtime)
+	// The ownership lock must be held before the VFS is built and started: the
+	// VFS starts upload workers and replays the journal, which is the exact
+	// double-writer behaviour the lock exists to prevent.
+	release, err := acquireOwnerLock(opts, layout)
+	if err != nil {
+		return nil, nil, err
+	}
+	fs, cleanup, err := buildNamespace(ctx, cfg, layout, bandwidthLimiter(limits), opts)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return fs, func() {
+		cleanup()
+		release()
+	}, nil
 }
 
 func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
