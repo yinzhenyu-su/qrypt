@@ -67,7 +67,16 @@ func (c *Core) RuntimeStatus() control.RuntimeStatus {
 // in a non-terminal state. The serve command treats a busy Core as active for
 // idle-timeout purposes.
 func (c *Core) Busy() bool {
-	if c == nil || c.fs == nil {
+	if c == nil {
+		return false
+	}
+	// A hosted FUSE mount is live work: idle-exiting the Core would tear the
+	// volume down under the user. Check it before the filesystem guard so the
+	// mount bookkeeping stays independently testable.
+	if c.hostedMountsActive() {
+		return true
+	}
+	if c.fs == nil {
 		return false
 	}
 	if inspector, ok := c.fs.(vfs.UploadInspector); ok && len(inspector.PendingUploads()) > 0 {
@@ -90,6 +99,11 @@ func (c *Core) Busy() bool {
 		return false
 	}
 	return len(active) > 0
+}
+
+// hostedMountsActive reports whether any FUSE session is attached.
+func (c *Core) hostedMountsActive() bool {
+	return c != nil && c.mounts != nil && len(c.mounts.list()) > 0
 }
 
 // coreRuntimeService adapts a Core to the control endpoint's lifecycle

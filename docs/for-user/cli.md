@@ -175,6 +175,7 @@ qrypt core stop [--drain] [--force]
 
 - `--detach` 在后台启动（重新执行自身并脱离当前会话），命令立即返回；配合 `--log FILE` 记录后台日志。`--foreground` 在当前终端运行。
 - 默认 20 分钟没有活动（无挂载、无进行中的任务或上传）后自动退出；`--keep` 关闭空闲退出，`--idle-timeout` 调整空闲时间。
+- 由 `qrypt mount` 或 `qrypt fs` 等命令按需启动的 Core 不会加 `--keep`，因此同样会在空闲后自动退出；有 FUSE 挂载或未完成的上传/任务时不算空闲。
 - 启动时会记录配置指纹。用不同配置再次启动会被拒绝，需要先停止再用当前配置重启；`core status` 在 Core 未运行时显示 `stopped`，锁仍被持有但控制端点不可达时显示 `unreachable` 并给出持锁进程。
 - 在 Core 运行期间，其他会打开同一工作目录的进程（再次 `core serve`、隔离挂载等）会被拒绝并提示已有运行时持有该状态；先 `qrypt core stop`。`qrypt mount` 与 `qrypt unmount` 经 Core 的控制端点工作，可以与 `qrypt core serve` 同时使用。
 - 目录列表缓存（`[list_cache]`）默认把每个目录的远端列表持久化到 `<work_dir>/cache/lists/`，30 秒内重复 `fs list` 不再访问网盘；用 `fs list --refresh` 立即回源，`storage.list_cache_dir` 可改目录位置，`list_cache.max_size` 限制每个 mount 的占用。

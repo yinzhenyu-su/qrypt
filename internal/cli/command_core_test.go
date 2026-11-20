@@ -142,6 +142,36 @@ func TestCoreServeStatusStop(t *testing.T) {
 	}
 }
 
+func TestCoreServeIdleExit(t *testing.T) {
+	base, err := os.MkdirTemp("", "qrypt-core-idle-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	configPath, workDir := writeCoreServeTestConfig(t, base)
+
+	root := NewRootCommand()
+	out := &lockedServeBuffer{}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.SetArgs([]string{"core", "serve", "--foreground", "--idle-timeout", "300ms", "--config", configPath})
+	done := make(chan error, 1)
+	go func() { done <- root.Execute() }()
+	t.Cleanup(func() { _, _ = executeRoot(t, "core", "stop", "--force", "--config", configPath) })
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("idle serve exited with error: %v output=%s", err, out.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("serve did not idle-exit: %s", out.String())
+	}
+	if held, _ := ownerlock.Peek(workDir); held {
+		t.Fatal("owner lock still held after idle exit")
+	}
+}
+
 func TestCoreStatusStoppedWithoutCore(t *testing.T) {
 	base, err := os.MkdirTemp("", "qrypt-core-")
 	if err != nil {
