@@ -177,7 +177,7 @@ qrypt core stop [--drain] [--force]
 - 默认 20 分钟没有活动（无挂载、无进行中的任务或上传）后自动退出；`--keep` 关闭空闲退出，`--idle-timeout` 调整空闲时间。
 - 启动时会记录配置指纹。用不同配置再次启动会被拒绝，需要先停止再用当前配置重启；`core status` 在 Core 未运行时显示 `stopped`，锁仍被持有但控制端点不可达时显示 `unreachable` 并给出持锁进程。
 - 在 Core 运行期间，其他会打开同一工作目录的进程（再次 `core serve`、隔离挂载等）会被拒绝并提示已有运行时持有该状态；先 `qrypt core stop`。`qrypt mount` 与 `qrypt unmount` 经 Core 的控制端点工作，可以与 `qrypt core serve` 同时使用。
-- 迁移期 `qrypt fs` 仍在命令进程内打开工作目录，因此在 Core 或 `qrypt mount` 运行期间会被拒绝；后续版本会把 `fs` 改为经 Core 的客户端，届时即可同时使用。
+- 迁移期 `qrypt fs list`、`fs stat`、`fs put`、`fs mv` 已经经常驻 Core 的数据面执行：Core 未运行时先按需启动，因此它们与 `qrypt mount` 可以同时使用。其余 `fs` 子命令仍在命令进程内打开工作目录，在 Core 或 `qrypt mount` 运行期间会被拒绝；后续里程碑会陆续改为 Core 客户端。`fs list --remote-names` 依赖进程内后端信息，暂未迁移，使用时会提示不可用。
 
 ## 文件系统操作
 

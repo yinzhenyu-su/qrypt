@@ -50,6 +50,9 @@ func TestMain(m *testing.M) {
 	// round trips are not interruptible by context cancel and would flake
 	// the goleak check on slow runner DNS (see initTime).
 	os.Setenv("QRYPT_TEST_NTP_DISABLED", "1")
+	// Exercise the legacy in-process VFS path by default; tests that cover the
+	// resident-Core data plane opt back in with QRYPT_CORE_FS_REQUIRED=1.
+	os.Setenv("QRYPT_CORE_FS_REQUIRED", "0")
 	code := m.Run()
 	restoreScrypt()
 	util.StopNTP()

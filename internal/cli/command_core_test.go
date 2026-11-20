@@ -26,6 +26,10 @@ mount_point = ` + util.TOMLPath(filepath.Join(base, "mnt")) + `
 [storage]
 work_dir = ` + util.TOMLPath(workDir) + `
 
+[upload]
+upload_delay = "10ms"
+delete_delay = "10ms"
+
 [[mounts]]
 name = "local"
 type = "localfs"

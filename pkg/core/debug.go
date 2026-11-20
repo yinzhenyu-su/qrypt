@@ -82,6 +82,7 @@ func (c *Core) StartControlServer(ctx context.Context, listen string) error {
 	server.SetShareService(c.ShareControlService())
 	server.SetRuntimeService(coreRuntimeService{core: c})
 	server.SetMountService(coreMountService{core: c})
+	server.SetFSService(coreFSService{core: c})
 	if err := server.Start(ctx); err != nil {
 		return err
 	}

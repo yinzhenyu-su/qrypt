@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -226,6 +228,14 @@ func detachServe(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime.Con
 // EnsureCore makes sure a resident Core owns the state directory, starting a
 // detached one when none is running. It is the single entry point later
 // clients (mount attach, fs RPC) use for lazy start.
+// looksLikeTestBinary keeps the lazy-start path from re-executing the Go test
+// binary (which would recursively run the suite) when a command is exercised
+// from an integration test.
+func looksLikeTestBinary(exe string) bool {
+	base := filepath.Base(exe)
+	return strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".test.exe")
+}
+
 func EnsureCore(ctx context.Context, rt cliruntime.Runtime, state cliruntime.ConfigState) error {
 	if state.Cfg == nil {
 		return fmt.Errorf("core: config required")
@@ -238,6 +248,9 @@ func EnsureCore(ctx context.Context, rt cliruntime.Runtime, state cliruntime.Con
 	exe, err := os.Executable()
 	if err != nil {
 		return err
+	}
+	if looksLikeTestBinary(exe) {
+		return fmt.Errorf("core: refusing to auto-start a Core from a test binary (%s); start `qrypt core serve` explicitly", filepath.Base(exe))
 	}
 	args := []string{"core", "serve", "--foreground", "--keep"}
 	if state.Path != "" {
