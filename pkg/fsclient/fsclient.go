@@ -210,6 +210,12 @@ func (f *FS) WaitPath(ctx context.Context, path string, timeout time.Duration) e
 	return f.client.FSWaitPath(ctx, path, timeout)
 }
 
+// WaitIdle waits until the whole owner filesystem settles (all uploads and
+// tasks), preserving the legacy whole-runtime idle contract for fs sync.
+func (f *FS) WaitIdle(ctx context.Context, timeout time.Duration) error {
+	return f.client.FSWaitIdle(ctx, timeout)
+}
+
 func entryFromDTO(entry control.FSEntry) drive.Entry {
 	return drive.Entry{
 		ID:       entry.ID,

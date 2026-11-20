@@ -22,6 +22,7 @@ type fsStub struct {
 	renamed     [2]string
 	invalidated []string
 	mkdirCalls  int
+	idleTimeout time.Duration
 }
 
 func (s *fsStub) Stat(ctx context.Context, path string) (FSEntry, error) {
@@ -69,6 +70,11 @@ func (s *fsStub) Rename(ctx context.Context, source, destination string) error {
 func (s *fsStub) Truncate(ctx context.Context, path string, size int64) error { return nil }
 func (s *fsStub) InvalidateList(ctx context.Context, path string) error {
 	s.invalidated = append(s.invalidated, path)
+	return nil
+}
+
+func (s *fsStub) WaitIdle(ctx context.Context, timeout time.Duration) error {
+	s.idleTimeout = timeout
 	return nil
 }
 
@@ -228,5 +234,27 @@ func TestFSMutationOperationIDReplaysResponse(t *testing.T) {
 	fourth := send("")
 	if fourth.Code != http.StatusOK || stub.mkdirCalls != 3 {
 		t.Fatalf("keyless: status=%d calls=%d, want 200/3", fourth.Code, stub.mkdirCalls)
+	}
+}
+
+// TestFSHandlerWaitIdle covers the whole-filesystem settle endpoint used by
+// `fs sync` when it runs through the resident Core.
+func TestFSHandlerWaitIdle(t *testing.T) {
+	stub := &fsStub{}
+	server := newFSTestServer(stub)
+
+	recorder := httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodPost, "/v1/fs/idle", strings.NewReader(`{"timeout_ms":1500}`)))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"idle": true`) {
+		t.Fatalf("idle status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if stub.idleTimeout != 1500*time.Millisecond {
+		t.Fatalf("idle timeout = %v, want 1.5s", stub.idleTimeout)
+	}
+
+	recorder = httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodGet, "/v1/fs/idle", nil))
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET idle status = %d", recorder.Code)
 	}
 }

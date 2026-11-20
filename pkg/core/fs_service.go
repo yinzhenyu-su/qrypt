@@ -211,6 +211,53 @@ var activeTaskStates = []task.State{
 	task.StateCanceling,
 }
 
+// WaitIdle waits for the whole owner filesystem to lose its pending upload and
+// task work. This is the Core-side replacement for the process-local
+// WaitFileSystemIdle used by `fs sync`.
+func (s coreFSService) WaitIdle(ctx context.Context, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		pendingCount := 0
+		failed := []string{}
+		if inspector, ok := s.fs().(vfs.UploadInspector); ok {
+			for _, pending := range inspector.PendingUploads() {
+				if pending.PermanentFail {
+					failed = append(failed, pending.Path)
+					continue
+				}
+				pendingCount++
+			}
+		}
+		if len(failed) > 0 {
+			return fmt.Errorf("core: upload of %v failed permanently", failed)
+		}
+		activeCount := 0
+		if s.core != nil && s.core.tasks != nil {
+			active, err := s.core.tasks.ListTasks(ctx, task.Filter{States: activeTaskStates})
+			if err != nil {
+				return err
+			}
+			activeCount = len(active)
+		}
+		if pendingCount == 0 && activeCount == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("core: timed out waiting for the filesystem to settle (pending=%d tasks=%d)", pendingCount, activeCount)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // WaitPath waits for one path to lose its pending upload work. Unlike the old
 // process-local WaitFileSystemIdle it cannot be satisfied by unrelated activity
 // in the shared runtime, and it reports permanent upload failures immediately

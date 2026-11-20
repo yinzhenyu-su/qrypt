@@ -172,12 +172,22 @@ driver copies also publish `NotifyInvalidation` for the copied path and its
 parent, so subscribed FUSE sessions drop their kernel attribute and directory
 caches instead of waiting for the attribute/entry timeout (one second by
 default) to expire.
+`fs sync` also runs against the Core: every file operation goes through the
+data plane, and the engine's wait-for-all-transfers callback calls
+`/v1/fs/idle`, which blocks until the Core has no pending uploads or active
+tasks (permanent upload failures surface immediately). `fsclient.FS.WaitIdle`
+exposes that call; it is the only whole-filesystem settle primitive, so it is
+reserved for commands with a global wait contract.
 
 `internal/cli/fs/core_client.go` owns the connect-or-lazily-start helper; the
 test suite pins `QRYPT_CORE_FS_REQUIRED=0` to keep exercising the legacy
-in-process path for `fs sync` (which still needs a wait-for-all-transfers
-semantic) and for `fs list --remote-names` / `fs copy --dry-run`, which rely on
-in-process backend details.
+in-process path for `fs list --remote-names` / `fs copy --dry-run`, which rely
+on in-process backend details.
+
+Journal maintenance (`fs journal replay/prune`) edits the upload journal files
+directly, while a resident Core keeps the journal in memory and rewrites it on
+flush. Those subcommands therefore probe the control endpoint and refuse to run
+while a Core owns the journal, asking the user to stop it first.
 
 ### HTTP Gateway
 
