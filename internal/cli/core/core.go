@@ -278,10 +278,7 @@ func EnsureCore(ctx context.Context, rt cliruntime.Runtime, state cliruntime.Con
 	if looksLikeTestBinary(exe) {
 		return fmt.Errorf("core: refusing to auto-start a Core from a test binary (%s); start `qrypt core serve` explicitly", filepath.Base(exe))
 	}
-	args := []string{"core", "serve", "--foreground", "--keep"}
-	if state.Path != "" {
-		args = append(args, "--config", state.Path)
-	}
+	args := ensureCoreServeArgs(state)
 	if err := spawnDetached(exe, args, ""); err != nil {
 		return fmt.Errorf("core: start resident Core: %w", err)
 	}
@@ -549,4 +546,15 @@ func commandContext(cmd *cobra.Command) context.Context {
 		return cmd.Context()
 	}
 	return context.Background()
+}
+
+// ensureCoreServeArgs builds the detached serve arguments used by lazy
+// auto-start. It deliberately omits --keep: an auto-started Core must be able
+// to idle-exit again (hosted mounts and in-flight work keep it alive).
+func ensureCoreServeArgs(state cliruntime.ConfigState) []string {
+	args := []string{"core", "serve", "--foreground"}
+	if state.Path != "" {
+		args = append(args, "--config", state.Path)
+	}
+	return args
 }

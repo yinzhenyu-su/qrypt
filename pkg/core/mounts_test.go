@@ -159,3 +159,24 @@ func TestMountManagerCloseAll(t *testing.T) {
 		t.Fatal("attach after close succeeded")
 	}
 }
+
+func TestCoreBusyCountsHostedMounts(t *testing.T) {
+	manager := newMountManager(&fakeMountHost{})
+	c := &Core{mounts: manager}
+	if c.Busy() {
+		t.Fatal("core without mounts or tasks should be idle")
+	}
+	hosted, err := manager.attach(context.Background(), fakeFileSystem{}, MountRequest{MountPoint: filepath.Join(t.TempDir(), "mnt")})
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if !c.Busy() {
+		t.Fatal("core with a hosted mount must stay busy so it cannot idle-exit")
+	}
+	if err := manager.detach(context.Background(), hosted.ID); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if c.Busy() {
+		t.Fatal("core should be idle again after the mount is gone")
+	}
+}
