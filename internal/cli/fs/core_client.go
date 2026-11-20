@@ -50,6 +50,20 @@ func openCoreFS(rt cliruntime.Runtime, cmd *cobra.Command) (context.Context, *fs
 	return ctx, fsclient.New(client), stop, nil
 }
 
+// waitFilesystemSettled waits for all upload/delete work in the shared runtime.
+func waitFilesystemSettled(ctx context.Context, rt cliruntime.Runtime, fs vfs.FileSystem, timeout time.Duration) error {
+	if waiter, ok := fs.(interface {
+		WaitIdle(context.Context, time.Duration) error
+	}); ok {
+		return waiter.WaitIdle(ctx, timeout)
+	}
+	opened, ok := fs.(cliruntime.OpenedFileSystem)
+	if !ok {
+		return fmt.Errorf("filesystem does not expose upload durability")
+	}
+	return rt.WaitFileSystemIdle(ctx, opened, timeout)
+}
+
 // waitPathSettled waits for one path's upload/delete work to finish. Core
 // clients support per-path waits; the legacy in-process test path falls back to
 // the whole-filesystem idle wait.

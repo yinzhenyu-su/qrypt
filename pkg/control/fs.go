@@ -58,6 +58,9 @@ type FSService interface {
 	// client can keep the "wait for the upload to finish" contract without
 	// waiting for the whole shared runtime to go idle.
 	WaitPath(ctx context.Context, path string, timeout time.Duration) error
+	// WaitIdle blocks until the whole owner filesystem has no pending uploads
+	// or active tasks; it preserves the legacy "wait for everything" contract.
+	WaitIdle(ctx context.Context, timeout time.Duration) error
 	// InvalidateList drops persisted and in-memory listings for path so the
 	// next list reflects the backend (used by `fs list --refresh`).
 	InvalidateList(ctx context.Context, path string) error
@@ -178,6 +181,8 @@ func (s *CommandServer) handleFSOperation(w http.ResponseWriter, r *http.Request
 		s.handleFSPendingUploads(w, r)
 	case "wait":
 		s.handleFSWait(w, r)
+	case "idle":
+		s.handleFSIdle(w, r)
 	default:
 		http.Error(w, "unknown filesystem operation", http.StatusNotFound)
 	}
@@ -462,6 +467,20 @@ func (s *CommandServer) handleFSWait(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"path": req.Path, "settled": true})
 }
 
+func (s *CommandServer) handleFSIdle(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TimeoutMS int64 `json:"timeout_ms"`
+	}
+	if !writeFSRequest(w, r, &req) {
+		return
+	}
+	if err := s.fs.WaitIdle(r.Context(), time.Duration(req.TimeoutMS)*time.Millisecond); err != nil {
+		http.Error(w, err.Error(), fsErrorStatus(err))
+		return
+	}
+	writeJSON(w, map[string]any{"idle": true})
+}
+
 func (s *CommandServer) handleFSSpace(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -671,6 +690,11 @@ func (c *Client) FSInvalidateList(ctx context.Context, path string) error {
 
 func (c *Client) FSWaitPath(ctx context.Context, path string, timeout time.Duration) error {
 	return c.fsPost(ctx, "/v1/fs/wait", map[string]any{"path": path, "timeout_ms": timeout.Milliseconds()})
+}
+
+// FSWaitIdle waits until the whole owner filesystem settles.
+func (c *Client) FSWaitIdle(ctx context.Context, timeout time.Duration) error {
+	return c.fsPost(ctx, "/v1/fs/idle", map[string]any{"timeout_ms": timeout.Milliseconds()})
 }
 
 func (c *Client) fsPost(ctx context.Context, path string, value any) error {

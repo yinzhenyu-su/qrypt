@@ -75,7 +75,7 @@ func runSync(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			Resume:      getBoolFlag(cmd, "resume"),
 		}
 
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}
@@ -83,9 +83,7 @@ func runSync(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		ctx = vfs.WithReadIntent(ctx, vfs.ReadIntentBulk)
 
 		result, err := syncer.Run(ctx, fs, func(context.Context, any) error {
-			// The sync engine passes us the filesystem untyped; we already
-			// hold the started OpenedFileSystem, so wait on that, typed.
-			return rt.WaitFileSystemIdle(ctx, fs, 0)
+			return waitFilesystemSettled(ctx, rt, fs, 0)
 		}, req)
 		if err != nil {
 			if errors.Is(err, syncer.ErrNoSession) {

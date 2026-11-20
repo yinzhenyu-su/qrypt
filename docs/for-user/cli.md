@@ -180,7 +180,7 @@ qrypt core stop [--drain] [--force]
 - 客户端连接 Core 时会校验 control 协议版本、qrypt 版本与配置指纹。升级二进制或修改配置后，旧的 Core 不会继续服务新客户端：先 `qrypt core stop`（或重启 Core）再重试。
 - 在 Core 运行期间，其他会打开同一工作目录的进程（再次 `core serve`、隔离挂载等）会被拒绝并提示已有运行时持有该状态；先 `qrypt core stop`。`qrypt mount` 与 `qrypt unmount` 经 Core 的控制端点工作，可以与 `qrypt core serve` 同时使用。
 - 目录列表缓存（`[list_cache]`）默认把每个目录的远端列表持久化到 `<work_dir>/cache/lists/`，30 秒内重复 `fs list` 不再访问网盘；用 `fs list --refresh` 立即回源，`storage.list_cache_dir` 可改目录位置，`list_cache.max_size` 限制每个 mount 的占用。
-- 迁移期 `qrypt fs list`、`fs stat`、`fs cat`、`fs find`、`fs du`、`fs df`、`fs pending`、`fs put`、`fs mv`、`fs mkdir`、`fs rm`、`fs copy`、`fs get`、`fs check` 已经经常驻 Core 的数据面执行：Core 未运行时先按需启动，因此它们与 `qrypt mount` 可以同时使用。`fs cat` 以流式响应读取，大文件不会在 CLI 或 Core 进程中整体缓冲；`fs put`/`fs rm` 的 `--wait-timeout` 等的是目标路径自己的上传/删除任务，不会因为同一 Core 里其他路径仍在传输而超时。`fs copy` 由 Core 调用驱动的直接复制接口完成，完成后会立即失效源/目标目录的列表缓存，重复执行 `fs list` 立即可见。`fs sync` 仍需要“等待全部上传完成”的全局语义，暂未迁移；其余仍在本进程内执行的命令（`fs sync` 与 `fs list --remote-names`）在 Core 或 `qrypt mount` 运行期间会被拒绝，使用 `QRYPT_CORE_FS_REQUIRED=0` 可强制走进程内路径（仅调试/兼容用途）。`fs copy --dry-run` 也只在进程内路径可用。
+- 迁移期 `qrypt fs list`、`fs stat`、`fs cat`、`fs find`、`fs du`、`fs df`、`fs pending`、`fs put`、`fs mv`、`fs mkdir`、`fs rm`、`fs copy`、`fs get`、`fs check`、`fs sync` 已经经常驻 Core 的数据面执行：Core 未运行时先按需启动，因此它们与 `qrypt mount` 可以同时使用。`fs cat` 以流式响应读取，大文件不会在 CLI 或 Core 进程中整体缓冲；`fs put`/`fs rm` 的 `--wait-timeout` 等的是目标路径自己的上传/删除任务，不会因为同一 Core 里其他路径仍在传输而超时。`fs copy` 由 Core 调用驱动的直接复制接口完成，完成后会立即失效源/目标目录的列表缓存，重复执行 `fs list` 立即可见。`fs sync` 也经 Core 执行：每个文件操作走数据面，等待所有上传完成时调用 Core 的整机落定接口（`/v1/fs/idle`），不再要求单独打开进程内文件系统。仍依赖进程内实现的功能只有 `fs list --remote-names` 与 `fs copy --dry-run`，它们在 Core 模式下会给出明确错误；`QRYPT_CORE_FS_REQUIRED=0` 可强制走进程内路径（仅调试/兼容用途）。
 
 ## HTTP 网关
 
@@ -243,6 +243,8 @@ qrypt fs list / --config PATH
 `check A B` 比较两个目录树（`A`/`B` 可为 `/MOUNT/...` 虚拟路径或本机路径，至少一端是虚拟路径）：逐文件比对大小与修改时间（`--hash` 或 `--compare=hash` 时再比内容哈希），输出缺失/多余/不一致清单，`--json` 输出结构化结果。退出码 0 一致、4 有差异。文件与目录类型不一致会报告 `type` 差异。加密挂载透明处理：本地明文目录可直接与加密挂载比对；`--hash` 需要网盘提供内容哈希（已支持：阿里云盘 sha1、115 sha1、百度网盘 md5、OneDrive sha1；加密挂载下本地会使用远端 nonce 重算密文哈希，全程不下载文件正文）。`--compare=mtime-only` 只按修改时间判定差异（忽略大小差异，内容变了但大小与 mtime 都没变会被当作一致）。`du` 统计目录树文件数与总字节数；`df` 显示所配置驱动的空间（默认逐 mount 列出；`MOUNT` 参数或 `--mount` 只看单个）。两者默认人类可读大小，`--bytes` 输出原始字节，`--json` 输出数字。`rm`/`mv` 支持 `--json` 输出结构化结果。
 
 `sync SOURCE DESTINATION` 单向同步：让 `DESTINATION` 匹配 `SOURCE`（`SOURCE` 权威，至少一端是虚拟路径）。默认只新增缺失文件、更新变化文件（大小，`--hash` 时含内容哈希），**不删除** `DESTINATION` 多余文件；`--delete` 才删除。`--compare` 选择比较策略：`size-mtime`（默认）、`mtime-only`（只看修改时间，忽略大小差异）、`hash`（等价 `--hash`）。`sync` 默认对支持后端内容哈希的网盘（阿里云盘 sha1、115 sha1、百度网盘 md5、OneDrive sha1）自动启用哈希比对，能检测同大小内容变化；无后端哈希的网盘（如夸克）自动降级为大小比对。注意：`mtime-only` 在无法保留 mtime 的网盘（如夸克，只记录上传时间）上会每次全量重传——只有明确知道目标端 mtime 可靠时才使用。上传会把源文件 mtime 传播给目标端；若目标网盘无法保留 mtime（如夸克，只记录上传时间），则 mtime 差异不触发内容重传（按 size/hash 判定），避免每次同步全量重传。文件/目录类型冲突默认不覆盖（报告 `conflict`，退出码 3），可用 `--conflict=skip` 跳过或 `--conflict=source` 让源端胜出。`--dry-run` 只输出计划不产生任何写入（退出码 0）；`--json` 输出结构化计划/结果（含 add/update/delete/skip/conflict/failed 汇总与按路径排序的条目）。同步执行顺序保证先建目录再传文件、先删子项再删目录；单个文件失败不中断其余文件，存在失败时退出码 3。同步会等待所有上传完成后才返回（不设超时，慢网盘不会误报失败）；Ctrl-C 可中断，中断后会话保留，用 `--resume` 继续。`--resume` 继续上次中断/部分失败的会话：只重试未完成和失败的文件，不重新扫描两棵树。会话计划保存在工作目录的 `sync/` 子目录（默认 `~/.qrypt/sync/`，同一对源/目标共享一个会话目录），全部完成后自动清除，中断遗留的会话 7 天未动会在下次同步时自动清理；`--dry-run` 不写任何会话。
+
+`fs journal` 是只读报告；`fs journal replay/prune` 会直接改写 Core 持有的上传日志文件，因此 Core 运行时会拒绝并提示先 `qrypt core stop`，避免维护结果被 Core 的内存状态覆盖。
 
 `fs` 命令组还支持 `--bwlimit` 系列 flag，覆盖配置中的 `[bandwidth]` 段：
 

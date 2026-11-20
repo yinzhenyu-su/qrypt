@@ -219,4 +219,89 @@ func TestFSCommandsThroughCore(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("missing path error = %v", err)
 	}
+
+	// Journal maintenance bypasses the Core's in-memory journal, so it must
+	// refuse while a Core owns it (#50).
+	if _, err := executeRoot(t, "fs", "--config", configPath, "journal", "prune"); err == nil {
+		t.Fatal("journal prune should refuse while the resident Core owns the journal")
+	} else if !strings.Contains(err.Error(), "resident Core") {
+		t.Fatalf("journal prune error = %v", err)
+	}
+}
+
+// TestFSSyncThroughCore runs the sync engine against the resident Core: both
+// the per-operation data plane and the whole-filesystem settle callback go
+// through RPC instead of opening a second in-process VFS.
+func TestFSSyncThroughCore(t *testing.T) {
+	base, err := os.MkdirTemp("", "qrypt-fs-sync-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	configPath, _ := writeCoreServeTestConfig(t, base)
+	remote := filepath.Join(base, "remote")
+	t.Setenv("QRYPT_CORE_FS_REQUIRED", "1")
+
+	serveRoot := NewRootCommand()
+	var serveOut bytes.Buffer
+	serveRoot.SetOut(&serveOut)
+	serveRoot.SetErr(&serveOut)
+	serveRoot.SetArgs([]string{"core", "serve", "--foreground", "--keep", "--config", configPath})
+	done := make(chan error, 1)
+	go func() { done <- serveRoot.Execute() }()
+	t.Cleanup(func() {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		_, _ = executeRoot(t, "core", "stop", "--force", "--config", configPath)
+		<-done
+	})
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		out, err := executeRoot(t, "core", "status", "--json", "--config", configPath)
+		if err == nil && strings.Contains(out, `"state": "running"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("core did not become ready: err=%v out=%s serve=%s", err, out, serveOut.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	source := filepath.Join(base, "source")
+	if err := os.MkdirAll(filepath.Join(source, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "nested", "b.txt"), []byte("beta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := executeRoot(t, "fs", "--config", configPath, "mkdir", "/local/synced"); err != nil {
+		t.Fatalf("mkdir sync destination: %v", err)
+	}
+	if _, err := executeRoot(t, "fs", "--config", configPath, "sync", source, "/local/synced"); err != nil {
+		t.Fatalf("fs sync via core: %v", err)
+	}
+	for path, want := range map[string]string{
+		"/local/synced/a.txt":        "alpha",
+		"/local/synced/nested/b.txt": "beta",
+	} {
+		got, err := executeRoot(t, "fs", "--config", configPath, "cat", path)
+		if err != nil || got != want {
+			t.Fatalf("cat %s = %q err=%v, want %q", path, got, err, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(remote, "synced", "nested", "b.txt")); err != nil {
+		t.Fatalf("synced file missing on backend: %v", err)
+	}
+
+	// A second sync is a no-op but still has to settle through the Core.
+	if _, err := executeRoot(t, "fs", "--config", configPath, "sync", source, "/local/synced", "--json"); err != nil {
+		t.Fatalf("second fs sync via core: %v", err)
+	}
 }

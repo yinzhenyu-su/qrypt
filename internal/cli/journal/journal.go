@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -103,6 +105,31 @@ so the next mount retries them, or prune entries whose staging data is gone.`,
 	return cmd
 }
 
+// ensureCoreStopped rejects journal maintenance while a resident Core owns the
+// journal: the Core keeps the journal in memory and would rewrite the files
+// behind the maintenance command.
+func ensureCoreStopped(rt Runtime, cmd *cobra.Command) error {
+	state, err := rt.CommandConfig(cmd)
+	if err != nil {
+		return err
+	}
+	if state.Cfg == nil || state.Path == "" {
+		return nil
+	}
+	runDir := core.RuntimeRunDir(state.Path, state.Cfg)
+	endpoint := core.ControlSocketPath(state.Cfg, core.RuntimeLayout{RunDir: runDir})
+	client, err := control.NewClient(endpoint)
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Second)
+	defer cancel()
+	if _, err := client.RuntimeStatus(ctx); err == nil {
+		return fmt.Errorf("the resident Core owns the upload journal; stop it with `qrypt core stop` before running this command")
+	}
+	return nil
+}
+
 // journalTargetsFromCmd resolves the journal directories to inspect from the
 // config (or explicit --cache-dir/--mount flags).
 func TargetsFromCmd(rt Runtime, cmd *cobra.Command) ([]DebugCacheTarget, error) {
@@ -148,6 +175,9 @@ func NewReplayCmd(rt Runtime) *cobra.Command {
   qrypt fs journal replay --mount cloud`,
 		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureCoreStopped(rt, cmd); err != nil {
+				return err
+			}
 			targets, err := TargetsFromCmd(rt, cmd)
 			if err != nil {
 				return err
@@ -190,6 +220,9 @@ staging data; unmount first so the running mount cannot rewrite the journal.`,
   qrypt fs journal prune --mount cloud --failed`,
 		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureCoreStopped(rt, cmd); err != nil {
+				return err
+			}
 			targets, err := TargetsFromCmd(rt, cmd)
 			if err != nil {
 				return err
