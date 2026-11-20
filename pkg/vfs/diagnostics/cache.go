@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"github.com/yinzhenyu/qrypt/pkg/vfs/listcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 )
@@ -11,6 +12,9 @@ import (
 type CacheRuntime interface {
 	ReadCache() readcache.DebugReadCache
 	Journal() *upload.DebugJournal
+	// ListCache returns the persisted directory-listing cache snapshot, or
+	// nil when the mount has no list cache configured.
+	ListCache() *listcache.Stats
 }
 
 // CacheSnapshot assembles the readcache snapshot with the upload journal
@@ -19,5 +23,6 @@ func CacheSnapshot(runtime CacheRuntime) DebugCacheSnapshot {
 	return DebugCacheSnapshot{
 		DebugReadCache: runtime.ReadCache(),
 		Journal:        runtime.Journal(),
+		ListCache:      runtime.ListCache(),
 	}
 }

@@ -11,10 +11,11 @@ import (
 )
 
 type fsStub struct {
-	statPath   string
-	removed    string
-	removedDir bool
-	renamed    [2]string
+	statPath    string
+	removed     string
+	removedDir  bool
+	renamed     [2]string
+	invalidated []string
 }
 
 func (s *fsStub) Stat(ctx context.Context, path string) (FSEntry, error) {
@@ -47,6 +48,11 @@ func (s *fsStub) Rename(ctx context.Context, source, destination string) error {
 	return nil
 }
 func (s *fsStub) Truncate(ctx context.Context, path string, size int64) error { return nil }
+func (s *fsStub) InvalidateList(ctx context.Context, path string) error {
+	s.invalidated = append(s.invalidated, path)
+	return nil
+}
+
 func (s *fsStub) WaitPath(ctx context.Context, path string, timeout time.Duration) error {
 	return nil
 }

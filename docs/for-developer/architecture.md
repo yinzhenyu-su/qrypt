@@ -180,6 +180,48 @@ session in `Core.Close` before the VFS is closed. Control endpoints:
 This keeps construction policy out of VFS and keeps provider details out of the
 mount layer.
 
+### Persisted Listing Cache
+
+`pkg/vfs/listcache` persists each directory's raw remote listing as one JSON
+file under `<work_dir>/cache/lists/<mount>/` (override:
+`storage.list_cache_dir`). A file carries the mount, virtual path, an identity
+fingerprint and the fetch time. The identity is derived by `pkg/core` from the
+driver type, resolved backend root id, mount params, encryption config and
+credential entry, so a listing written for another account/root/encoder is
+discarded instead of served. Files are written atomically through a unique
+temporary file and are pruned to `list_cache.max_size` (default 32 MiB per
+mount) by mtime down to a low watermark.
+
+Reads happen in `pkg/vfs/listing`: before `remote.Resolve` the lister asks the
+cache for `parentPath`; a hit is projected through `View.ProjectChildren` (local
+pending uploads, rename shadows and delayed deletes are always recomputed, never
+persisted) and returns without any backend call. Misses fall through to the
+existing resolve/list/commit path and, after a successful fetch, store the raw
+remote list with the generation observed before the fetch.
+
+Freshness is time-based: `list_cache.ttl` (default 30s, `"0"` disables, per-mount
+override `[mounts.list_cache]`). `fs list --refresh` invalidates the listing via
+the Core data plane (`/v1/fs/invalidate`, persisted file plus in-memory list
+cache) before reading. There is no stale-on-error fallback: a listing that is
+too old is refetched and its remote error is returned.
+
+Invalidation is owned by the commit boundary. All listing-changing commits in
+`pkg/vfs/view.Committer` (mkdir, remove, uploaded entry, dropped upload, remote
+rename) report the affected directories; `pkg/vfs` deletes those persisted
+files and advances an in-memory list generation. The generation is captured
+before a fetch and re-checked in `Put`, so a fetch that raced a mutation is
+never persisted (A-lists / B-renames / A-writes-old-list). The generation is
+process-local on purpose: `Get` only checks TTL and identity, because the
+single-writer owner lock guarantees no other process mutated the mount while a
+previous owner's files were being written.
+
+Observability: `debug collect`/`probe` snapshots embed a `list_cache` object
+(hits/misses/puts/evictions/drops plus current bytes), and
+`qrypt probe cache invalidate --path DIR` now drops a directory listing (a
+directory path is no longer rejected). `qrypt probe cache clear` also clears the
+list cache through `VFS.ClearReadCache`; `storage usage` reports
+`list_cache_bytes`.
+
 `internal/cli` and `pkg/mobile` import `pkg/drivers/all` for the full bundled
 driver set.
 

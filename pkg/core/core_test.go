@@ -542,6 +542,9 @@ func TestThumbnailCacheFileLifecycle(t *testing.T) {
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
+	[list_cache]
+	ttl = "0"
+
 	[[mounts]]
 	name = "quark"
 	type = "localfs"

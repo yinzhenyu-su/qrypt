@@ -122,6 +122,18 @@ var activeTaskStates = []task.State{
 // process-local WaitFileSystemIdle it cannot be satisfied by unrelated activity
 // in the shared runtime, and it reports permanent upload failures immediately
 // instead of blocking until the caller's timeout.
+// InvalidateList drops stale directory listings for path.
+func (s coreFSService) InvalidateList(ctx context.Context, path string) error {
+	type listInvalidator interface {
+		InvalidateListCache(context.Context, string) error
+	}
+	fs, ok := s.core.fs.(listInvalidator)
+	if !ok {
+		return fmt.Errorf("core: list invalidation is unavailable")
+	}
+	return fs.InvalidateListCache(ctx, path)
+}
+
 func (s coreFSService) WaitPath(ctx context.Context, path string, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 30 * time.Second

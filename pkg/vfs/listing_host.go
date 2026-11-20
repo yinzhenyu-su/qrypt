@@ -2,13 +2,16 @@ package vfs
 
 import (
 	"context"
+	"sync/atomic"
+	"time"
+
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/listcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	pathpkg "path"
-	"time"
 )
 
 func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]drive.Entry, error) {
@@ -47,10 +50,46 @@ type vfsListingView struct {
 	vis   view.Visibility
 	rt    view.Runtime
 	store *upload.Domain
+	gen   *atomic.Uint64
 }
 
 func newVFSListingView(v *VFS) vfsListingView {
-	return vfsListingView{vis: newVFSVisibilityRuntime(v), rt: view.NewRuntime(v.view), store: v.uploads}
+	return vfsListingView{vis: newVFSVisibilityRuntime(v), rt: view.NewRuntime(v.view), store: v.uploads, gen: &v.listGen}
+}
+
+// ListGeneration reports the owner's listing generation.
+func (h vfsListingView) ListGeneration() uint64 {
+	if h.gen == nil {
+		return 0
+	}
+	return h.gen.Load()
+}
+
+// vfsListCache adapts the persisted list store to listing.ListCache: it
+// stamps writes with the caller's generation and refuses writes whose fetch
+// was overtaken by a mutation.
+type vfsListCache struct {
+	store *listcache.Store
+	gen   *atomic.Uint64
+}
+
+func (c vfsListCache) Get(path string, now time.Time) ([]drive.Entry, bool) {
+	if c.store == nil {
+		return nil, false
+	}
+	return c.store.Get(path, now)
+}
+
+func (c vfsListCache) Put(path string, entries []drive.Entry, generation uint64, fetchedAt time.Time) {
+	if c.store == nil {
+		return
+	}
+	if c.gen != nil && c.gen.Load() != generation {
+		// A mutation committed while the listing was in flight; the fetch
+		// result may predate it.
+		return
+	}
+	c.store.Put(path, entries, generation, fetchedAt)
 }
 
 func (h vfsListingView) IsUnavailable(path string) bool {

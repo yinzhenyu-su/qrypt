@@ -35,6 +35,7 @@ func NewListCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd.Flags().Bool("jsonl", false, "write JSON Lines output (one entry per line)")
 	cmd.Flags().Bool("human", false, "human-readable sizes (K/M/G/T)")
 	cmd.Flags().Bool("remote-names", false, "include backend remote names and raw paths")
+	cmd.Flags().Bool("refresh", false, "refetch the listing from the backend, bypassing caches")
 	return cmd
 }
 
@@ -52,6 +53,9 @@ func runList(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return err
 		}
 		defer cleanup()
+		if err := invalidateListCacheForRefresh(ctx, cmd, fs); err != nil {
+			return err
+		}
 
 		if remoteNames, _ := cmd.Flags().GetBool("remote-names"); remoteNames {
 			return fmt.Errorf("--remote-names is not available through the resident Core yet")
@@ -137,6 +141,28 @@ func runList(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 	}
 }
 
+// listCacheInvalidator is implemented by both the resident-Core client and
+// the in-process VFS, so `fs list --refresh` works on either path.
+type listCacheInvalidator interface {
+	InvalidateListCache(ctx context.Context, path string) error
+}
+
+func invalidateListCacheForRefresh(ctx context.Context, cmd *cobra.Command, filesystem any) error {
+	refresh, _ := cmd.Flags().GetBool("refresh")
+	if !refresh {
+		return nil
+	}
+	path := "/"
+	if args := cmd.Flags().Args(); len(args) > 0 {
+		path = args[0]
+	}
+	invalidator, ok := filesystem.(listCacheInvalidator)
+	if !ok {
+		return nil
+	}
+	return invalidator.InvalidateListCache(ctx, path)
+}
+
 func runListLocal(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		path := "/"
@@ -148,6 +174,9 @@ func runListLocal(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return err
 		}
 		defer cleanup()
+		if err := invalidateListCacheForRefresh(ctx, cmd, fs); err != nil {
+			return err
+		}
 
 		entries, err := fs.List(ctx, path)
 		if err != nil {

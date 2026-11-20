@@ -37,13 +37,25 @@ type Committer struct {
 	vis        Visibility
 	invalidate func(entry drive.Entry)
 	seed       func(entry drive.Entry, stagingPath string)
+	// listChanged runs after every committed listing-changing mutation with
+	// the virtual paths whose persisted listings are now stale. The VFS drops
+	// those files and advances the list generation so listings fetched
+	// concurrently with the mutation can never be served as fresh.
+	listChanged func(paths ...string)
 }
 
 // NewCommitter builds the commit boundary. invalidate drops a committed
 // entry's read-cache state; seed warms the read cache from a staging file
 // (hence CommitUploadedEntry only calls it when stagingPath is non-empty).
-func NewCommitter(view *View, vis Visibility, invalidate func(entry drive.Entry), seed func(entry drive.Entry, stagingPath string)) Committer {
-	return Committer{view: view, vis: vis, invalidate: invalidate, seed: seed}
+func NewCommitter(view *View, vis Visibility, invalidate func(entry drive.Entry), seed func(entry drive.Entry, stagingPath string), listChanged func(paths ...string)) Committer {
+	return Committer{view: view, vis: vis, invalidate: invalidate, seed: seed, listChanged: listChanged}
+}
+
+// bumpListGeneration reports a committed mutation to the list-cache owner.
+func (r Committer) bumpListGeneration(paths ...string) {
+	if r.listChanged != nil {
+		r.listChanged(paths...)
+	}
 }
 
 // CommitMkdir is the mutation-commit entry point for a created directory:
@@ -57,6 +69,7 @@ func (r Committer) CommitMkdir(path string, entry drive.Entry) {
 	rt.MarkLocalDirLocked(path)
 	rt.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
+	r.bumpListGeneration(pathpkg.Dir(path))
 	r.vis.RetireRenameShadow(path, entry.ID)
 }
 
@@ -70,6 +83,7 @@ func (r Committer) CommitRemove(path string, entry drive.Entry) {
 	rt := NewRuntime(r.view)
 	rt.ClearLocalModTime(path)
 	rt.clearLocalDirs(path)
+	r.bumpListGeneration(pathpkg.Dir(path), path)
 }
 
 // CommitUploadedEntry folds a completed upload into the view: it seeds the
@@ -86,6 +100,7 @@ func (r Committer) CommitUploadedEntry(path string, entry drive.Entry, stagingPa
 	r.vis.UnhideCopyChild(pathpkg.Dir(path), entry.Name)
 	rt.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
+	r.bumpListGeneration(pathpkg.Dir(path))
 	r.vis.RetireRenameShadow(path, entry.ID)
 }
 
@@ -102,6 +117,7 @@ func (r Committer) DropUploadedEntry(path string, entry drive.Entry) {
 	r.view.entries.Delete(path)
 	rt.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
+	r.bumpListGeneration(pathpkg.Dir(path))
 }
 
 // CommitRemoteRename folds a completed remote rename/move into the view: it
@@ -140,6 +156,7 @@ func (r Committer) CommitRemoteRename(oldPath, newPath string, entry drive.Entry
 	entry = entryForPath(newPath, entry)
 	r.view.entries.Set(newPath, entry)
 	r.view.mu.Unlock()
+	r.bumpListGeneration(oldParent, newParent, oldPath, newPath)
 	r.vis.AddRenameOverlay(oldPath, newPath, entry.ID, entry.IsDir)
 }
 

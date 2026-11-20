@@ -81,6 +81,7 @@
 |---|---|---|---|
 | `work_dir` | string | `~/.qrypt` | 所有运行数据的根目录；未单独配置的子目录会从这里派生。 |
 | `read_cache_dir` | string | `<work_dir>/cache/read` | 读取缓存目录的可选覆盖。 |
+| `list_cache_dir` | string | `<work_dir>/cache/lists` | 持久化目录列表缓存目录的可选覆盖。 |
 | `thumbnail_cache_dir` | string | `<work_dir>/cache/thumbnail` | 缩略图缓存目录的可选覆盖。 |
 | `upload_dir` | string | `<work_dir>/upload` | 上传 staging 和 pending journal 目录的可选覆盖。 |
 | `state_dir` | string | `<work_dir>/state` | 驱动及运行状态目录的可选覆盖。 |

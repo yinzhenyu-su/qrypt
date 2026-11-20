@@ -167,13 +167,18 @@ func TestNamespaceDebugInvalidateReadCacheRoutesToMount(t *testing.T) {
 	if name, err := fs.DebugInvalidateReadCache(ctx, "/data.bin"); err != nil || name != "local" {
 		t.Fatalf("VFS invalidate = %q, %v; want local, nil", name, err)
 	}
-	if _, err := fs.DebugInvalidateReadCache(ctx, "/dir"); err == nil {
-		t.Fatal("expected a directory to be rejected")
+	// A directory path now invalidates the persisted listing instead of
+	// being rejected, so the next listing refetches from the backend.
+	if name, err := fs.DebugInvalidateReadCache(ctx, "/dir"); err != nil || name != "local" {
+		t.Fatalf("directory invalidate = %q, %v; want local, nil", name, err)
 	}
 	if _, err := fs.DebugInvalidateReadCache(ctx, "/missing.bin"); err == nil {
 		t.Fatal("expected a missing path to be rejected")
 	}
-	if _, err := ns.DebugInvalidateReadCache(ctx, "/local"); err == nil {
+	if name, err := ns.DebugInvalidateReadCache(ctx, "/local"); err != nil || name != "local" {
+		t.Fatalf("mount-root invalidate = %q, %v; want local, nil", name, err)
+	}
+	if _, err := ns.DebugInvalidateReadCache(ctx, "/"); err == nil {
 		t.Fatal("expected the namespace root to be rejected")
 	}
 

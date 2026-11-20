@@ -88,4 +88,24 @@ func TestFSCommandsThroughCore(t *testing.T) {
 	if string(data) != "core data" {
 		t.Fatalf("remote data = %q", data)
 	}
+
+	// The listing was persisted by the Core; an external change is invisible
+	// within the TTL and becomes visible after --refresh.
+	if err := os.WriteFile(filepath.Join(remote, "external.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cachedOut, err := executeRoot(t, "fs", "--config", configPath, "list", "--json", "/local")
+	if err != nil {
+		t.Fatalf("cached list via core: %v", err)
+	}
+	if strings.Contains(cachedOut, "external.txt") {
+		t.Fatalf("external change visible before TTL: %s", cachedOut)
+	}
+	refreshedOut, err := executeRoot(t, "fs", "--config", configPath, "list", "--json", "--refresh", "/local")
+	if err != nil {
+		t.Fatalf("refresh list via core: %v", err)
+	}
+	if !strings.Contains(refreshedOut, "external.txt") {
+		t.Fatalf("refresh did not refetch: %s", refreshedOut)
+	}
 }

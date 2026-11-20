@@ -521,12 +521,18 @@ func (v *VFS) DebugInvalidateReadCache(ctx context.Context, path string) (string
 		return "", ctx.Err()
 	default:
 	}
-	entry, err := v.resolve(ctx, vfstypes.CleanVirtualPath(path))
+	clean := vfstypes.CleanVirtualPath(path)
+	// A directory's persisted listing is invalidated by path, without
+	// resolving it, so the next listing refetches from the backend.
+	if v.listCache != nil {
+		v.listCache.Delete(clean)
+	}
+	entry, err := v.resolve(ctx, clean)
 	if err != nil {
 		return "", err
 	}
 	if entry.IsDir {
-		return "", fmt.Errorf("vfs: %q is a directory", path)
+		return v.name, nil
 	}
 	if entry.ID == "" {
 		return "", fmt.Errorf("vfs: %q has no remote id", path)
@@ -592,7 +598,7 @@ func (v *VFS) debugMountSnapshot(name string) diagnostics.MountSnapshot {
 }
 
 func (v *VFS) debugCacheSnapshot() diagnostics.DebugCacheSnapshot {
-	return diagnostics.CacheSnapshot(newVFSDebugCacheRuntime(v.read, v.uploads))
+	return diagnostics.CacheSnapshot(newVFSDebugCacheRuntime(v.read, v.uploads, v.listCache))
 }
 
 func (v *VFS) DebugStaging(ctx context.Context, path string) (diagnostics.DebugStagingReport, error) {

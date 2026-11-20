@@ -45,6 +45,9 @@ type FSService interface {
 	// client can keep the "wait for the upload to finish" contract without
 	// waiting for the whole shared runtime to go idle.
 	WaitPath(ctx context.Context, path string, timeout time.Duration) error
+	// InvalidateList drops persisted and in-memory listings for path so the
+	// next list reflects the backend (used by `fs list --refresh`).
+	InvalidateList(ctx context.Context, path string) error
 }
 
 // SetFSService installs the data-plane service before Start.
@@ -83,6 +86,8 @@ func (s *CommandServer) handleFS(w http.ResponseWriter, r *http.Request) {
 		s.handleFSRename(w, r)
 	case "truncate":
 		s.handleFSTruncate(w, r)
+	case "invalidate":
+		s.handleFSInvalidate(w, r)
 	case "wait":
 		s.handleFSWait(w, r)
 	default:
@@ -309,6 +314,22 @@ func (s *CommandServer) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, entry)
 }
 
+func (s *CommandServer) handleFSInvalidate(w http.ResponseWriter, r *http.Request) {
+	var req fsPathRequest
+	if !writeFSRequest(w, r, &req) {
+		return
+	}
+	if req.Path == "" {
+		http.Error(w, "missing path", http.StatusBadRequest)
+		return
+	}
+	if err := s.fs.InvalidateList(r.Context(), req.Path); err != nil {
+		http.Error(w, err.Error(), fsErrorStatus(err))
+		return
+	}
+	writeJSON(w, map[string]any{"invalidated": req.Path})
+}
+
 func (s *CommandServer) handleFSWait(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path      string `json:"path"`
@@ -423,6 +444,12 @@ func (c *Client) FSTruncate(ctx context.Context, path string, size int64) error 
 }
 
 // FSWaitPath waits until the Core reports no pending work for path.
+// FSInvalidateList drops cached directory listings for path.
+func (c *Client) FSInvalidateList(ctx context.Context, path string) error {
+	_, err := c.PostJSON(ctx, "/v1/fs/invalidate", fsPathRequest{Path: path})
+	return err
+}
+
 func (c *Client) FSWaitPath(ctx context.Context, path string, timeout time.Duration) error {
 	return c.fsPost(ctx, "/v1/fs/wait", map[string]any{"path": path, "timeout_ms": timeout.Milliseconds()})
 }

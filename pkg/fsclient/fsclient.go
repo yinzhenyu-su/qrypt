@@ -88,6 +88,12 @@ func (f *FS) Truncate(ctx context.Context, path string, size int64) error {
 	return f.client.FSTruncate(ctx, path, size)
 }
 
+// InvalidateListCache drops Core-side listings for path so the next List
+// refetches from the backend (`fs list --refresh`).
+func (f *FS) InvalidateListCache(ctx context.Context, path string) error {
+	return f.client.FSInvalidateList(ctx, path)
+}
+
 // WaitPath reports when the Core has no pending work left for path.
 func (f *FS) WaitPath(ctx context.Context, path string, timeout time.Duration) error {
 	return f.client.FSWaitPath(ctx, path, timeout)

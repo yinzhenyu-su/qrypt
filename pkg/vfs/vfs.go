@@ -10,6 +10,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/listcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/observe"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
@@ -43,6 +44,16 @@ type Options struct {
 	// ReadPolicy optionally overrides the driver's read scheduling defaults
 	// for this mount. Nil keeps the driver profile unchanged.
 	Read *drive.ReadOverride
+	// ListCacheDir persists directory listings for this mount. Empty or a
+	// non-positive ListCacheTTL disables the cache.
+	ListCacheDir string
+	// ListCacheTTL is how long a persisted listing may be served.
+	ListCacheTTL time.Duration
+	// ListCacheMaxBytes caps the persisted listings of this mount.
+	ListCacheMaxBytes int64
+	// ListCacheIdentity names the backend/root/account the listings belong
+	// to; files written under another identity are discarded.
+	ListCacheIdentity string
 }
 
 type VFS struct {
@@ -67,7 +78,12 @@ type VFS struct {
 	// New, mutated only by its domain's code paths, and shut down by the VFS
 	// lifecycle. activeDebug (single-state) and pathLocks (cross-domain)
 	// stay top-level.
-	view    *view.View
+	view      *view.View
+	listCache *listcache.Store
+	// listGen advances on every committed mutation; persisted listings
+	// record the generation observed before their fetch and are only
+	// served while it still matches.
+	listGen atomic.Uint64
 	read    *readState
 	reader  *read.Reader
 	uploads *upload.Domain
@@ -155,9 +171,17 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if err != nil {
 		return nil, err
 	}
+	listStore, err := listcache.NewStore(opts.ListCacheDir, opts.Name, opts.ListCacheIdentity, opts.ListCacheTTL, opts.ListCacheMaxBytes)
+	if err != nil {
+		_ = stores.Close()
+		return nil, err
+	}
 	source, err := drive.NewReadSource(driver, opts.Read)
 	if err != nil {
 		_ = stores.Close()
+		if listStore != nil {
+			_ = listStore.Close()
+		}
 		return nil, err
 	}
 	now := util.Now()
@@ -167,6 +191,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	v := &VFS{
 		driver:        driver,
 		name:          opts.Name,
+		listCache:     listStore,
 		healthTracker: drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
 		counters:      &drive.Counters{},
 		rootID:        opts.RootID,
@@ -196,10 +221,11 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		ReadFaults: v.readFaults,
 	})
 	v.lister = listing.NewLister(listing.ListerDeps{
-		Remote: newVFSListingRemote(v),
-		View:   newVFSListingView(v),
-		State:  v.listing,
-		Health: vfsListingHealth{tracker: v.healthTracker},
+		Remote:    newVFSListingRemote(v),
+		View:      newVFSListingView(v),
+		State:     v.listing,
+		Health:    vfsListingHealth{tracker: v.healthTracker},
+		ListCache: vfsListCache{store: listStore, gen: &v.listGen},
 	})
 	return v, nil
 }
@@ -322,6 +348,9 @@ func (v *VFS) teardown() {
 		if err := v.read.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		if v.listCache != nil {
+			errs = append(errs, v.listCache.Close())
+		}
 		v.closeErr = errors.Join(errs...)
 		close(v.closeDone)
 		return
@@ -350,6 +379,9 @@ func (v *VFS) teardown() {
 	}
 	if err := v.read.Close(); err != nil {
 		errs = append(errs, err)
+	}
+	if v.listCache != nil {
+		errs = append(errs, v.listCache.Close())
 	}
 	v.closeErr = errors.Join(errs...)
 	v.lifecycleMu.Lock()
@@ -408,8 +440,26 @@ func (v *VFS) FlushReadCache() error {
 	return v.read.FlushReadCache()
 }
 
+// InvalidateListCache drops both the in-memory and the persisted listing for
+// one directory so the next listing refetches from the backend.
+func (v *VFS) InvalidateListCache(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	clean := vfstypes.CleanVirtualPath(path)
+	if v.listCache != nil {
+		v.listCache.Delete(clean)
+	}
+	v.view.InvalidateList(clean)
+	return nil
+}
+
 func (v *VFS) ClearReadCache() error {
-	return v.read.ClearReadCache()
+	err := v.read.ClearReadCache()
+	if v.listCache != nil {
+		err = errors.Join(err, v.listCache.Clear())
+	}
+	return err
 }
 
 func (v *VFS) ClearReadCacheForMount(name string) error {

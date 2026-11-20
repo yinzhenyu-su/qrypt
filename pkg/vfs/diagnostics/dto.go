@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/listcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
@@ -49,7 +50,8 @@ type MountSnapshot struct {
 // diagnostics domain, never inside readcache.
 type DebugCacheSnapshot struct {
 	readcache.DebugReadCache
-	Journal *upload.DebugJournal `json:"journal,omitempty"`
+	Journal   *upload.DebugJournal `json:"journal,omitempty"`
+	ListCache *listcache.Stats     `json:"list_cache,omitempty"`
 }
 
 type MountSnapshotIdentity struct {

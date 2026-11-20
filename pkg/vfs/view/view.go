@@ -136,6 +136,13 @@ func (v *View) RangeEntries(fn func(path string, entry drive.Entry) bool) {
 	v.entries.Range(fn)
 }
 
+// InvalidateList drops the cached listing for one directory path.
+func (v *View) InvalidateList(path string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	NewRuntime(v).InvalidateListLocked(path)
+}
+
 // ClearListCaches drops every cached directory listing. Used by callers that
 // need to force a fresh remote fetch (tests, prefetch recovery).
 func (v *View) ClearListCaches() {

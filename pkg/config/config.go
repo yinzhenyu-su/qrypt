@@ -36,6 +36,7 @@ type Config struct {
 	Bandwidth          BandwidthConfig    `toml:"bandwidth"`
 	Storage            StorageConfig      `toml:"storage"`
 	ReadCache          ReadCacheConfig    `toml:"read_cache"`
+	ListCache          ListCacheConfig    `toml:"list_cache"`
 	ThumbnailCache     ReadCacheConfig    `toml:"thumbnail_cache"`
 	Upload             UploadConfig       `toml:"upload"`
 	Encryption         crypt.Config       `toml:"encryption"`
@@ -70,6 +71,7 @@ type MountConfig struct {
 	Params      ParamMap         `toml:"params"`
 	Encryption  *crypt.Config    `toml:"encryption"`
 	ReadCache   *ReadCacheConfig `toml:"read_cache"`
+	ListCache   *ListCacheConfig `toml:"list_cache"`
 	Read        *ReadConfig      `toml:"read"`
 	Upload      *UploadConfig    `toml:"upload"`
 }
@@ -114,6 +116,7 @@ func (p *ParamMap) UnmarshalTOML(data any) error {
 type StorageConfig struct {
 	WorkDir           string `toml:"work_dir"`
 	ReadCacheDir      string `toml:"read_cache_dir"`
+	ListCacheDir      string `toml:"list_cache_dir"`
 	ThumbnailCacheDir string `toml:"thumbnail_cache_dir"`
 	UploadDir         string `toml:"upload_dir"`
 	StateDir          string `toml:"state_dir"`
@@ -122,6 +125,14 @@ type StorageConfig struct {
 }
 
 type ReadCacheConfig struct {
+	MaxSize string `toml:"max_size"`
+}
+
+// ListCacheConfig controls the persisted directory-listing cache. An empty
+// TTL or MaxSize inherits the default (30s / 32MiB); an explicit "0" ttl
+// disables the cache for the mount.
+type ListCacheConfig struct {
+	TTL     string `toml:"ttl"`
 	MaxSize string `toml:"max_size"`
 }
 
@@ -408,6 +419,23 @@ func (c *Config) ReadCacheFor(mountName string) ReadCacheConfig {
 	for _, mount := range c.Mounts {
 		if mount.Name == mountName && mount.ReadCache != nil {
 			cache = *mount.ReadCache
+			break
+		}
+	}
+	return cache
+}
+
+// ListCacheFor returns the effective list-cache settings for a mount: the
+// top-level [list_cache] table overridden by [mounts.list_cache].
+func (c *Config) ListCacheFor(mountName string) ListCacheConfig {
+	var cache ListCacheConfig
+	if c == nil {
+		return cache
+	}
+	cache = c.ListCache
+	for _, mount := range c.Mounts {
+		if mount.Name == mountName && mount.ListCache != nil {
+			cache = *mount.ListCache
 			break
 		}
 	}
