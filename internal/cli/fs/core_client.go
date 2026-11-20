@@ -8,8 +8,6 @@ import (
 	"github.com/spf13/cobra"
 	clicore "github.com/yinzhenyu/qrypt/internal/cli/core"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
-	"github.com/yinzhenyu/qrypt/pkg/control"
-	corepkg "github.com/yinzhenyu/qrypt/pkg/core"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/fsclient"
@@ -44,15 +42,10 @@ func openCoreFS(rt cliruntime.Runtime, cmd *cobra.Command) (context.Context, *fs
 		return nil, nil, nil, rt.ConfigNotFoundError()
 	}
 	ctx, stop := rt.ShutdownContext(cmd)
-	if err := clicore.EnsureCore(ctx, rt, state); err != nil {
-		stop()
-		return nil, nil, nil, fmt.Errorf("filesystem operations require the resident Core: %w", err)
-	}
-	runDir := corepkg.RuntimeRunDir(state.Path, state.Cfg)
-	client, err := control.NewClient(corepkg.ControlSocketPath(state.Cfg, corepkg.RuntimeLayout{RunDir: runDir}))
+	client, err := clicore.EnsureClient(ctx, rt, state)
 	if err != nil {
 		stop()
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("filesystem operations require the resident Core: %w", err)
 	}
 	return ctx, fsclient.New(client), stop, nil
 }

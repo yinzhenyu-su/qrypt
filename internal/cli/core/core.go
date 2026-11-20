@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	clii18n "github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
+	"github.com/yinzhenyu/qrypt/pkg/buildinfo"
 	"github.com/yinzhenyu/qrypt/pkg/control"
 	corepkg "github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/core/ownerlock"
@@ -285,6 +286,63 @@ func EnsureCore(ctx context.Context, rt cliruntime.Runtime, state cliruntime.Con
 	_, err = waitForStatus(ctx, endpoint, readyTimeout)
 	if err != nil {
 		return fmt.Errorf("core: resident Core did not become ready: %w", err)
+	}
+	return nil
+}
+
+// EnsureClient ensures a resident Core is running and returns a client after
+// checking that both sides speak the same protocol and use the same
+// configuration. A stale Core from an older binary or a different config must
+// be restarted instead of silently serving diverging state.
+func EnsureClient(ctx context.Context, rt cliruntime.Runtime, state cliruntime.ConfigState) (*control.Client, error) {
+	if err := EnsureCore(ctx, rt, state); err != nil {
+		return nil, err
+	}
+	if state.Cfg == nil {
+		return nil, fmt.Errorf("core: config required")
+	}
+	runDir := corepkg.RuntimeRunDir(state.Path, state.Cfg)
+	endpoint := corepkg.ControlSocketPath(state.Cfg, corepkg.RuntimeLayout{RunDir: runDir})
+	client, err := control.NewClient(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	status, err := client.RuntimeStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("core: inspect resident Core: %w", err)
+	}
+	if err := verifyCoreStatus(status, state); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// verifyCoreStatus rejects a Core that cannot serve this client faithfully.
+func verifyCoreStatus(status control.RuntimeStatus, state cliruntime.ConfigState) error {
+	if status.ProtocolVersion != control.ProtocolVersion {
+		return fmt.Errorf("core: resident Core speaks protocol v%d but this client speaks v%d; restart it with `qrypt core stop` and retry", status.ProtocolVersion, control.ProtocolVersion)
+	}
+	if status.Version != "" {
+		if want := buildinfo.Current().Version; want != "" && status.Version != want {
+			return fmt.Errorf("core: resident Core runs qrypt %s but this client is %s; restart it with `qrypt core stop` and retry", status.Version, want)
+		}
+	}
+	if state.Path == "" {
+		return nil
+	}
+	configPath, err := filepath.Abs(state.Path)
+	if err != nil {
+		return fmt.Errorf("core: resolve config path: %w", err)
+	}
+	if status.ConfigPath != "" && filepath.Clean(status.ConfigPath) != filepath.Clean(configPath) {
+		return fmt.Errorf("core: resident Core uses config %q but this command uses %q; stop it with `qrypt core stop` and retry", status.ConfigPath, configPath)
+	}
+	want, err := ownerlock.FingerprintFile(configPath)
+	if err != nil {
+		return fmt.Errorf("core: fingerprint config: %w", err)
+	}
+	if status.Fingerprint != "" && status.Fingerprint != want {
+		return fmt.Errorf("core: resident Core was started with a different configuration; stop it with `qrypt core stop` and retry")
 	}
 	return nil
 }

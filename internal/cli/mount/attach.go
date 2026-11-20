@@ -40,10 +40,7 @@ func runAttach(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime.Confi
 
 	logging.L.Infof("Mounting at %s ...", mountPoint)
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.mount.mounting", mountPoint))
-	if err := clicore.EnsureCore(ctx, rt, state); err != nil {
-		return err
-	}
-	client, err := control.NewClient(controlEndpointFor(state))
+	client, err := clicore.EnsureClient(ctx, rt, state)
 	if err != nil {
 		return err
 	}
