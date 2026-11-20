@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,9 +63,9 @@ func TestCoreServeStatusStop(t *testing.T) {
 	configPath, workDir := writeCoreServeTestConfig(t, base)
 
 	serveRoot := NewRootCommand()
-	var serveOut bytes.Buffer
-	serveRoot.SetOut(&serveOut)
-	serveRoot.SetErr(&serveOut)
+	serveOut := &lockedServeBuffer{}
+	serveRoot.SetOut(serveOut)
+	serveRoot.SetErr(serveOut)
 	serveRoot.SetArgs([]string{"core", "serve", "--foreground", "--keep", "--config", configPath})
 	done := make(chan error, 1)
 	go func() { done <- serveRoot.Execute() }()
@@ -98,6 +99,23 @@ func TestCoreServeStatusStop(t *testing.T) {
 	}
 	if !strings.Contains(status, `"pid": `+strconv.Itoa(os.Getpid())) {
 		t.Fatalf("status pid does not reference the serving process: %s", status)
+	}
+
+	// The foreground serve must explain that it is up: the runtime logger writes
+	// to files, so without this line the terminal stays silent (#46).
+	readyDeadline := time.Now().Add(10 * time.Second)
+	for {
+		text := serveOut.String()
+		if strings.Contains(text, "Core ready") && strings.Contains(text, "qrypt.log") {
+			if !strings.Contains(text, "pid "+strconv.Itoa(os.Getpid())) {
+				t.Fatalf("serve ready line missing pid: %s", text)
+			}
+			break
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatalf("serve did not print a ready line: %q", text)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	held, meta := ownerlock.Peek(workDir)
@@ -200,4 +218,23 @@ func TestUnmountWithCoreNoMounts(t *testing.T) {
 	if !strings.Contains(out, "no mounts are active") {
 		t.Fatalf("unmount output = %s, want no mounts message", out)
 	}
+}
+
+// lockedServeBuffer collects foreground serve output without racing the serve
+// goroutine that the test reads it from.
+type lockedServeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedServeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedServeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
