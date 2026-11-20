@@ -155,6 +155,46 @@ func TestFSCommandsThroughCore(t *testing.T) {
 		t.Fatalf("big cat length = %d, want %d", len(bigOut), len(big))
 	}
 
+	// Write commands share the same owner Committer and pending projection.
+	if _, err := executeRoot(t, "fs", "--config", configPath, "mkdir", "/local/sub"); err != nil {
+		t.Fatalf("fs mkdir via core: %v", err)
+	}
+	smallLocal := filepath.Join(base, "small.txt")
+	if err := os.WriteFile(smallLocal, []byte("small payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeRoot(t, "fs", "--config", configPath, "put", "--wait-timeout", "10s", smallLocal, "/local/sub/a.txt"); err != nil {
+		t.Fatalf("fs put small via core: %v", err)
+	}
+	if _, err := executeRoot(t, "fs", "--config", configPath, "copy", "/local/sub/a.txt", "/local/sub/b.txt"); err != nil {
+		t.Fatalf("fs copy file via core: %v", err)
+	}
+	copiedOut, err := executeRoot(t, "fs", "--config", configPath, "cat", "/local/sub/b.txt")
+	if err != nil || copiedOut != "small payload" {
+		t.Fatalf("copied file content = %q err=%v", copiedOut, err)
+	}
+	if _, err := executeRoot(t, "fs", "--config", configPath, "copy", "-r", "/local/sub", "/local/dir2"); err != nil {
+		t.Fatalf("fs copy dir via core: %v", err)
+	}
+	dirCopiedOut, err := executeRoot(t, "fs", "--config", configPath, "cat", "/local/dir2/sub/a.txt")
+	if err != nil || dirCopiedOut != "small payload" {
+		t.Fatalf("dir copy content = %q err=%v", dirCopiedOut, err)
+	}
+	if _, err := executeRoot(t, "fs", "--config", configPath, "rm", "--wait-timeout", "10s", "/local/sub/b.txt"); err != nil {
+		t.Fatalf("fs rm via core: %v", err)
+	}
+	if _, err := executeRoot(t, "fs", "--config", configPath, "stat", "/local/sub/b.txt"); err == nil {
+		t.Fatal("removed file should be gone through the owner view")
+	}
+	gotLocal := filepath.Join(base, "downloaded.bin")
+	if _, err := executeRoot(t, "fs", "--config", configPath, "get", "/local/big.bin", gotLocal); err != nil {
+		t.Fatalf("fs get via core: %v", err)
+	}
+	gotBytes, err := os.ReadFile(gotLocal)
+	if err != nil || len(gotBytes) != len(big) || string(gotBytes) != string(big) {
+		t.Fatalf("downloaded bytes = %d err=%v, want %d", len(gotBytes), err, len(big))
+	}
+
 	if _, err := executeRoot(t, "fs", "--config", configPath, "stat", "/local/does-not-exist"); err == nil {
 		t.Fatal("fs stat of a missing path should fail")
 	} else if !strings.Contains(err.Error(), "not found") {

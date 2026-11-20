@@ -28,6 +28,14 @@ type FSEntry struct {
 	ModTime  time.Time `json:"mod_time,omitempty"`
 }
 
+// FSCopyRequest is a direct backend-to-backend copy request.
+type FSCopyRequest struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Recursive   bool   `json:"recursive"`
+	Force       bool   `json:"force"`
+}
+
 // FSService is the minimal data plane over the command endpoint: the subset of
 // vfs.FileSystem that lets the CLI list, stat, upload and rename through the
 // single owner Core instead of opening its own VFS. It stays separate from the
@@ -59,6 +67,9 @@ type FSService interface {
 	MountSpaces(ctx context.Context) ([]FSMountSpace, error)
 	// PendingUploads lists uploads staged but not yet committed.
 	PendingUploads(ctx context.Context) ([]vfs.PendingUpload, error)
+	// Copy runs a direct backend-to-backend copy and returns the driver_copy
+	// result document.
+	Copy(ctx context.Context, req FSCopyRequest) (json.RawMessage, error)
 }
 
 // FSSpace is the transport view of drive.Space.
@@ -113,6 +124,8 @@ func (s *CommandServer) handleFS(w http.ResponseWriter, r *http.Request) {
 		s.handleFSTruncate(w, r)
 	case "invalidate":
 		s.handleFSInvalidate(w, r)
+	case "copy":
+		s.handleFSCopy(w, r)
 	case "space":
 		s.handleFSSpace(w, r)
 	case "spaces":
@@ -165,6 +178,25 @@ func (s *CommandServer) handleFSStat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, entry)
+}
+
+func (s *CommandServer) handleFSCopy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req FSCopyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := s.fs.Copy(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), fsErrorStatus(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(result)
 }
 
 func (s *CommandServer) handleFSList(w http.ResponseWriter, r *http.Request) {
@@ -525,6 +557,12 @@ func (c *Client) FSPendingUploads(ctx context.Context) ([]vfs.PendingUpload, err
 		return nil, fmt.Errorf("control: decode fs pending: %w", err)
 	}
 	return payload.Pending, nil
+}
+
+// FSCopy runs a direct backend-to-backend copy on the Core and returns the
+// driver_copy result document.
+func (c *Client) FSCopy(ctx context.Context, req FSCopyRequest) (json.RawMessage, error) {
+	return c.PostJSON(ctx, "/v1/fs/copy", req)
 }
 
 // FSCreate opens (or truncates) a file on the Core.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -451,6 +452,10 @@ func (v *VFS) InvalidateListCache(ctx context.Context, path string) error {
 		v.listCache.Delete(clean)
 	}
 	v.view.InvalidateList(clean)
+	v.view.ClearRecentLocalDir(clean)
+	// Bump the generation so an in-flight listing that started before this
+	// invalidation cannot persist or commit the pre-invalidation entries.
+	v.listGen.Add(1)
 	return nil
 }
 

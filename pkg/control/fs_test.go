@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -70,6 +72,13 @@ func (s *fsStub) InvalidateList(ctx context.Context, path string) error {
 
 func (s *fsStub) WaitPath(ctx context.Context, path string, timeout time.Duration) error {
 	return nil
+}
+
+func (s *fsStub) Copy(ctx context.Context, req FSCopyRequest) (json.RawMessage, error) {
+	if req.Source == "/local/missing" {
+		return nil, fmt.Errorf("%w: %s", drive.ErrNotFound, req.Source)
+	}
+	return json.RawMessage(`{"pass":true,"bytes":3}`), nil
 }
 
 func newFSTestServer(stub FSService) *CommandServer {
@@ -159,8 +168,23 @@ func TestFSHandlersStreamAndQueries(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodPost, "/v1/fs/copy", strings.NewReader(`{"source":"/local/a","destination":"/local/b"}`)))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"pass":true`) {
+		t.Fatalf("copy status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
 	server.handleFS(recorder, httptest.NewRequest(http.MethodGet, "/v1/fs/pending", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"path": "/local/pending.txt"`) {
 		t.Fatalf("pending status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestFSCopyErrorMapsToNotFound(t *testing.T) {
+	server := newFSTestServer(&fsStub{})
+	recorder := httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodPost, "/v1/fs/copy", strings.NewReader(`{"source":"/local/missing","destination":"/local/b"}`)))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("copy status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

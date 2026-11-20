@@ -141,9 +141,9 @@ full diagnostics surface on both `*VFS` and `*Namespace`
 `pkg/control` serves `/v1/fs/*` from the owner Core, and `pkg/fsclient` adapts
 that endpoint back into a `vfs.FileSystem`. The read commands (`fs list`,
 `fs stat`, `fs cat`, `fs find`, `fs du`, `fs df`, `fs pending`) and the write
-commands migrated so far (`fs put`, `fs mv`) connect through this client, so
-their reads and mutations land on the same VFS, overlay and worker pool as FUSE
-and (later) the HTTP gateway.
+commands (`fs put`, `fs mv`, `fs mkdir`, `fs rm`, `fs copy`, `fs get`,
+`fs check`) connect through this client, so their reads and mutations land on
+the same VFS, overlay and worker pool as FUSE and (later) the HTTP gateway.
 
 Reads are streamed: `/v1/fs/read` copies the VFS reader straight to the response
 body (with an optional `raw=1` for `fs cat --raw`), and `pkg/fsclient` exposes
@@ -154,10 +154,21 @@ capability-gated commands such as `fs df`, `fs cat --raw` and `fs pending`
 behaving as they do on a local VFS. Transport failures are mapped back to
 `drive.ErrNotFound`/timeout errors so CLI messages stay comparable.
 
+Mutations wait by path: `/v1/fs/wait` waits only for the pending uploads and
+tasks of the requested path, so `fs put --wait-timeout` in a busy Core does not
+time out because another client is still uploading. `fs copy` uses
+`/v1/fs/copy`: the Core invokes the driver's direct copy so large trees are not
+streamed through the CLI, then explicitly invalidates the affected listing
+caches and recent-local-dir shadows (a driver-level copy bypasses the committer,
+so nothing else would observe it). Background list fetches compare a mutation
+generation before persisting, so a listing that raced a mutation is refetched
+instead of cached.
+
 `internal/cli/fs/core_client.go` owns the connect-or-lazily-start helper; the
 test suite pins `QRYPT_CORE_FS_REQUIRED=0` to keep exercising the legacy
-in-process path until the remaining commands (`get`, `mkdir`, `rm`, `copy`,
-`sync`, `check`, `journal`, `crypt`) migrate in the write milestone or later.
+in-process path for `fs sync` (which still needs a wait-for-all-transfers
+semantic) and for `fs list --remote-names` / `fs copy --dry-run`, which rely on
+in-process backend details.
 
 ### Single Writer and Resident Core
 

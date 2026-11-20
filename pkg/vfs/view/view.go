@@ -143,6 +143,22 @@ func (v *View) InvalidateList(path string) {
 	NewRuntime(v).InvalidateListLocked(path)
 }
 
+// ClearRecentLocalDir drops the recent-local-dir shadow for path and its
+// descendants. Callers use it when the backend now reflects a mutation made
+// outside the VFS committer (for example a driver-level copy), so resolving
+// children must consult the backend instead of short-circuiting to the local
+// view.
+func (v *View) ClearRecentLocalDir(path string) {
+	path = vfstypes.CleanVirtualPath(path)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for knownPath := range v.localDirs {
+		if knownPath == path || vfstypes.IsPathUnder(knownPath, path) {
+			delete(v.localDirs, knownPath)
+		}
+	}
+}
+
 // ClearListCaches drops every cached directory listing. Used by callers that
 // need to force a fresh remote fetch (tests, prefetch recovery).
 func (v *View) ClearListCaches() {

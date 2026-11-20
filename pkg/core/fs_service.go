@@ -2,14 +2,18 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	pathpkg "path"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/drivecopy"
 )
 
 // coreFSService exposes the owner Core's filesystem to CLI data-plane clients.
@@ -101,6 +105,49 @@ func (s coreFSService) MountSpaces(ctx context.Context) ([]control.FSMountSpace,
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func (s coreFSService) Copy(ctx context.Context, req control.FSCopyRequest) (json.RawMessage, error) {
+	source, ok := s.fs().(diagnostics.DriverCopySource)
+	if !ok {
+		return nil, fmt.Errorf("core: direct copy requires a filesystem with driver debug resolution")
+	}
+	if req.Recursive {
+		result := drivecopy.RunDirectDriverCopyDir(ctx, s.fs(), source, req.Source, req.Destination, req.Force)
+		s.invalidateCopyPaths(ctx, req.Destination, pathpkg.Base(req.Source))
+		data, err := json.Marshal(result)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
+	}
+	result := drivecopy.RunDirectDriverCopy(ctx, source, req.Source, req.Destination, req.Force)
+	s.invalidateCopyPaths(ctx, req.Destination)
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// invalidateCopyPaths drops cached listings touched by a direct copy. The
+// driver-level transfer bypasses the VFS committer, so without this the owner
+// runtime would keep serving the pre-copy listing until the TTL expires.
+func (s coreFSService) invalidateCopyPaths(ctx context.Context, paths ...string) {
+	invalidator, ok := s.fs().(interface {
+		InvalidateListCache(context.Context, string) error
+	})
+	if !ok {
+		return
+	}
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		clean := p
+		_ = invalidator.InvalidateListCache(ctx, clean)
+		_ = invalidator.InvalidateListCache(ctx, pathpkg.Dir(clean))
+	}
 }
 
 func (s coreFSService) PendingUploads(ctx context.Context) ([]vfs.PendingUpload, error) {
