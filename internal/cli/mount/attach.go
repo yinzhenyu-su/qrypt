@@ -11,17 +11,9 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/control"
-	corepkg "github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
-
-// controlEndpointFor resolves the command endpoint of the Core that owns this
-// configuration's state root.
-func controlEndpointFor(state cliruntime.ConfigState) string {
-	runDir := corepkg.RuntimeRunDir(state.Path, state.Cfg)
-	return corepkg.ControlSocketPath(state.Cfg, corepkg.RuntimeLayout{RunDir: runDir})
-}
 
 // runAttach asks the resident Core to host the FUSE session instead of opening
 // a second filesystem in this process. Ctrl+C detaches the session but leaves
@@ -40,10 +32,7 @@ func runAttach(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime.Confi
 
 	logging.L.Infof("Mounting at %s ...", mountPoint)
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.mount.mounting", mountPoint))
-	if err := clicore.EnsureCore(ctx, rt, state); err != nil {
-		return err
-	}
-	client, err := control.NewClient(controlEndpointFor(state))
+	client, err := clicore.EnsureClient(ctx, rt, state)
 	if err != nil {
 		return err
 	}

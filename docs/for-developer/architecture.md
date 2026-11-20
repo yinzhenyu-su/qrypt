@@ -208,6 +208,12 @@ the workers and flushed caches. `pkg/core.BuildFileSystem` acquires it when
 exposes `GET /v1/control/status` / `POST /v1/control/shutdown` over the control
 endpoint for `qrypt core status` and `qrypt core stop`.
 
+Clients never attach blindly. `internal/cli/core.EnsureClient` compares the
+Core's control `ProtocolVersion`, build version, config path and configuration
+fingerprint from `GET /v1/control/status` before returning a data-plane client;
+a mismatch tells the user to restart the Core instead of letting two builds or
+two configurations write the same state.
+
 Several runtimes in one process (for example `fs copy` opening both ends, or
 `Core.Reload` opening a replacement before closing the old instance) share the
 same lease through an in-process registry; the OS lock only excludes other

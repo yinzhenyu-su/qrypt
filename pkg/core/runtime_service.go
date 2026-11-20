@@ -44,7 +44,11 @@ func (c *Core) RequestShutdown() error {
 // RuntimeStatus reports the identity and liveness of this Core. It is cheap
 // enough for a status poll (one small config hash read).
 func (c *Core) RuntimeStatus() control.RuntimeStatus {
-	status := control.RuntimeStatus{PID: os.Getpid(), Version: buildinfo.Current().Version}
+	status := control.RuntimeStatus{
+		PID:             os.Getpid(),
+		ProtocolVersion: control.ProtocolVersion,
+		Version:         buildinfo.Current().Version,
+	}
 	if c == nil {
 		return status
 	}

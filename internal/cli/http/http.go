@@ -23,7 +23,6 @@ import (
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/internal/httpapi"
 	"github.com/yinzhenyu/qrypt/pkg/control"
-	corepkg "github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -131,12 +130,7 @@ func runServe(rt cliruntime.Runtime, cmd *cobra.Command, flags serveFlags) error
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if err := clicore.EnsureCore(ctx, rt, state); err != nil {
-		return err
-	}
-	runDir := corepkg.RuntimeRunDir(state.Path, state.Cfg)
-	endpoint := corepkg.ControlSocketPath(state.Cfg, corepkg.RuntimeLayout{RunDir: runDir})
-	client, err := control.NewClient(endpoint)
+	client, err := clicore.EnsureClient(ctx, rt, state)
 	if err != nil {
 		return err
 	}

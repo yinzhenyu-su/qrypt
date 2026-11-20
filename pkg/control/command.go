@@ -24,15 +24,20 @@ type CommandService = task.Controller
 
 // RuntimeStatus is the identity and liveness view of the process that owns a
 // control endpoint.
+// ProtocolVersion is the control-socket compatibility version. Clients must
+// refuse to talk to a Core that speaks a different version.
+const ProtocolVersion = 1
+
 type RuntimeStatus struct {
-	PID           int       `json:"pid"`
-	Version       string    `json:"version,omitempty"`
-	ConfigPath    string    `json:"config_path,omitempty"`
-	Fingerprint   string    `json:"fingerprint,omitempty"`
-	WorkDir       string    `json:"work_dir,omitempty"`
-	StartedAt     time.Time `json:"started_at"`
-	UptimeSeconds int64     `json:"uptime_seconds"`
-	Busy          bool      `json:"busy"`
+	PID             int       `json:"pid"`
+	ProtocolVersion int       `json:"protocol_version"`
+	Version         string    `json:"version,omitempty"`
+	ConfigPath      string    `json:"config_path,omitempty"`
+	Fingerprint     string    `json:"fingerprint,omitempty"`
+	WorkDir         string    `json:"work_dir,omitempty"`
+	StartedAt       time.Time `json:"started_at"`
+	UptimeSeconds   int64     `json:"uptime_seconds"`
+	Busy            bool      `json:"busy"`
 }
 
 // RuntimeService exposes process lifecycle over the command endpoint. It is

@@ -177,6 +177,7 @@ qrypt core stop [--drain] [--force]
 - 默认 20 分钟没有活动（无挂载、无进行中的任务或上传）后自动退出；`--keep` 关闭空闲退出，`--idle-timeout` 调整空闲时间。
 - 由 `qrypt mount` 或 `qrypt fs` 等命令按需启动的 Core 不会加 `--keep`，因此同样会在空闲后自动退出；有 FUSE 挂载或未完成的上传/任务时不算空闲。
 - 启动时会记录配置指纹。用不同配置再次启动会被拒绝，需要先停止再用当前配置重启；`core status` 在 Core 未运行时显示 `stopped`，锁仍被持有但控制端点不可达时显示 `unreachable` 并给出持锁进程。
+- 客户端连接 Core 时会校验 control 协议版本、qrypt 版本与配置指纹。升级二进制或修改配置后，旧的 Core 不会继续服务新客户端：先 `qrypt core stop`（或重启 Core）再重试。
 - 在 Core 运行期间，其他会打开同一工作目录的进程（再次 `core serve`、隔离挂载等）会被拒绝并提示已有运行时持有该状态；先 `qrypt core stop`。`qrypt mount` 与 `qrypt unmount` 经 Core 的控制端点工作，可以与 `qrypt core serve` 同时使用。
 - 目录列表缓存（`[list_cache]`）默认把每个目录的远端列表持久化到 `<work_dir>/cache/lists/`，30 秒内重复 `fs list` 不再访问网盘；用 `fs list --refresh` 立即回源，`storage.list_cache_dir` 可改目录位置，`list_cache.max_size` 限制每个 mount 的占用。
 - 迁移期 `qrypt fs list`、`fs stat`、`fs cat`、`fs find`、`fs du`、`fs df`、`fs pending`、`fs put`、`fs mv`、`fs mkdir`、`fs rm`、`fs copy`、`fs get`、`fs check` 已经经常驻 Core 的数据面执行：Core 未运行时先按需启动，因此它们与 `qrypt mount` 可以同时使用。`fs cat` 以流式响应读取，大文件不会在 CLI 或 Core 进程中整体缓冲；`fs put`/`fs rm` 的 `--wait-timeout` 等的是目标路径自己的上传/删除任务，不会因为同一 Core 里其他路径仍在传输而超时。`fs copy` 由 Core 调用驱动的直接复制接口完成，完成后会立即失效源/目标目录的列表缓存，重复执行 `fs list` 立即可见。`fs sync` 仍需要“等待全部上传完成”的全局语义，暂未迁移；其余仍在本进程内执行的命令（`fs sync` 与 `fs list --remote-names`）在 Core 或 `qrypt mount` 运行期间会被拒绝，使用 `QRYPT_CORE_FS_REQUIRED=0` 可强制走进程内路径（仅调试/兼容用途）。`fs copy --dry-run` 也只在进程内路径可用。
