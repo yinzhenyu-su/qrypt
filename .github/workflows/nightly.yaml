@@ -53,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [coverage, race, regression]
+        name: [coverage, race, regression, perf]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -78,6 +78,12 @@ jobs:
         run: |
           scripts/ci/test-layers.sh fast
           scripts/ci/test-layers.sh smoke
+
+      # Issue #31: post the cold-start / warm-owner / restart cache baseline to
+      # the job summary. Persistent list cache (#32) is gated on these numbers.
+      - name: Perf baseline
+        if: matrix.name == 'perf'
+        run: scripts/ci/perf-baseline.sh
 
   # The race set split across runners. The full `race` gate above stays as the
   # backstop; sharding isolates a failure to a named package subset and keeps
