@@ -44,6 +44,105 @@ func runList(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if len(args) > 0 {
 			path = args[0]
 		}
+		if !coreFSRequired() {
+			return runListLocal(rt)(cmd, args)
+		}
+		ctx, fs, cleanup, err := openCoreFS(rt, cmd)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		if remoteNames, _ := cmd.Flags().GetBool("remote-names"); remoteNames {
+			return fmt.Errorf("--remote-names is not available through the resident Core yet")
+		}
+		includeRemoteNames := false
+
+		entries, err := fs.List(ctx, path)
+		if err != nil {
+			return err
+		}
+		asJSON, _ := cmd.Flags().GetBool("json")
+		asJSONL, _ := cmd.Flags().GetBool("jsonl")
+		if asJSON && asJSONL {
+			return rt.UsageError(cmd, "--json and --jsonl cannot be used together")
+		}
+		if asJSONL {
+			if entries == nil {
+				return nil
+			}
+			encoder := json.NewEncoder(cmd.OutOrStdout())
+			encoder.SetEscapeHTML(false)
+			if includeRemoteNames {
+				output, err := ListEntriesWithRemoteNames(ctx, fs, path, entries)
+				if err != nil {
+					return err
+				}
+				for _, entry := range output {
+					if err := encoder.Encode(entry); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			for _, entry := range entries {
+				if err := encoder.Encode(entry); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if asJSON {
+			if entries == nil {
+				entries = []drive.Entry{}
+			}
+			if includeRemoteNames {
+				output, err := ListEntriesWithRemoteNames(ctx, fs, path, entries)
+				if err != nil {
+					return err
+				}
+				return cliruntime.WritePrettyJSON(cmd.OutOrStdout(), output)
+			}
+			return cliruntime.WritePrettyJSON(cmd.OutOrStdout(), entries)
+		}
+		remoteParent := ""
+		if includeRemoteNames {
+			remoteParent, err = RemoteParentPath(ctx, fs, path)
+			if err != nil {
+				return err
+			}
+		}
+		human, _ := cmd.Flags().GetBool("human")
+		for _, entry := range entries {
+			kind := "file"
+			size := fmt.Sprintf("%10d", entry.Size)
+			if human {
+				size = fmt.Sprintf("%10s", cliruntime.FormatBytes(entry.Size))
+			}
+			if entry.IsDir {
+				// A directory has no meaningful byte size: providers report
+				// anything from 0 to a lagging content aggregate, so print a
+				// dash instead of a number that looks like it means something.
+				kind = "dir "
+				size = fmt.Sprintf("%10s", "-")
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s", kind, size, entry.Name)
+			if includeRemoteNames {
+				remoteName, _ := drive.EntryRemoteName(entry)
+				fmt.Fprintf(cmd.OutOrStdout(), "\tremote_name=%s\tremote_path=%s", remoteName, JoinRemotePath(remoteParent, remoteName))
+			}
+			fmt.Fprintln(cmd.OutOrStdout())
+		}
+		return nil
+	}
+}
+
+func runListLocal(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		path := "/"
+		if len(args) > 0 {
+			path = args[0]
+		}
 		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
 		if err != nil {
 			return err

@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -36,7 +37,7 @@ func runPut(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if waitTimeout <= 0 {
 			return fmt.Errorf("--wait-timeout must be greater than 0")
 		}
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}
@@ -50,6 +51,15 @@ func runPut(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if err != nil {
 			return err
 		}
-		return rt.WaitFileSystemIdle(ctx, fs, waitTimeout)
+		if waiter, ok := fs.(interface {
+			WaitPath(context.Context, string, time.Duration) error
+		}); ok {
+			return waiter.WaitPath(ctx, args[1], waitTimeout)
+		}
+		opened, ok := fs.(cliruntime.OpenedFileSystem)
+		if !ok {
+			return fmt.Errorf("filesystem does not expose upload durability")
+		}
+		return rt.WaitFileSystemIdle(ctx, opened, waitTimeout)
 	}
 }

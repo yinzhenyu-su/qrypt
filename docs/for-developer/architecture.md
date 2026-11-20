@@ -136,6 +136,15 @@ full diagnostics surface on both `*VFS` and `*Namespace`
    the constructed `vfs.FileSystem` where appropriate.
 
 
+### CLI Data Plane
+
+`pkg/control` serves `/v1/fs/*` from the owner Core, and `pkg/fsclient` adapts
+that endpoint back into a `vfs.FileSystem`. The `fs list`, `fs stat`, `fs put`
+and `fs mv` commands connect through this client, so their reads and mutations
+land on the same VFS, overlay and worker pool as FUSE and (later) the HTTP gateway. `internal/cli/fs/core_client.go` owns the connect-or-lazily-start
+helper; the test suite pins `QRYPT_CORE_FS_REQUIRED=0` to keep exercising the
+legacy in-process path until the remaining commands migrate.
+
 ### Single Writer and Resident Core
 
 A storage root (work dir) is owned by at most one runtime at a time. The
