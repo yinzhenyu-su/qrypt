@@ -180,6 +180,28 @@ qrypt core stop [--drain] [--force]
 - 目录列表缓存（`[list_cache]`）默认把每个目录的远端列表持久化到 `<work_dir>/cache/lists/`，30 秒内重复 `fs list` 不再访问网盘；用 `fs list --refresh` 立即回源，`storage.list_cache_dir` 可改目录位置，`list_cache.max_size` 限制每个 mount 的占用。
 - 迁移期 `qrypt fs list`、`fs stat`、`fs cat`、`fs find`、`fs du`、`fs df`、`fs pending`、`fs put`、`fs mv`、`fs mkdir`、`fs rm`、`fs copy`、`fs get`、`fs check` 已经经常驻 Core 的数据面执行：Core 未运行时先按需启动，因此它们与 `qrypt mount` 可以同时使用。`fs cat` 以流式响应读取，大文件不会在 CLI 或 Core 进程中整体缓冲；`fs put`/`fs rm` 的 `--wait-timeout` 等的是目标路径自己的上传/删除任务，不会因为同一 Core 里其他路径仍在传输而超时。`fs copy` 由 Core 调用驱动的直接复制接口完成，完成后会立即失效源/目标目录的列表缓存，重复执行 `fs list` 立即可见。`fs sync` 仍需要“等待全部上传完成”的全局语义，暂未迁移；其余仍在本进程内执行的命令（`fs sync` 与 `fs list --remote-names`）在 Core 或 `qrypt mount` 运行期间会被拒绝，使用 `QRYPT_CORE_FS_REQUIRED=0` 可强制走进程内路径（仅调试/兼容用途）。`fs copy --dry-run` 也只在进程内路径可用。
 
+## HTTP 网关
+
+```sh
+qrypt http serve [--listen 127.0.0.1:8800] [--token TOKEN] [--allow-origin ORIGIN] [--tls-cert FILE --tls-key FILE]
+```
+
+`qrypt http serve` 为常驻 Core 提供只读 HTTP API，供浏览器或脚本访问同一份挂载视图。网关是独立进程，通过本地 control 端点访问 Core，Core 本身不监听网络端口；Core 未运行时先按需启动。
+
+- 默认只监听 `127.0.0.1:8800`。监听非回环地址时必须同时提供 `--tls-cert` 与 `--tls-key`，否则拒绝启动。
+- 除 `/v1/health` 外所有请求都需要 `Authorization: Bearer <token>`。省略 `--token` 时读取环境变量 `QRYPT_HTTP_TOKEN`，仍为空则生成随机 token 并打印一次。
+- 浏览器跨域访问需要把页面来源加进 `--allow-origin`；未指定时只接受本机来源。反向代理场景用 `--allow-host` 追加允许的 `Host` 头。
+- 只读端点：`GET /v1/health`、`GET /v1/session`、`GET /v1/mounts`、`GET /v1/tasks`、`GET /v1/events`（SSE）、`GET|HEAD /v1/fs/read`、`GET|HEAD /v1/fs/download`、`GET|POST /v1/fs/list`、`GET|POST /v1/fs/stat`。写操作返回 405。
+- 大文件支持 `Range`、`If-Range`、`If-None-Match`/`ETag` 与 `HEAD`，下载走 `/v1/fs/download` 并返回附件名。
+
+```sh
+export QRYPT_HTTP_TOKEN=$(openssl rand -hex 20)
+qrypt http serve --detach
+curl -H "Authorization: Bearer $QRYPT_HTTP_TOKEN" "http://127.0.0.1:8800/v1/fs/list?path=/cloud"
+curl -H "Authorization: Bearer $QRYPT_HTTP_TOKEN" -H "Range: bytes=0-1023" \
+  "http://127.0.0.1:8800/v1/fs/read?path=/cloud/movie.mp4" -o head.bin
+```
+
 ## 文件系统操作
 
 ```sh

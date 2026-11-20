@@ -170,6 +170,25 @@ in-process path for `fs sync` (which still needs a wait-for-all-transfers
 semantic) and for `fs list --remote-names` / `fs copy --dry-run`, which rely on
 in-process backend details.
 
+### HTTP Gateway
+
+`internal/httpapi` is the read-only v1 HTTP surface. It is a thin client of the
+resident Core: the gateway process obtains the control endpoint and calls
+`/v1/control/status`, `/v1/fs/{stat,list,read}` and `/v1/fs/pending` through
+`pkg/control.Client`; the Core itself never listens on TCP. The package keeps
+its dependencies to `pkg/control`, `pkg/drive`, `pkg/vfs` and `pkg/logging`, and
+`internal/cli/http` wires it to the `qrypt http serve` command (lazy-starting
+the Core with `clicore.EnsureCore`).
+
+The handler tree enforces a bearer token (constant-time compare), a Host guard
+against DNS rebinding, an Origin allowlist with CORS headers, and a global rate
+limiter; per-stream concurrency is bounded for file reads. Responses use one
+envelope (`{"data":...}` or `{"error":{code,message,retryable}}`) and map
+control transport failures back to HTTP status codes (404/409/503/504). File
+reads are streamed from `/v1/fs/read` with `Range`/`ETag`/`HEAD` support, and
+`/v1/events` is an SSE heartbeat over Core status. Write endpoints deliberately
+return 405 in v1; they arrive with the multi-user phase.
+
 ### Single Writer and Resident Core
 
 A storage root (work dir) is owned by at most one runtime at a time. The
