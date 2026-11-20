@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -196,7 +197,7 @@ func detachServe(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime.Con
 	if _, err := fetchStatus(cmd.Context(), endpoint); err == nil {
 		return fmt.Errorf("core: a Core is already running for this state directory (stop it before starting another)")
 	}
-	exe, err := os.Executable()
+	exe, err := spawnExecutable()
 	if err != nil {
 		return err
 	}
@@ -225,6 +226,21 @@ func detachServe(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime.Con
 	return err
 }
 
+// spawnExecutable returns the current executable path in a form that can be
+// spawned on every platform. On Windows os.Executable can report a path without
+// the .exe suffix when the process was started through PATH (for example from
+// Git Bash), and exec.Command does not append extensions to absolute paths.
+func spawnExecutable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(exe), ".exe") {
+		exe += ".exe"
+	}
+	return exe, nil
+}
+
 // EnsureCore makes sure a resident Core owns the state directory, starting a
 // detached one when none is running. It is the single entry point later
 // clients (mount attach, fs RPC) use for lazy start.
@@ -245,7 +261,7 @@ func EnsureCore(ctx context.Context, rt cliruntime.Runtime, state cliruntime.Con
 	if _, err := fetchStatus(ctx, endpoint); err == nil {
 		return nil
 	}
-	exe, err := os.Executable()
+	exe, err := spawnExecutable()
 	if err != nil {
 		return err
 	}
