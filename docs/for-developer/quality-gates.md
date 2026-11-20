@@ -388,6 +388,26 @@ mkdir/upload/read 的 entry id 带 `ext:<mountId>` 前缀；主存储 ↔ 外挂
 该目录并清空回收站。
 凭据只放本地配置或加密环境变量，绝不提交仓库。
 
+## 性能基线（#31）
+
+`scripts/ci/perf-baseline.sh` 用 fake 计数驱动（`perf-localfs`）测量常驻 Core 的三类场景，
+输出 Init / Resolve / ListChildren / range 次数与 P50/P95：
+
+- 冷启动：无 Core 时启动，记录 Init、root resolve 次数与就绪耗时；
+- 热 owner：同一 Core 连续 20 次 `fs list`，10s 内存 TTL 内应为 0 次 `ListChildren`；
+- TTL 过期与重启后命中：TTL 过期后一次 list 必须回源；Core 重启后同一段读应由
+  磁盘 read cache 命中（0 次驱动 `Read`）。
+
+这些数字是持久化目录缓存（#32）的合并 gate：如果“省掉的 ListChildren 次数”和
+重启后 read cache 的省读量没有实际变化，就不合并 #32。测试默认跳过，nightly 的
+`Nightly gate (perf)` 任务会运行并把表格写进 job summary；本地等价命令：
+
+```bash
+./scripts/ci/perf-baseline.sh
+```
+
+基线只在测试进程内开启计数，生产路径没有额外开销。
+
 ## 本地等价命令
 
 ```bash
