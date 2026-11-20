@@ -152,6 +152,22 @@ same lease through an in-process registry; the OS lock only excludes other
 processes. The migration is staged: legacy `fs`/`mount` commands still build
 their own runtime but respect the same lock, and later issues replace those
 paths with Core clients.
+### Core-Hosted Mounts
+
+FUSE sessions are hosted by the resident Core so every client shares one
+filesystem instance, one set of caches and one mutation path. `pkg/core` does
+not import `pkg/mount` (that would pull cgofuse into gomobile); it defines the
+`MountHost`/`MountSession` interfaces in `pkg/core/mounts.go`, and
+`internal/cli/core` injects a `pkg/mount` adapter when it starts the Core.
+`Core.AttachMount` wraps the single namespace VFS in `pkg/vfs/subtree` so a
+named mount (`view=/NAME`) and the namespace root (`view=/`) are projections of
+the same filesystem rather than separate VFS instances. The mount manager keeps
+a registry of hosted sessions, rejects duplicate mount points, removes entries
+when a kernel-initiated unmount closes the session, and unmounts every FUSE
+session in `Core.Close` before the VFS is closed. Control endpoints:
+`GET/POST /v1/control/mounts` and `DELETE /v1/control/mounts/{id}`, served by
+`qrypt mount` (attach client) and `qrypt unmount`.
+
 This keeps construction policy out of VFS and keeps provider details out of the
 mount layer.
 

@@ -147,14 +147,15 @@ qrypt mount remove docs [--purge]
 ## 挂载
 
 ```sh
-qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH]
+qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH] [--stop-core]
+qrypt unmount [MOUNT_POINT | MOUNT_NAME]
 ```
 
-省略 `MOUNT_NAME` 时挂载配置中的全部云盘；指定 `MOUNT_NAME` 时只挂载该云盘，根目录就是该云盘内容。省略 `--mount-point` 时读取配置中的 `[mount].mount_point`。运行时 socket 使用配置目录下的内置路径，无需手工指定。
+`qrypt mount` 通过常驻 Core 挂载：Core 尚未运行时先按需启动（懒启动），再把 FUSE 卷交给 Core 托管。省略 `MOUNT_NAME` 时挂载配置中的全部云盘；指定 `MOUNT_NAME` 时通过子树视图只挂载该云盘，根目录就是该云盘内容。省略 `--mount-point` 时读取配置中的 `[mount].mount_point`。运行时 socket 使用配置目录下的内置路径，无需手工指定。
 
-`Ctrl+C`、`SIGTERM`、关闭终端或断开 SSH（`SIGHUP`）都会触发优雅卸载。如果上一次挂载进程被强行结束，qrypt 会在下次挂载时自动识别并清理残留挂载点；仍失败时参见[挂载点残留](troubleshooting.md#挂载点残留)。
+卷挂载完成后命令即返回：`Ctrl+C`、`SIGTERM` 只卸载卷（detach），Core 及其缓存继续运行，后续命令可以复用；需要连 Core 一起退出时加 `--stop-core`。也可以另开终端执行 `qrypt unmount`：不带参数时卸载唯一的挂载，也可以按挂载点或名称指定。如果 Core 进程被强行结束，qrypt 会在下次挂载时自动识别并清理残留挂载点；仍失败时参见[挂载点残留](troubleshooting.md#挂载点残留)。
 
-测量吞吐时可以用隔离挂载，它把挂载点、运行目录和缓存都放在临时目录，强制只读，并自动为该作用域开启探针测试：
+测量吞吐时可以用隔离挂载。隔离挂载不使用常驻 Core，仍走独立的进程内挂载路径，把挂载点、运行目录和缓存都放在临时目录，强制只读，并自动为该作用域开启探针测试：
 
 ```sh
 qrypt mount --isolated --name quark-encrypt --isolated-log-level debug
@@ -175,7 +176,8 @@ qrypt core stop [--drain] [--force]
 - `--detach` 在后台启动（重新执行自身并脱离当前会话），命令立即返回；配合 `--log FILE` 记录后台日志。`--foreground` 在当前终端运行。
 - 默认 20 分钟没有活动（无挂载、无进行中的任务或上传）后自动退出；`--keep` 关闭空闲退出，`--idle-timeout` 调整空闲时间。
 - 启动时会记录配置指纹。用不同配置再次启动会被拒绝，需要先停止再用当前配置重启；`core status` 在 Core 未运行时显示 `stopped`，锁仍被持有但控制端点不可达时显示 `unreachable` 并给出持锁进程。
-- 在 Core 运行期间，其他会打开同一工作目录的进程（`fs`、再次 `mount`、再次 `core serve`）会被拒绝并提示已有运行时持有该状态；先 `core stop`。迁移期这个约束同样适用于 `qrypt mount`：`qrypt mount` 运行期间 `qrypt fs` 命令会被拒绝，后续版本会把 `fs`/`mount` 改为经 Core 的客户端，届时即可同时使用。
+- 在 Core 运行期间，其他会打开同一工作目录的进程（再次 `core serve`、隔离挂载等）会被拒绝并提示已有运行时持有该状态；先 `qrypt core stop`。`qrypt mount` 与 `qrypt unmount` 经 Core 的控制端点工作，可以与 `qrypt core serve` 同时使用。
+- 迁移期 `qrypt fs` 仍在命令进程内打开工作目录，因此在 Core 或 `qrypt mount` 运行期间会被拒绝；后续版本会把 `fs` 改为经 Core 的客户端，届时即可同时使用。
 
 ## 文件系统操作
 

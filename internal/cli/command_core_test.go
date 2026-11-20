@@ -136,3 +136,64 @@ func TestCoreStatusStoppedWithoutCore(t *testing.T) {
 		t.Fatalf("status output = %s, want stopped", out)
 	}
 }
+
+func TestUnmountWithoutCore(t *testing.T) {
+	base, err := os.MkdirTemp("", "qrypt-unmount-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	configPath, _ := writeCoreServeTestConfig(t, base)
+
+	out, err := executeRoot(t, "unmount", "--config", configPath)
+	if err == nil {
+		t.Fatalf("unmount without a core succeeded: %s", out)
+	}
+	if !strings.Contains(err.Error(), "no running Core") {
+		t.Fatalf("unmount error = %v, want clue about a missing Core", err)
+	}
+}
+
+func TestUnmountWithCoreNoMounts(t *testing.T) {
+	base, err := os.MkdirTemp("", "qrypt-unmount-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	configPath, _ := writeCoreServeTestConfig(t, base)
+
+	serveRoot := NewRootCommand()
+	var serveOut bytes.Buffer
+	serveRoot.SetOut(&serveOut)
+	serveRoot.SetErr(&serveOut)
+	serveRoot.SetArgs([]string{"core", "serve", "--foreground", "--keep", "--config", configPath})
+	done := make(chan error, 1)
+	go func() { done <- serveRoot.Execute() }()
+	t.Cleanup(func() {
+		_, _ = executeRoot(t, "core", "stop", "--force", "--config", configPath)
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+		}
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		out, err := executeRoot(t, "core", "status", "--json", "--config", configPath)
+		if err == nil && strings.Contains(out, `"state": "running"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("core did not become ready: err=%v output=%s serve=%s", err, out, serveOut.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	out, err := executeRoot(t, "unmount", "--config", configPath)
+	if err != nil {
+		t.Fatalf("unmount: %v", err)
+	}
+	if !strings.Contains(out, "no mounts are active") {
+		t.Fatalf("unmount output = %s, want no mounts message", out)
+	}
+}

@@ -51,6 +51,10 @@ type Options struct {
 	// Production CLI runtimes set it; embedded runtimes (mobile) leave it nil
 	// because the host process already owns its state root.
 	Owner *OwnerOptions
+	// MountHost hosts FUSE sessions inside this Core process. The desktop
+	// composition root injects the pkg/mount implementation; embedded runtimes
+	// leave it nil so cgofuse never enters their binary.
+	MountHost MountHost
 }
 
 type UploadSourceProvider interface {
@@ -84,6 +88,11 @@ type Core struct {
 	uploadSources  UploadSourceProvider
 	readChunkLimit int
 	vfsCancel      context.CancelFunc
+	// mountNames is the set of configured mount names a named FUSE view may
+	// select. mounts hosts the sessions; both are nil/empty for runtimes
+	// without a MountHost.
+	mountNames map[string]struct{}
+	mounts     *mountManager
 	// mountContentDedup records, per mount name, whether the mount is
 	// encrypted with content_dedup. Direct uploads only precompute whole-file
 	// source hashes for such mounts; the plaintext SHA-256 is required to
@@ -196,6 +205,12 @@ func OpenConfig(ctx context.Context, cfg *config.Config, opts Options) (*Core, e
 	}
 	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, startedAt: time.Now().UTC(), runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), fuseMountPoint: cfg.EffectiveMountPoint(), vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
+	names := make([]string, 0, len(cfg.Mounts))
+	for _, mountCfg := range cfg.Mounts {
+		names = append(names, mountCfg.Name)
+	}
+	c.mountNames = configuredMountNames(names)
+	c.mounts = newMountManager(opts.MountHost)
 	if !opts.DisableDebugAutoStart {
 		debugListen := opts.DebugListen
 		if debugListen == "" && cfg.Debug.Enabled {
@@ -353,6 +368,11 @@ func (c *Core) Close(ctx context.Context) error {
 	}
 	if err := c.StopProbeServer(ctx); err != nil {
 		errs = append(errs, err)
+	}
+	// Detach every hosted FUSE session before the filesystem stops: the kernel
+	// may keep delivering callbacks until the session is gone.
+	if c.mounts != nil {
+		c.mounts.closeAll(ctx)
 	}
 	// The task manager owns long-running goroutines (stream pollers, batch
 	// runners) whose contexts derive from the manager, not from any

@@ -65,7 +65,7 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mount [MOUNT_NAME]",
 		Short: "Mount configured drives with FUSE",
-		Long:  "Mount all configured drives as one local FUSE filesystem, or mount one configured drive by name. Uses mount_point from config unless --mount-point is set.",
+		Long:  "Mount all configured drives as one local FUSE filesystem through the resident Core, or mount one configured drive by name. The Core is started on demand and keeps running after the volume is detached. Uses mount_point from config unless --mount-point is set.",
 		Example: `  qrypt mount
   qrypt mount cloud --mount-point /mnt/qrypt`,
 		Args: cliruntime.MaxArgs(rt, 1),
@@ -149,6 +149,9 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 						isolatedMounts = append(isolatedMounts, m.Name)
 					}
 				}
+			} else {
+				stopCore, _ := cmd.Flags().GetBool("stop-core")
+				return runAttach(rt, cmd, state, ctx, selectedMount, mountPointFlag, stopCore)
 			}
 
 			coreHost, err := rt.OpenCoreForMount(ctx, state.Cfg, state.Path, selectedMount, debugListen, "")
@@ -250,6 +253,7 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd.Flags().String("isolated-log-level", "info", "log level for an --isolated mount")
 	cmd.Flags().String("isolated-log-file", "", "write an --isolated mount's log to this file instead of the temporary home")
 	cmd.Flags().Bool("isolated-keep", false, "keep the temporary home of an --isolated mount after it stops")
+	cmd.Flags().Bool("stop-core", false, "stop the resident Core after the volume is detached")
 	cmd.AddCommand(newAddCmd(rt))
 	cmd.AddCommand(newSetCmd(rt))
 	cmd.AddCommand(newRemoveCmd(rt))
