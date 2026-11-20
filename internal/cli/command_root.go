@@ -17,6 +17,7 @@ import (
 	clireceive "github.com/yinzhenyu/qrypt/internal/cli/receive"
 	clishare "github.com/yinzhenyu/qrypt/internal/cli/share"
 	cliuninstall "github.com/yinzhenyu/qrypt/internal/cli/uninstall"
+	cliunmount "github.com/yinzhenyu/qrypt/internal/cli/unmount"
 	cliupgrade "github.com/yinzhenyu/qrypt/internal/cli/upgrade"
 	cliversion "github.com/yinzhenyu/qrypt/internal/cli/version"
 	buildinfo "github.com/yinzhenyu/qrypt/pkg/buildinfo" // registers all drivers via their init functions
@@ -58,6 +59,7 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	}
 
 	cmd.AddCommand(climount.NewCommand(cliRuntime{}))
+	cmd.AddCommand(cliunmount.NewCommand(cliRuntime{}))
 	cmd.AddCommand(cliconfig.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clicredential.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clidriver.NewCommand(cliRuntime{}))

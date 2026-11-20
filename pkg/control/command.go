@@ -50,6 +50,7 @@ type CommandServer struct {
 	address    string
 	service    CommandService
 	runtime    RuntimeService
+	mounts     MountService
 	offline    OfflineService
 	share      shareapi.Service
 	server     *http.Server
@@ -101,6 +102,8 @@ func (s *CommandServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/control/status", s.handleRuntimeStatus)
 	mux.HandleFunc("/v1/control/shutdown", s.handleRuntimeShutdown)
+	mux.HandleFunc("/v1/control/mounts", s.handleMounts)
+	mux.HandleFunc("/v1/control/mounts/", s.handleMountByID)
 	mux.HandleFunc("/v1/control/tasks/cancel", s.handleCancelTask)
 	mux.HandleFunc("/v1/control/tasks/retry", s.handleRetryTask)
 	mux.HandleFunc("/v1/control/offline/tasks", s.handleOfflineTasks)

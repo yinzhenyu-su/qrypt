@@ -195,14 +195,14 @@
   "cmd.mount.list.example": "  qrypt mount list",
   "cmd.mount.list.long": "列出挂载的驱动类型、引用的凭据和配置的 root_path。",
   "cmd.mount.list.short": "列出已配置的挂载",
-  "cmd.mount.long": "将所有配置好的云盘挂载为一个本地 FUSE 文件系统，或按名称挂载单个云盘。默认使用配置中的 mount_point，除非设置了 --mount-point。",
+  "cmd.mount.long": "通过常驻 Core 将所有配置好的云盘挂载为一个本地 FUSE 文件系统，或按名称挂载单个云盘。Core 会按需启动；命令在卷挂载完成后返回，Ctrl+C 时卸载卷但保持 Core 运行。默认使用配置中的 mount_point，除非设置了 --mount-point。",
   "cmd.mount.remove.example": "  qrypt mount remove docs",
   "cmd.mount.remove.long": "从配置中删除挂载。引用的凭据会保留，可用 qrypt credential remove 单独删除。",
   "cmd.mount.remove.short": "删除挂载",
   "cmd.mount.set.example": "  qrypt mount set docs --param root_path=/Documents\n  qrypt mount set docs --credential other-main\n  qrypt mount set docs --password \"new-secret\" --force",
   "cmd.mount.set.long": "修改已有挂载。--credential 切换到另一个已声明的凭据（驱动类型随新凭据变化）；--param 设置或替换挂载级参数，--remove-param 删除参数。\n\n加密参数与 [mounts.encryption] 对应：给未加密的挂载添加加密只需 --password；一旦启用加密就不能再移除，修改密码、盐或文件名模式必须加 --force，因为远端已有数据可能无法再读取。",
   "cmd.mount.set.short": "修改挂载的凭据或属性",
-  "cmd.mount.short": "使用 FUSE 挂载配置好的云盘",
+  "cmd.mount.short": "通过常驻 Core 挂载配置好的云盘",
   "cmd.offline.add.example": "  qrypt offline add \"magnet:?xt=urn:btih:...\" --parse-to /quark/downloads\n  qrypt offline add ./movie.torrent --mount quark --mkdir\n  qrypt offline add https://example.com/file.iso --parse-to /quark/downloads --select largest:1 --wait",
   "cmd.offline.add.long": "将磁力链、HTTP(S)/FTP URL 或本地 .torrent 文件提交给网盘的离线下载服务。解析落地挂载决定使用哪个 provider，云端结果保留在网盘侧。",
   "cmd.offline.add.short": "提交云端离线下载任务",
@@ -997,5 +997,10 @@
   "out.sync.entry_bytes": "%s（%d 字节）",
   "out.sync.summary": "新增: %d，更新: %d，删除: %d，跳过: %d，冲突: %d，失败: %d",
   "out.sync.synced": "已同步 %s -> %s",
-  "out.sync.would": "将同步 %s -> %s"
+  "out.sync.would": "将同步 %s -> %s",
+  "flag.mount.stop-core.usage": "卷卸载后停止常驻 Core",
+  "cmd.unmount.short": "卸载由常驻 Core 托管的挂载",
+  "cmd.unmount.long": "卸载常驻 Core 托管的 FUSE 卷。Core 及其缓存继续运行，后续命令仍可复用。不带参数时卸载当前唯一的挂载。",
+  "cmd.unmount.example": "  qrypt unmount /mnt/qrypt\n  qrypt unmount cloud",
+  "flag.unmount.config.usage": "配置文件路径（省略时自动发现）"
 }

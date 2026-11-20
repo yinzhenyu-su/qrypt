@@ -122,6 +122,7 @@ func serveForeground(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime
 		Runtime:       runtime,
 		ControlListen: controlListen,
 		Owner:         &corepkg.OwnerOptions{ConfigPath: state.Path},
+		MountHost:     newFuseMountHost(rt, cfg),
 	})
 	if err != nil {
 		return err

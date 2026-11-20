@@ -195,14 +195,14 @@
   "cmd.mount.list.example": "  qrypt mount list",
   "cmd.mount.list.long": "List mounts with their driver type, referenced credential, and configured root_path.",
   "cmd.mount.list.short": "List configured mounts",
-  "cmd.mount.long": "Mount all configured drives as one local FUSE filesystem, or mount one configured drive by name. Uses mount_point from config unless --mount-point is set.",
+  "cmd.mount.long": "Mount all configured drives as one local FUSE filesystem, or mount one configured drive by name, through the resident Core. The Core is started on demand; the command returns once the volume is attached and detaches on Ctrl+C. Uses mount_point from config unless --mount-point is set.",
   "cmd.mount.remove.example": "  qrypt mount remove docs",
   "cmd.mount.remove.long": "Remove a mount from the configuration. The referenced credential is kept; remove it separately with qrypt credential remove.",
   "cmd.mount.remove.short": "Remove a mount",
   "cmd.mount.set.example": "  qrypt mount set docs --param root_path=/Documents\n  qrypt mount set docs --credential other-main\n  qrypt mount set docs --password \"new-secret\" --force",
   "cmd.mount.set.long": "Update an existing mount. --credential switches it to another declared\ncredential (the driver type follows the new credential); --param sets or\nreplaces a mount-scope parameter and --remove-param deletes one.\n\nEncryption flags mirror [mounts.encryption]. Adding encryption to an\nunencrypted mount needs only --password. Encryption cannot be removed once\nconfigured; changing its password, salt, or filename mode requires --force,\nbecause existing remote data may become unreadable.",
   "cmd.mount.set.short": "Update a mount's credential or attributes",
-  "cmd.mount.short": "Mount configured drives with FUSE",
+  "cmd.mount.short": "Mount configured drives through the resident Core",
   "cmd.offline.add.example": "  qrypt offline add \"magnet:?xt=urn:btih:...\" --parse-to /quark/downloads\n  qrypt offline add ./movie.torrent --mount quark --mkdir\n  qrypt offline add https://example.com/file.iso --parse-to /quark/downloads --select largest:1 --wait",
   "cmd.offline.add.long": "Submit a magnet link, HTTP(S)/FTP URL, or local .torrent file to the\nprovider's offline download service. The parse destination mount selects the\nprovider; the cloud-side result stays on the provider.",
   "cmd.offline.add.short": "Submit a source as a cloud-side offline download",
@@ -997,5 +997,10 @@
   "out.sync.entry_bytes": "%s (%d bytes)",
   "out.sync.summary": "add: %d, update: %d, delete: %d, skip: %d, conflict: %d, failed: %d",
   "out.sync.synced": "synced %s -> %s",
-  "out.sync.would": "would sync %s -> %s"
+  "out.sync.would": "would sync %s -> %s",
+  "flag.mount.stop-core.usage": "stop the resident Core after the volume is detached",
+  "cmd.unmount.short": "Detach a mount hosted by the resident Core",
+  "cmd.unmount.long": "Detach a FUSE volume hosted by the resident Core. The Core and its caches keep running so later commands stay warm. Without an argument the only active mount is detached.",
+  "cmd.unmount.example": "  qrypt unmount /mnt/qrypt\n  qrypt unmount cloud",
+  "flag.unmount.config.usage": "config file path (auto-discovered when omitted)"
 }
