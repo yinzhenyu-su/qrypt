@@ -92,12 +92,13 @@ func TestMountManagerAttachListDetach(t *testing.T) {
 	m := newTestManager()
 	ctx := context.Background()
 	fs := fakeFileSystem{}
+	mountPoint := filepath.Join(t.TempDir(), "mnt")
 
-	info, err := m.attach(ctx, fs, MountRequest{MountPoint: "/mnt/qrypt"})
+	info, err := m.attach(ctx, fs, MountRequest{MountPoint: mountPoint})
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if info.ID == "" || info.MountPoint != "/mnt/qrypt" || info.StartedAt.IsZero() {
+	if info.ID == "" || info.MountPoint != mountPoint || info.StartedAt.IsZero() {
 		t.Fatalf("info = %+v", info)
 	}
 	got := waitMounts(t, m, 1)
@@ -105,7 +106,7 @@ func TestMountManagerAttachListDetach(t *testing.T) {
 		t.Fatalf("list = %+v, want id %q", got, info.ID)
 	}
 
-	if _, err := m.attach(ctx, fs, MountRequest{MountPoint: "/mnt/qrypt"}); err == nil {
+	if _, err := m.attach(ctx, fs, MountRequest{MountPoint: mountPoint}); err == nil {
 		t.Fatal("duplicate mount point was accepted")
 	}
 	if _, err := m.attach(ctx, fs, MountRequest{MountPoint: "relative"}); err == nil {
@@ -124,7 +125,7 @@ func TestMountManagerAttachListDetach(t *testing.T) {
 func TestMountManagerExternalUnmountRemovesEntry(t *testing.T) {
 	host := &fakeMountHost{}
 	m := newMountManager(host)
-	info, err := m.attach(context.Background(), fakeFileSystem{}, MountRequest{MountPoint: "/mnt/a"})
+	info, err := m.attach(context.Background(), fakeFileSystem{}, MountRequest{MountPoint: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
@@ -140,10 +141,11 @@ func TestMountManagerCloseAll(t *testing.T) {
 	host := &fakeMountHost{}
 	m := newMountManager(host)
 	ctx := context.Background()
-	if _, err := m.attach(ctx, fakeFileSystem{}, MountRequest{MountPoint: "/mnt/a"}); err != nil {
+	base := t.TempDir()
+	if _, err := m.attach(ctx, fakeFileSystem{}, MountRequest{MountPoint: filepath.Join(base, "a")}); err != nil {
 		t.Fatalf("attach a: %v", err)
 	}
-	if _, err := m.attach(ctx, fakeFileSystem{}, MountRequest{MountPoint: "/mnt/b"}); err != nil {
+	if _, err := m.attach(ctx, fakeFileSystem{}, MountRequest{MountPoint: filepath.Join(base, "b")}); err != nil {
 		t.Fatalf("attach b: %v", err)
 	}
 	m.closeAll(ctx)
@@ -153,7 +155,7 @@ func TestMountManagerCloseAll(t *testing.T) {
 	if len(host.unmounted) != 2 {
 		t.Fatalf("unmounted = %v, want 2", host.unmounted)
 	}
-	if _, err := m.attach(ctx, fakeFileSystem{}, MountRequest{MountPoint: "/mnt/c"}); err == nil {
+	if _, err := m.attach(ctx, fakeFileSystem{}, MountRequest{MountPoint: filepath.Join(base, "c")}); err == nil {
 		t.Fatal("attach after close succeeded")
 	}
 }
