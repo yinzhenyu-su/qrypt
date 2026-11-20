@@ -7,17 +7,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
+	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	syncer "github.com/yinzhenyu/qrypt/pkg/syncer"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 func NewListCmd(rt cliruntime.Runtime) *cobra.Command {
@@ -47,6 +51,18 @@ func runList(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		}
 		if !coreFSRequired() {
 			return runListLocal(rt)(cmd, args)
+		}
+		if coreFSRequired() {
+			// The namespace root is derived from the configuration, not from
+			// backend state: render it without starting or contacting the
+			// resident Core.
+			if vfstypes.CleanVirtualPath(path) == "/" {
+				state, err := rt.CommandConfig(cmd)
+				if err != nil {
+					return err
+				}
+				return renderRootListing(rt, cmd, rootEntriesFromConfig(state.Cfg))
+			}
 		}
 		ctx, fs, cleanup, err := openCoreFS(rt, cmd)
 		if err != nil {
@@ -683,4 +699,62 @@ func (p *progressBar) done(dirName string) {
 		summary = p.loc.T("out.fs.get.downloaded_skipped", downloaded, skipped)
 	}
 	fmt.Fprintf(p.out, "\r  [%s] %d/%d  %s\n", strings.Repeat("#", 20), p.completed, p.total, summary)
+}
+
+// rootEntriesFromConfig mirrors vfs.Namespace's synthetic root entries from
+// the configured mount list. It lets `qrypt fs list /` answer without a Core.
+func rootEntriesFromConfig(cfg *config.Config) []drive.Entry {
+	if cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Mounts))
+	for _, mount := range cfg.Mounts {
+		names = append(names, mount.Name)
+	}
+	sort.Strings(names)
+	now := time.Now().UTC()
+	entries := make([]drive.Entry, 0, len(names))
+	for _, name := range names {
+		entries = append(entries, drive.Entry{
+			ID:        "/" + name,
+			ParentID:  "/",
+			Name:      name,
+			IsDir:     true,
+			ModTime:   now,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	return entries
+}
+
+// renderRootListing prints a listing that did not come from a FileSystem.
+func renderRootListing(rt cliruntime.Runtime, cmd *cobra.Command, entries []drive.Entry) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	asJSONL, _ := cmd.Flags().GetBool("jsonl")
+	if asJSON && asJSONL {
+		return rt.UsageError(cmd, "--json and --jsonl cannot be used together")
+	}
+	if asJSONL {
+		encoder := json.NewEncoder(cmd.OutOrStdout())
+		encoder.SetEscapeHTML(false)
+		for _, entry := range entries {
+			if err := encoder.Encode(entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if asJSON {
+		return cliruntime.WritePrettyJSON(cmd.OutOrStdout(), entries)
+	}
+	human, _ := cmd.Flags().GetBool("human")
+	for _, entry := range entries {
+		size := fmt.Sprintf("%10s", "-")
+		if human {
+			size = fmt.Sprintf("%10s", cliruntime.FormatBytes(entry.Size))
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", "dir ", size, entry.Name)
+	}
+	return nil
 }
