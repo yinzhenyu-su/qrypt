@@ -6,6 +6,7 @@ package fsclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,6 +101,17 @@ func (f *FS) MountSpaces(ctx context.Context) []vfs.MountSpace {
 		result = append(result, item)
 	}
 	return result
+}
+
+// CopyDirect runs a direct backend-to-backend copy in the Core and returns the
+// driver_copy result document for the CLI to render.
+func (f *FS) CopyDirect(ctx context.Context, source, destination string, recursive, force bool) (json.RawMessage, error) {
+	return f.client.FSCopy(ctx, control.FSCopyRequest{
+		Source:      source,
+		Destination: destination,
+		Recursive:   recursive,
+		Force:       force,
+	})
 }
 
 // PendingUploads lists uploads staged but not yet committed in the Core.

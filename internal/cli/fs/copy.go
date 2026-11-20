@@ -2,6 +2,7 @@ package fs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -36,11 +37,17 @@ func NewCopyCmd(rt cliruntime.Runtime) *cobra.Command {
 
 func RunCopy(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
+
+		if client, ok := fs.(interface {
+			CopyDirect(context.Context, string, string, bool, bool) (json.RawMessage, error)
+		}); ok {
+			return runCopyThroughCore(rt, cmd, ctx, fs, client, args)
+		}
 
 		source, ok := fs.(diagnostics.DriverCopySource)
 		if !ok {
@@ -100,6 +107,82 @@ func RunCopy(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		PrintCopySummary(cmd.OutOrStdout(), i18n.FromCommand(cmd), result)
 		return nil
 	}
+}
+
+// runCopyThroughCore performs the same command contract with the copy executed
+// by the owner Core, so cross-mount copies keep using driver-level transfers
+// instead of streaming bytes through this CLI process.
+func runCopyThroughCore(rt cliruntime.Runtime, cmd *cobra.Command, ctx context.Context, fs vfs.FileSystem, client interface {
+	CopyDirect(context.Context, string, string, bool, bool) (json.RawMessage, error)
+}, args []string) error {
+	force := copyForce(cmd)
+	recursive, _ := cmd.Flags().GetBool("recursive")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+	// Stat through the data plane so directory detection uses the owner view.
+	entry, statErr := fs.Stat(ctx, args[0])
+	if statErr != nil && recursive {
+		return statErr
+	}
+	if statErr == nil && entry.IsDir {
+		if !recursive {
+			return rt.UsageError(cmd, "source %q is a directory (use --recursive to copy directories)", args[0])
+		}
+		if dryRun {
+			return rt.UsageError(cmd, "--dry-run requires the in-process filesystem; run with QRYPT_CORE_FS_REQUIRED=0")
+		}
+		raw, err := client.CopyDirect(ctx, args[0], args[1], true, force)
+		if err != nil {
+			return err
+		}
+		var result drivecopy.DriverCopyDirResult
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return err
+		}
+		asJSON, _ := cmd.Flags().GetBool("json")
+		if asJSON {
+			if err := cliruntime.WritePrettyJSON(cmd.OutOrStdout(), &result); err != nil {
+				return err
+			}
+			if !result.Pass {
+				return CopyDirError(rt, &result)
+			}
+			return nil
+		}
+		if !result.Pass {
+			PrintCopyDirSummary(cmd.ErrOrStderr(), i18n.FromCommand(cmd), &result)
+			return CopyDirError(rt, &result)
+		}
+		PrintCopyDirSummary(cmd.OutOrStdout(), i18n.FromCommand(cmd), &result)
+		return nil
+	}
+	if dryRun {
+		return rt.UsageError(cmd, "--dry-run requires the in-process filesystem; run with QRYPT_CORE_FS_REQUIRED=0")
+	}
+	raw, err := client.CopyDirect(ctx, args[0], args[1], false, force)
+	if err != nil {
+		return err
+	}
+	var result drivecopy.DriverCopyResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return err
+	}
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if asJSON {
+		if err := cliruntime.WritePrettyJSON(cmd.OutOrStdout(), &result); err != nil {
+			return err
+		}
+		if !result.Pass {
+			return CopyError(&result)
+		}
+		return nil
+	}
+	if !result.Pass {
+		PrintCopySummary(cmd.ErrOrStderr(), i18n.FromCommand(cmd), &result)
+		return CopyError(&result)
+	}
+	PrintCopySummary(cmd.OutOrStdout(), i18n.FromCommand(cmd), &result)
+	return nil
 }
 
 func copyForce(cmd *cobra.Command) bool {

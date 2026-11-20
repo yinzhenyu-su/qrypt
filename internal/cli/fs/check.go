@@ -75,7 +75,7 @@ func runCheck(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return rt.UsageError(cmd, "at least one side must be a virtual path (/MOUNT/...): got %q and %q", args[0], args[1])
 		}
 
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}

@@ -253,19 +253,33 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 func loadRemoteChildrenWithRuntime(ctx context.Context, parentPath, parentID string, prefetch bool, l *Lister) ([]drive.Entry, error) {
 	parentPath = CleanVirtualPath(parentPath)
 	now := time.Now()
-	generation := l.view.ListGeneration()
-	entries, err := l.remote.ListChildren(ctx, parentID)
-	if err != nil {
-		return nil, err
-	}
-	if l.listCache != nil {
-		// Persist the raw remote listing before the view projects local
-		// state onto it: the file must never contain pending uploads,
-		// rename shadows or delayed deletes.
-		l.listCache.Put(parentPath, entries, generation, now)
-	}
-	if prefetch {
-		if !l.IsCurrentPrefetchDir(parentPath, parentID) {
+	var entries []drive.Entry
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		generation := l.view.ListGeneration()
+		entries, err = l.remote.ListChildren(ctx, parentID)
+		if err != nil {
+			return nil, err
+		}
+		if l.view.ListGeneration() == generation {
+			if l.listCache != nil {
+				// Persist the raw remote listing before the view projects local
+				// state onto it: the file must never contain pending uploads,
+				// rename shadows or delayed deletes.
+				l.listCache.Put(parentPath, entries, generation, now)
+			}
+			if prefetch {
+				if !l.IsCurrentPrefetchDir(parentPath, parentID) {
+					return nil, fmt.Errorf("vfs: discard stale directory prefetch path=%q id=%q", parentPath, parentID)
+				}
+			}
+			return l.commitRemoteList(parentPath, entries, now.Add(listCacheTTL)), nil
+		}
+		// A mutation landed while the backend listing was in flight. A
+		// prefetch has no caller waiting for content, so discard it rather
+		// than issuing another remote call; a foreground listing refetches
+		// once so the caller sees the post-mutation state.
+		if prefetch {
 			return nil, fmt.Errorf("vfs: discard stale directory prefetch path=%q id=%q", parentPath, parentID)
 		}
 	}

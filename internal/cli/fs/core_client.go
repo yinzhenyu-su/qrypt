@@ -10,6 +10,8 @@ import (
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/control"
 	corepkg "github.com/yinzhenyu/qrypt/pkg/core"
+	"time"
+
 	"github.com/yinzhenyu/qrypt/pkg/fsclient"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -53,4 +55,20 @@ func openCoreFS(rt cliruntime.Runtime, cmd *cobra.Command) (context.Context, *fs
 		return nil, nil, nil, err
 	}
 	return ctx, fsclient.New(client), stop, nil
+}
+
+// waitPathSettled waits for one path's upload/delete work to finish. Core
+// clients support per-path waits; the legacy in-process test path falls back to
+// the whole-filesystem idle wait.
+func waitPathSettled(ctx context.Context, rt cliruntime.Runtime, fs vfs.FileSystem, path string, timeout time.Duration) error {
+	if waiter, ok := fs.(interface {
+		WaitPath(context.Context, string, time.Duration) error
+	}); ok {
+		return waiter.WaitPath(ctx, path, timeout)
+	}
+	opened, ok := fs.(cliruntime.OpenedFileSystem)
+	if !ok {
+		return fmt.Errorf("filesystem does not expose upload durability")
+	}
+	return rt.WaitFileSystemIdle(ctx, opened, timeout)
 }

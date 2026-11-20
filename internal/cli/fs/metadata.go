@@ -58,7 +58,7 @@ func NewMkdirCmd(rt cliruntime.Runtime) *cobra.Command {
 
 func runMkdir(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}
@@ -90,7 +90,7 @@ func runRm(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if waitTimeout <= 0 {
 			return fmt.Errorf("--wait-timeout must be greater than 0")
 		}
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}
@@ -104,16 +104,13 @@ func runRm(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			if err := fs.RemoveDir(ctx, args[0]); err != nil {
 				return err
 			}
-			if err := rt.WaitFileSystemIdle(ctx, fs, waitTimeout); err != nil {
-				return err
-			}
 		} else {
 			if err := fs.Remove(ctx, args[0]); err != nil {
 				return err
 			}
-			if err := rt.WaitFileSystemIdle(ctx, fs, waitTimeout); err != nil {
-				return err
-			}
+		}
+		if err := waitPathSettled(ctx, rt, fs, args[0], waitTimeout); err != nil {
+			return err
 		}
 		asJSON, _ := cmd.Flags().GetBool("json")
 		if asJSON {
