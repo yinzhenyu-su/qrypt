@@ -38,7 +38,7 @@ func NewDfCmd(rt cliruntime.Runtime) *cobra.Command {
 
 func runDf(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}
@@ -164,7 +164,7 @@ func runDu(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if len(args) > 0 {
 			path = args[0]
 		}
-		ctx, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		ctx, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}

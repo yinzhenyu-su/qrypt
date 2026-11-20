@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // FSEntry is the transport view of one path served by the Core filesystem.
@@ -33,7 +35,10 @@ type FSEntry struct {
 type FSService interface {
 	Stat(ctx context.Context, path string) (FSEntry, error)
 	List(ctx context.Context, path string) ([]FSEntry, error)
-	Read(ctx context.Context, path string, offset, size int64) ([]byte, error)
+	// ReadStream streams file bytes so large files never have to be buffered
+	// by the server or the client. raw requests backend bytes without
+	// decryption or read-cache transforms.
+	ReadStream(ctx context.Context, path string, offset, size int64, raw bool) (io.ReadCloser, error)
 	Create(ctx context.Context, path string) error
 	WriteAt(ctx context.Context, path string, offset int64, data []byte) (int, error)
 	Flush(ctx context.Context, path string) error
@@ -48,6 +53,26 @@ type FSService interface {
 	// InvalidateList drops persisted and in-memory listings for path so the
 	// next list reflects the backend (used by `fs list --refresh`).
 	InvalidateList(ctx context.Context, path string) error
+	// Space reports aggregate capacity for the owner filesystem.
+	Space(ctx context.Context) (FSSpace, error)
+	// MountSpaces reports per-mount capacity breakdown.
+	MountSpaces(ctx context.Context) ([]FSMountSpace, error)
+	// PendingUploads lists uploads staged but not yet committed.
+	PendingUploads(ctx context.Context) ([]vfs.PendingUpload, error)
+}
+
+// FSSpace is the transport view of drive.Space.
+type FSSpace struct {
+	Total int64 `json:"total"`
+	Free  int64 `json:"free"`
+}
+
+// FSMountSpace is one mount's capacity breakdown.
+type FSMountSpace struct {
+	Name  string `json:"name"`
+	Total int64  `json:"total"`
+	Free  int64  `json:"free"`
+	Error string `json:"error,omitempty"`
 }
 
 // SetFSService installs the data-plane service before Start.
@@ -88,6 +113,12 @@ func (s *CommandServer) handleFS(w http.ResponseWriter, r *http.Request) {
 		s.handleFSTruncate(w, r)
 	case "invalidate":
 		s.handleFSInvalidate(w, r)
+	case "space":
+		s.handleFSSpace(w, r)
+	case "spaces":
+		s.handleFSMountSpaces(w, r)
+	case "pending":
+		s.handleFSPendingUploads(w, r)
 	case "wait":
 		s.handleFSWait(w, r)
 	default:
@@ -169,13 +200,15 @@ func (s *CommandServer) handleFSRead(w http.ResponseWriter, r *http.Request) {
 	}
 	offset, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
 	size, _ := strconv.ParseInt(r.URL.Query().Get("size"), 10, 64)
-	data, err := s.fs.Read(r.Context(), path, offset, size)
+	raw := r.URL.Query().Get("raw") == "1"
+	stream, err := s.fs.ReadStream(r.Context(), path, offset, size, raw)
 	if err != nil {
 		http.Error(w, err.Error(), fsErrorStatus(err))
 		return
 	}
+	defer stream.Close()
 	w.Header().Set("Content-Type", "application/octet-stream")
-	_, _ = w.Write(data)
+	_, _ = io.Copy(w, stream)
 }
 
 type fsPathRequest struct {
@@ -353,6 +386,51 @@ func (s *CommandServer) handleFSWait(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"path": req.Path, "settled": true})
 }
 
+func (s *CommandServer) handleFSSpace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	space, err := s.fs.Space(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), fsErrorStatus(err))
+		return
+	}
+	writeJSON(w, space)
+}
+
+func (s *CommandServer) handleFSMountSpaces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mounts, err := s.fs.MountSpaces(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), fsErrorStatus(err))
+		return
+	}
+	if mounts == nil {
+		mounts = []FSMountSpace{}
+	}
+	writeJSON(w, map[string]any{"mounts": mounts})
+}
+
+func (s *CommandServer) handleFSPendingUploads(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pending, err := s.fs.PendingUploads(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), fsErrorStatus(err))
+		return
+	}
+	if pending == nil {
+		pending = []vfs.PendingUpload{}
+	}
+	writeJSON(w, map[string]any{"pending": pending})
+}
+
 // --- client side -----------------------------------------------------------
 
 // FSStat returns metadata for one Core path.
@@ -383,11 +461,70 @@ func (c *Client) FSList(ctx context.Context, path string) ([]FSEntry, error) {
 	return result.Entries, nil
 }
 
-// FSRead reads one byte range from a Core path.
+// FSReadStream opens a streaming read of a Core file range. A size of zero
+// means "until EOF"; raw requests backend bytes without decryption.
+func (c *Client) FSReadStream(ctx context.Context, path string, offset, size int64, raw bool) (io.ReadCloser, error) {
+	query := url.Values{}
+	query.Set("path", path)
+	query.Set("offset", strconv.FormatInt(offset, 10))
+	query.Set("size", strconv.FormatInt(size, 10))
+	if raw {
+		query.Set("raw", "1")
+	}
+	return c.OpenStream(ctx, "/v1/fs/read?"+query.Encode())
+}
+
+// FSRead reads a bounded range of a Core file into memory.
 func (c *Client) FSRead(ctx context.Context, path string, offset, size int64) ([]byte, error) {
-	query := "/v1/fs/read?path=" + url.QueryEscape(path) +
-		"&offset=" + strconv.FormatInt(offset, 10) + "&size=" + strconv.FormatInt(size, 10)
-	return c.Get(ctx, query)
+	stream, err := c.FSReadStream(ctx, path, offset, size, false)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+	return io.ReadAll(stream)
+}
+
+// FSSpace reports aggregate capacity of the Core filesystem.
+func (c *Client) FSSpace(ctx context.Context) (FSSpace, error) {
+	body, err := c.Get(ctx, "/v1/fs/space")
+	if err != nil {
+		return FSSpace{}, err
+	}
+	var space FSSpace
+	if err := json.Unmarshal(body, &space); err != nil {
+		return FSSpace{}, fmt.Errorf("control: decode fs space: %w", err)
+	}
+	return space, nil
+}
+
+// FSMountSpaces reports per-mount capacity breakdown.
+func (c *Client) FSMountSpaces(ctx context.Context) ([]FSMountSpace, error) {
+	body, err := c.Get(ctx, "/v1/fs/spaces")
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Mounts []FSMountSpace `json:"mounts"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("control: decode fs spaces: %w", err)
+	}
+	return payload.Mounts, nil
+}
+
+// FSPendingUploads lists uploads staged but not yet committed.
+func (c *Client) FSPendingUploads(ctx context.Context) ([]vfs.PendingUpload, error) {
+	body, err := c.Get(ctx, "/v1/fs/pending")
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Pending []vfs.PendingUpload `json:"pending"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("control: decode fs pending: %w", err)
+	}
+	return payload.Pending, nil
 }
 
 // FSCreate opens (or truncates) a file on the Core.

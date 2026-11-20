@@ -37,7 +37,7 @@ var packagePolicy = map[string]map[string]bool{
 	"crypt":        allow("drive"),
 	"drive":        allow("clock", "readbudget", "util"),
 	"drivers":      allow("drive", "logging", "testsupport", "util"),
-	"fsclient":     allow("control", "drive"),
+	"fsclient":     allow("control", "drive", "vfs"),
 	"install":      allow("util"),
 	"limits":       {},
 	"logging":      allow("util"),

@@ -3,11 +3,14 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 type fsStub struct {
@@ -27,8 +30,20 @@ func (s *fsStub) List(ctx context.Context, path string) ([]FSEntry, error) {
 	return []FSEntry{{Name: "a", Path: path + "/a"}}, nil
 }
 
-func (s *fsStub) Read(ctx context.Context, path string, offset, size int64) ([]byte, error) {
-	return []byte("abc"), nil
+func (s *fsStub) ReadStream(ctx context.Context, path string, offset, size int64, raw bool) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("abc")), nil
+}
+
+func (s *fsStub) Space(ctx context.Context) (FSSpace, error) {
+	return FSSpace{Total: 100, Free: 40}, nil
+}
+
+func (s *fsStub) MountSpaces(ctx context.Context) ([]FSMountSpace, error) {
+	return []FSMountSpace{{Name: "local", Total: 100, Free: 40}}, nil
+}
+
+func (s *fsStub) PendingUploads(ctx context.Context) ([]vfs.PendingUpload, error) {
+	return []vfs.PendingUpload{{Path: "/local/pending.txt", Size: 1}}, nil
 }
 
 func (s *fsStub) Create(ctx context.Context, path string) error { return nil }
@@ -119,5 +134,33 @@ func TestFSHandlerUnavailableAndUnknown(t *testing.T) {
 	server.handleFS(recorder, httptest.NewRequest(http.MethodGet, "/v1/fs/nope", nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown op status = %d", recorder.Code)
+	}
+}
+
+func TestFSHandlersStreamAndQueries(t *testing.T) {
+	server := newFSTestServer(&fsStub{})
+
+	recorder := httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodGet, "/v1/fs/read?path=%2Flocal%2Ffile.txt&offset=0&size=0", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "abc" {
+		t.Fatalf("read status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodGet, "/v1/fs/space", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"total": 100`) {
+		t.Fatalf("space status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodGet, "/v1/fs/spaces", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"name": "local"`) {
+		t.Fatalf("spaces status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodGet, "/v1/fs/pending", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"path": "/local/pending.txt"`) {
+		t.Fatalf("pending status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

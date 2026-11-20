@@ -28,7 +28,7 @@ their sizes and local paths; --verbose adds retry and staging status.`,
 
 func runPending(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		_, fs, cleanup, err := rt.OpenFileSystem(cmd)
+		_, fs, cleanup, err := openFS(rt, cmd)
 		if err != nil {
 			return err
 		}
@@ -39,7 +39,11 @@ func runPending(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if verbose && asJSON {
 			return fmt.Errorf("--verbose and --json cannot be used together")
 		}
-		pending := cliruntime.PendingFiles(fs)
+		inspector, ok := fs.(vfs.UploadInspector)
+		if !ok {
+			return fmt.Errorf("this filesystem does not report pending uploads")
+		}
+		pending := cliruntime.PendingFiles(inspector)
 		if asJSON {
 			if pending == nil {
 				pending = []vfs.PendingUpload{}

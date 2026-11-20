@@ -108,4 +108,56 @@ func TestFSCommandsThroughCore(t *testing.T) {
 	if !strings.Contains(refreshedOut, "external.txt") {
 		t.Fatalf("refresh did not refetch: %s", refreshedOut)
 	}
+
+	// Remaining read commands must use the same owner runtime.
+	catOut, err := executeRoot(t, "fs", "--config", configPath, "cat", "/local/moved.txt")
+	if err != nil || catOut != "core data" {
+		t.Fatalf("fs cat via core: out=%q err=%v", catOut, err)
+	}
+	findOut, err := executeRoot(t, "fs", "--config", configPath, "find", "/local", "moved")
+	if err != nil || !strings.Contains(findOut, "/local/moved.txt") {
+		t.Fatalf("fs find via core: out=%q err=%v", findOut, err)
+	}
+	duOut, err := executeRoot(t, "fs", "--config", configPath, "du", "--json", "/local")
+	if err != nil {
+		t.Fatalf("fs du via core: %v", err)
+	}
+	var du struct {
+		Files int   `json:"files"`
+		Bytes int64 `json:"bytes"`
+	}
+	if err := json.Unmarshal([]byte(duOut), &du); err != nil || du.Files < 2 || du.Bytes < int64(len("core data")) {
+		t.Fatalf("du = %+v err=%v (%s)", du, err, duOut)
+	}
+	if _, err := executeRoot(t, "fs", "--config", configPath, "df", "--json"); err != nil {
+		t.Fatalf("fs df via core: %v", err)
+	}
+	pendingOut, err := executeRoot(t, "fs", "--config", configPath, "pending", "--json")
+	if err != nil || !strings.HasPrefix(strings.TrimSpace(pendingOut), "[") {
+		t.Fatalf("fs pending via core: out=%q err=%v", pendingOut, err)
+	}
+	big := make([]byte, 2<<20)
+	for i := range big {
+		big[i] = byte(i * 7)
+	}
+	bigLocal := filepath.Join(base, "big.bin")
+	if err := os.WriteFile(bigLocal, big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeRoot(t, "fs", "--config", configPath, "put", "--wait-timeout", "10s", bigLocal, "/local/big.bin"); err != nil {
+		t.Fatalf("fs put big via core: %v", err)
+	}
+	bigOut, err := executeRoot(t, "fs", "--config", configPath, "cat", "/local/big.bin")
+	if err != nil {
+		t.Fatalf("fs cat big via core: %v", err)
+	}
+	if len(bigOut) != len(big) || bigOut != string(big) {
+		t.Fatalf("big cat length = %d, want %d", len(bigOut), len(big))
+	}
+
+	if _, err := executeRoot(t, "fs", "--config", configPath, "stat", "/local/does-not-exist"); err == nil {
+		t.Fatal("fs stat of a missing path should fail")
+	} else if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing path error = %v", err)
+	}
 }
