@@ -52,6 +52,7 @@ type CommandServer struct {
 	runtime    RuntimeService
 	mounts     MountService
 	fs         FSService
+	operations *operationMemo
 	offline    OfflineService
 	share      shareapi.Service
 	server     *http.Server
@@ -77,7 +78,7 @@ func NewCommandServer(endpoint string, service CommandService) (*CommandServer, 
 	if network == "tcp" {
 		return nil, fmt.Errorf("control: command server requires a local endpoint")
 	}
-	return &CommandServer{network: network, address: address, service: service}, nil
+	return &CommandServer{network: network, address: address, service: service, operations: newOperationMemo()}, nil
 }
 
 func (s *CommandServer) Start(ctx context.Context) error {

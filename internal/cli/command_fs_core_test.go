@@ -195,6 +195,25 @@ func TestFSCommandsThroughCore(t *testing.T) {
 		t.Fatalf("downloaded bytes = %d err=%v, want %d", len(gotBytes), err, len(big))
 	}
 
+	// Two clients racing to remove the same path must be serialized by the
+	// Core's owner VFS: exactly one remove observes the file and succeeds.
+	rmErrs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := executeRoot(t, "fs", "--config", configPath, "rm", "/local/dir2/sub/a.txt")
+			rmErrs <- err
+		}()
+	}
+	successes := 0
+	for range 2 {
+		if err := <-rmErrs; err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent rm successes = %d, want 1", successes)
+	}
+
 	if _, err := executeRoot(t, "fs", "--config", configPath, "stat", "/local/does-not-exist"); err == nil {
 		t.Fatal("fs stat of a missing path should fail")
 	} else if !strings.Contains(err.Error(), "not found") {

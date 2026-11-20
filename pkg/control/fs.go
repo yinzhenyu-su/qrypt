@@ -97,6 +97,50 @@ func (s *CommandServer) handleFS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	op := strings.TrimPrefix(r.URL.Path, "/v1/fs/")
+	if isFSMutation(op) {
+		s.handleFSMutation(w, r, op)
+		return
+	}
+	s.handleFSOperation(w, r, op)
+}
+
+// isFSMutation reports whether op writes through the owner filesystem and thus
+// takes an optional idempotency key.
+func isFSMutation(op string) bool {
+	switch op {
+	case "create", "write", "flush", "mkdir", "remove", "rename", "truncate", "copy":
+		return true
+	}
+	return false
+}
+
+// handleFSMutation executes a mutation at most once per operation id and
+// replays the recorded response for a repeated id.
+func (s *CommandServer) handleFSMutation(w http.ResponseWriter, r *http.Request, op string) {
+	id := strings.TrimSpace(r.Header.Get(OperationIDHeader))
+	if id == "" || s.operations == nil {
+		s.handleFSOperation(w, r, op)
+		return
+	}
+	if entry, ok := s.operations.lookup(id); ok {
+		for key, values := range entry.header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(entry.status)
+		_, _ = w.Write(entry.payload)
+		return
+	}
+	recorder := newBufferedResponseWriter()
+	s.handleFSOperation(recorder, r, op)
+	if recorder.status >= 200 && recorder.status < 300 {
+		s.operations.store(id, recorder.status, recorder.header, recorder.body.Bytes())
+	}
+	recorder.flushTo(w)
+}
+
+func (s *CommandServer) handleFSOperation(w http.ResponseWriter, r *http.Request, op string) {
 	switch op {
 	case "stat":
 		s.handleFSStat(w, r)

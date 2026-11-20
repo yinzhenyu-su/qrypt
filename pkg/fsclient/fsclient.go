@@ -6,6 +6,8 @@ package fsclient
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,10 +105,25 @@ func (f *FS) MountSpaces(ctx context.Context) []vfs.MountSpace {
 	return result
 }
 
+// mutationContext gives each mutating request an idempotency key unless the
+// caller already chose one (for a deliberate retry). The Core executes a
+// repeated key once and replays its response, so a transport-level retry can
+// never duplicate a mutation.
+func mutationContext(ctx context.Context) context.Context {
+	if control.OperationIDFromContext(ctx) != "" {
+		return ctx
+	}
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return ctx
+	}
+	return control.WithOperationID(ctx, hex.EncodeToString(raw[:]))
+}
+
 // CopyDirect runs a direct backend-to-backend copy in the Core and returns the
 // driver_copy result document for the CLI to render.
 func (f *FS) CopyDirect(ctx context.Context, source, destination string, recursive, force bool) (json.RawMessage, error) {
-	return f.client.FSCopy(ctx, control.FSCopyRequest{
+	return f.client.FSCopy(mutationContext(ctx), control.FSCopyRequest{
 		Source:      source,
 		Destination: destination,
 		Recursive:   recursive,
@@ -147,19 +164,19 @@ func mapFSError(err error) error {
 }
 
 func (f *FS) Create(ctx context.Context, path string) error {
-	return f.client.FSCreate(ctx, path)
+	return f.client.FSCreate(mutationContext(ctx), path)
 }
 
 func (f *FS) WriteAt(ctx context.Context, path string, data []byte, off int64) (int, error) {
-	return f.client.FSWriteAt(ctx, path, off, data)
+	return f.client.FSWriteAt(mutationContext(ctx), path, off, data)
 }
 
 func (f *FS) Flush(ctx context.Context, path string) error {
-	return f.client.FSFlush(ctx, path)
+	return f.client.FSFlush(mutationContext(ctx), path)
 }
 
 func (f *FS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
-	entry, err := f.client.FSMkdir(ctx, path)
+	entry, err := f.client.FSMkdir(mutationContext(ctx), path)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -167,19 +184,19 @@ func (f *FS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 }
 
 func (f *FS) Remove(ctx context.Context, path string) error {
-	return f.client.FSRemove(ctx, path, false)
+	return f.client.FSRemove(mutationContext(ctx), path, false)
 }
 
 func (f *FS) RemoveDir(ctx context.Context, path string) error {
-	return f.client.FSRemove(ctx, path, true)
+	return f.client.FSRemove(mutationContext(ctx), path, true)
 }
 
 func (f *FS) Rename(ctx context.Context, oldPath, newPath string) error {
-	return f.client.FSRename(ctx, oldPath, newPath)
+	return f.client.FSRename(mutationContext(ctx), oldPath, newPath)
 }
 
 func (f *FS) Truncate(ctx context.Context, path string, size int64) error {
-	return f.client.FSTruncate(ctx, path, size)
+	return f.client.FSTruncate(mutationContext(ctx), path, size)
 }
 
 // InvalidateListCache drops Core-side listings for path so the next List

@@ -114,7 +114,7 @@ func (s coreFSService) Copy(ctx context.Context, req control.FSCopyRequest) (jso
 	}
 	if req.Recursive {
 		result := drivecopy.RunDirectDriverCopyDir(ctx, s.fs(), source, req.Source, req.Destination, req.Force)
-		s.invalidateCopyPaths(ctx, req.Destination, pathpkg.Base(req.Source))
+		s.refreshCopyPaths(ctx, pathpkg.Join(req.Destination, pathpkg.Base(req.Source)))
 		data, err := json.Marshal(result)
 		if err != nil {
 			return nil, err
@@ -122,7 +122,7 @@ func (s coreFSService) Copy(ctx context.Context, req control.FSCopyRequest) (jso
 		return data, nil
 	}
 	result := drivecopy.RunDirectDriverCopy(ctx, source, req.Source, req.Destination, req.Force)
-	s.invalidateCopyPaths(ctx, req.Destination)
+	s.refreshCopyPaths(ctx, req.Destination)
 	data, err := json.Marshal(result)
 	if err != nil {
 		return nil, err
@@ -130,23 +130,30 @@ func (s coreFSService) Copy(ctx context.Context, req control.FSCopyRequest) (jso
 	return data, nil
 }
 
-// invalidateCopyPaths drops cached listings touched by a direct copy. The
-// driver-level transfer bypasses the VFS committer, so without this the owner
-// runtime would keep serving the pre-copy listing until the TTL expires.
-func (s coreFSService) invalidateCopyPaths(ctx context.Context, paths ...string) {
-	invalidator, ok := s.fs().(interface {
+// refreshCopyPaths drops cached listings and publishes kernel-view
+// invalidations for the paths touched by a direct copy. The driver-level
+// transfer bypasses the VFS committer, so without this the owner runtime would
+// keep serving the pre-copy listing until the TTL expires, and FUSE clients
+// would keep stale attributes for the notification window.
+func (s coreFSService) refreshCopyPaths(ctx context.Context, paths ...string) {
+	invalidator, _ := s.fs().(interface {
 		InvalidateListCache(context.Context, string) error
 	})
-	if !ok {
-		return
-	}
+	notifier, _ := s.fs().(interface {
+		NotifyInvalidation(context.Context, string) error
+	})
 	for _, p := range paths {
 		if p == "" {
 			continue
 		}
-		clean := p
-		_ = invalidator.InvalidateListCache(ctx, clean)
-		_ = invalidator.InvalidateListCache(ctx, pathpkg.Dir(clean))
+		for _, target := range []string{p, pathpkg.Dir(p)} {
+			if invalidator != nil {
+				_ = invalidator.InvalidateListCache(ctx, target)
+			}
+			if notifier != nil {
+				_ = notifier.NotifyInvalidation(ctx, target)
+			}
+		}
 	}
 }
 
