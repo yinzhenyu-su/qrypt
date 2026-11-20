@@ -80,6 +80,9 @@
     "read_cache": {
       "$ref": "#/definitions/readCacheConfig"
     },
+    "list_cache": {
+      "$ref": "#/definitions/listCacheConfig"
+    },
     "thumbnail_cache": {
       "$ref": "#/definitions/thumbnailCacheConfig"
     },
@@ -249,6 +252,17 @@
           },
           "x-doc-default": "`<work_dir>/cache/read`"
         },
+        "list_cache_dir": {
+          "description": "Optional override for persisted directory listing cache files. Defaults to <work_dir>/cache/lists.",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "持久化目录列表缓存目录的可选覆盖。"
+            }
+          },
+          "x-doc-default": "`<work_dir>/cache/lists`"
+        },
         "thumbnail_cache_dir": {
           "description": "Optional override for generated thumbnail cache files. Defaults to <work_dir>/cache/thumbnail.",
           "type": "string",
@@ -336,6 +350,42 @@
         "zh-CN": {
           "title": "读取缓存",
           "description": "在 `[read_cache]` 中设置读取缓存默认值。每个 mount 可以在 `[mounts.read_cache]` 中单独覆盖。"
+        }
+      }
+    },
+    "listCacheConfig": {
+      "type": "object",
+      "description": "Persisted directory listing cache settings.",
+      "properties": {
+        "ttl": {
+          "description": "How long a persisted directory listing may be reused (e.g. \"30s\", \"2m\"). Set to \"0\" to disable the list cache; when unset the default 30s applies.",
+          "type": "string",
+          "default": "30s",
+          "pattern": "^\\d+[smh]?$|^\\d+$",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "持久化目录列表的复用时长；设为 `0` 可关闭，未设置时默认 30s"
+            }
+          }
+        },
+        "max_size": {
+          "description": "Maximum persisted listing cache size per mount (e.g. \"8M\", \"32M\"). When unset the default 32M applies.",
+          "type": "string",
+          "default": "32M",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "每个 mount 的持久化列表缓存上限；未设置时默认 32M"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "List cache",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "目录列表缓存",
+          "description": "在 `[list_cache]` 中设置持久化目录列表的默认值。每个 mount 可以在 `[mounts.list_cache]` 中单独覆盖；缓存只保存远端原始列表，本地 pending/删除状态在命中后动态叠加。"
         }
       }
     },
@@ -865,6 +915,15 @@
             }
           },
           "description": "Per-mount read-cache overrides."
+        },
+        "list_cache": {
+          "$ref": "#/definitions/listCacheConfig",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "该 mount 的目录列表缓存覆盖"
+            }
+          },
+          "description": "Per-mount persisted listing cache overrides."
         },
         "upload": {
           "$ref": "#/definitions/mountUploadConfig",

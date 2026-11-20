@@ -3,13 +3,15 @@ package diagnostics
 import (
 	"testing"
 
+	"github.com/yinzhenyu/qrypt/pkg/vfs/listcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 )
 
 type fakeCacheRuntime struct {
-	cache   readcache.DebugReadCache
-	journal *upload.DebugJournal
+	cache     readcache.DebugReadCache
+	journal   *upload.DebugJournal
+	listCache *listcache.Stats
 }
 
 func (r fakeCacheRuntime) ReadCache() readcache.DebugReadCache {
@@ -18,6 +20,10 @@ func (r fakeCacheRuntime) ReadCache() readcache.DebugReadCache {
 
 func (r fakeCacheRuntime) Journal() *upload.DebugJournal {
 	return r.journal
+}
+
+func (r fakeCacheRuntime) ListCache() *listcache.Stats {
+	return r.listCache
 }
 
 func TestCacheSnapshotUsesRuntime(t *testing.T) {
@@ -36,5 +42,8 @@ func TestCacheSnapshotUsesRuntime(t *testing.T) {
 	}
 	if snapshot.Journal != journal {
 		t.Fatalf("journal = %+v, want %+v", snapshot.Journal, journal)
+	}
+	if snapshot.ListCache != nil {
+		t.Fatalf("list cache = %+v, want nil", snapshot.ListCache)
 	}
 }

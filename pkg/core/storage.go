@@ -14,6 +14,7 @@ type StorageUsage struct {
 	TotalBytes     int64               `json:"total_bytes"`
 	CacheBytes     int64               `json:"cache_bytes"`
 	ReadCacheBytes int64               `json:"read_cache_bytes"`
+	ListCacheBytes int64               `json:"list_cache_bytes"`
 	ThumbnailBytes int64               `json:"thumbnail_cache_bytes"`
 	StagingBytes   int64               `json:"staging_bytes"`
 	ConfigBytes    int64               `json:"config_bytes,omitempty"`
@@ -28,6 +29,7 @@ type StorageMountUsage struct {
 	Name           string `json:"name"`
 	CacheBytes     int64  `json:"cache_bytes"`
 	ReadCacheBytes int64  `json:"read_cache_bytes"`
+	ListCacheBytes int64  `json:"list_cache_bytes"`
 	StagingBytes   int64  `json:"staging_bytes"`
 	OtherBytes     int64  `json:"other_bytes,omitempty"`
 }
@@ -45,6 +47,14 @@ func (c *Core) StorageUsage(ctx context.Context) (StorageUsage, error) {
 		usage.ReadCacheBytes = cacheBytes
 		usage.CacheBytes += cacheBytes
 	}
+	if c.listCacheDir != "" {
+		bytes, err := dirSize(ctx, c.listCacheDir)
+		if err != nil {
+			return StorageUsage{}, err
+		}
+		usage.ListCacheBytes = bytes
+		usage.CacheBytes += bytes
+	}
 	if c.thumbnailDir != "" {
 		bytes, err := dirSize(ctx, c.thumbnailDir)
 		if err != nil {
@@ -61,6 +71,15 @@ func (c *Core) StorageUsage(ctx context.Context) (StorageUsage, error) {
 		mounts, stagingBytes, err := uploadMountUsage(ctx, c.readCacheDir, c.uploadDir)
 		if err != nil {
 			return StorageUsage{}, err
+		}
+		if c.listCacheDir != "" {
+			for i := range mounts {
+				bytes, err := dirSize(ctx, filepath.Join(c.listCacheDir, mounts[i].Name))
+				if err != nil {
+					return StorageUsage{}, err
+				}
+				mounts[i].ListCacheBytes = bytes
+			}
 		}
 		usage.Mounts = mounts
 		usage.StagingBytes = stagingBytes

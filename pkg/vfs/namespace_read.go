@@ -36,6 +36,20 @@ func (n *Namespace) ClearReadCache() error {
 	return errors.Join(errs...)
 }
 
+// InvalidateListCache routes a listing refresh through the owning mount.
+func (n *Namespace) InvalidateListCache(ctx context.Context, path string) error {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return err
+	}
+	if root {
+		// The namespace root is derived from configuration, not from a
+		// backend listing, so there is nothing to invalidate.
+		return nil
+	}
+	return mount.InvalidateListCache(ctx, rest)
+}
+
 func (n *Namespace) ClearReadCacheForMount(name string) error {
 	name = vfstypes.CleanMountName(name)
 	n.mu.RLock()

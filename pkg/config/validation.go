@@ -35,6 +35,14 @@ func ValidateGlobal(cfg *Config) error {
 	if _, err := cfg.EffectiveBandwidthLimits(); err != nil {
 		return err
 	}
+	if _, err := ParseDuration(cfg.ListCache.TTL); err != nil {
+		return fmt.Errorf("config: invalid list_cache.ttl: %w", err)
+	}
+	if cfg.ListCache.MaxSize != "" {
+		if _, err := ParseSize(cfg.ListCache.MaxSize); err != nil {
+			return fmt.Errorf("config: invalid list_cache.max_size: %w", err)
+		}
+	}
 	for name, value := range map[string]string{
 		"attr_timeout":     cfg.EffectiveAttrTimeout(),
 		"entry_timeout":    cfg.EffectiveEntryTimeout(),
@@ -174,6 +182,15 @@ func ValidateMount(cfg *Config, index int, mountCfg MountConfig) error {
 	if readCache.MaxSize != "" {
 		if _, err := ParseSize(readCache.MaxSize); err != nil {
 			return fmt.Errorf("config: mount %q invalid read_cache.max_size: %w", mountCfg.Name, err)
+		}
+	}
+	listCache := cfg.ListCacheFor(mountCfg.Name)
+	if _, err := ParseDuration(listCache.TTL); err != nil {
+		return fmt.Errorf("config: mount %q invalid list_cache.ttl: %w", mountCfg.Name, err)
+	}
+	if listCache.MaxSize != "" {
+		if _, err := ParseSize(listCache.MaxSize); err != nil {
+			return fmt.Errorf("config: mount %q invalid list_cache.max_size: %w", mountCfg.Name, err)
 		}
 	}
 	upload := cfg.UploadFor(mountCfg.Name)

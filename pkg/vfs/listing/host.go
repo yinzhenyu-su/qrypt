@@ -35,6 +35,10 @@ type View interface {
 
 	// View cache.
 	FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool)
+	// ListGeneration returns the owner's directory-listing generation. It
+	// advances on every committed mutation; a persisted listing fetched
+	// under an older generation must not be served.
+	ListGeneration() uint64
 	// CommitRemoteChildren folds a freshly fetched remote listing into the
 	// synthesized view as a single semantic operation: rename/delete overlay
 	// update, filtering of invisible remote nodes, local-modtime

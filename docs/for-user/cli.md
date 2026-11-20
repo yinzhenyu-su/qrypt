@@ -177,12 +177,13 @@ qrypt core stop [--drain] [--force]
 - 默认 20 分钟没有活动（无挂载、无进行中的任务或上传）后自动退出；`--keep` 关闭空闲退出，`--idle-timeout` 调整空闲时间。
 - 启动时会记录配置指纹。用不同配置再次启动会被拒绝，需要先停止再用当前配置重启；`core status` 在 Core 未运行时显示 `stopped`，锁仍被持有但控制端点不可达时显示 `unreachable` 并给出持锁进程。
 - 在 Core 运行期间，其他会打开同一工作目录的进程（再次 `core serve`、隔离挂载等）会被拒绝并提示已有运行时持有该状态；先 `qrypt core stop`。`qrypt mount` 与 `qrypt unmount` 经 Core 的控制端点工作，可以与 `qrypt core serve` 同时使用。
+- 目录列表缓存（`[list_cache]`）默认把每个目录的远端列表持久化到 `<work_dir>/cache/lists/`，30 秒内重复 `fs list` 不再访问网盘；用 `fs list --refresh` 立即回源，`storage.list_cache_dir` 可改目录位置，`list_cache.max_size` 限制每个 mount 的占用。
 - 迁移期 `qrypt fs list`、`fs stat`、`fs put`、`fs mv` 已经经常驻 Core 的数据面执行：Core 未运行时先按需启动，因此它们与 `qrypt mount` 可以同时使用。其余 `fs` 子命令仍在命令进程内打开工作目录，在 Core 或 `qrypt mount` 运行期间会被拒绝；后续里程碑会陆续改为 Core 客户端。`fs list --remote-names` 依赖进程内后端信息，暂未迁移，使用时会提示不可用。
 
 ## 文件系统操作
 
 ```sh
-qrypt fs list [REMOTE] [--json | --jsonl] [--human]
+qrypt fs list [REMOTE] [--json | --jsonl] [--human] [--refresh]
 qrypt fs find [REMOTE] NAME [--json]
 qrypt fs df [MOUNT] [--json] [--bytes]
 qrypt fs du [REMOTE] [--json] [--bytes]
@@ -211,7 +212,9 @@ qrypt fs list / --config PATH
 
 `get` 和单文件 `copy` 默认拒绝覆盖文件；明确覆盖时使用 `--force`。`copy` 直接通过驱动在远端路径之间复制文件。复制目录时使用 `--recursive`，目标路径会作为父目录并追加源目录名，例如 `/src/parent -> /dst` 会写入 `/dst/parent/...`；目录会自动创建，已有文件默认跳过，`--force` 会覆盖已有文件。目录复制遇到读取、创建目录或复制文件错误时会停止并返回失败；`--json` 会输出逐项 `entries`，标记 `ready`、`copied`、`skipped` 或 `failed`。`copy` 支持 `--dry-run`：只枚举并输出将传输的文件计划（`--json` 时输出结构化计划），不执行任何复制。目录复制部分成功（有文件复制成功也有失败）时退出码为 3，全部失败时为 1。`put` 和 `rm` 会等待异步远端操作完成，可通过 `--wait-timeout` 调整最长等待时间。
 
-`list` 支持 `--jsonl`（JSON Lines）：每行输出一个条目的 JSON，适合大目录流式消费（`jq -s` 可聚合）；`--json` 与 `--jsonl` 互斥。`list --human` 以 K/M/G/T 显示大小。`find` 递归查找名字包含 `NAME`（大小写不敏感）的条目，`--json` 输出匹配条目列表。
+`list` 支持 `--jsonl`（JSON Lines）：每行输出一个条目的 JSON，适合大目录流式消费（`jq -s` 可聚合）；`--json` 与 `--jsonl` 互斥。`list --human` 以 K/M/G/T 显示大小。
+
+目录列表会持久化复用：默认在 30 秒内（`[list_cache] ttl`，可按 mount 覆盖；设为 `0` 关闭）的重复 `list` 直接使用上次从网盘取回的列表，不再访问网盘。因此通过其他设备或网页端修改的目录，最多延迟一个 TTL 才能看到；需要立即回源时使用 `list --refresh`。列表缓存只保存远端原始列表，本地的 pending 上传、改名影子与延迟删除仍会动态叠加。`find` 递归查找名字包含 `NAME`（大小写不敏感）的条目，`--json` 输出匹配条目列表。
 
 `check A B` 比较两个目录树（`A`/`B` 可为 `/MOUNT/...` 虚拟路径或本机路径，至少一端是虚拟路径）：逐文件比对大小与修改时间（`--hash` 或 `--compare=hash` 时再比内容哈希），输出缺失/多余/不一致清单，`--json` 输出结构化结果。退出码 0 一致、4 有差异。文件与目录类型不一致会报告 `type` 差异。加密挂载透明处理：本地明文目录可直接与加密挂载比对；`--hash` 需要网盘提供内容哈希（已支持：阿里云盘 sha1、115 sha1、百度网盘 md5、OneDrive sha1；加密挂载下本地会使用远端 nonce 重算密文哈希，全程不下载文件正文）。`--compare=mtime-only` 只按修改时间判定差异（忽略大小差异，内容变了但大小与 mtime 都没变会被当作一致）。`du` 统计目录树文件数与总字节数；`df` 显示所配置驱动的空间（默认逐 mount 列出；`MOUNT` 参数或 `--mount` 只看单个）。两者默认人类可读大小，`--bytes` 输出原始字节，`--json` 输出数字。`rm`/`mv` 支持 `--json` 输出结构化结果。
 

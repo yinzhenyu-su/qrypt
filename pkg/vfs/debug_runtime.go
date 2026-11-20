@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/listcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
@@ -22,12 +23,22 @@ import (
 // snapshot, staging, upload snapshots).
 
 type vfsDebugCacheRuntime struct {
-	st    *readState
-	store *upload.Domain
+	st        *readState
+	store     *upload.Domain
+	listStore *listcache.Store
 }
 
-func newVFSDebugCacheRuntime(st *readState, store *upload.Domain) vfsDebugCacheRuntime {
-	return vfsDebugCacheRuntime{st: st, store: store}
+func newVFSDebugCacheRuntime(st *readState, store *upload.Domain, listStore *listcache.Store) vfsDebugCacheRuntime {
+	return vfsDebugCacheRuntime{st: st, store: store, listStore: listStore}
+}
+
+// ListCache returns the persisted listing-cache snapshot, if configured.
+func (r vfsDebugCacheRuntime) ListCache() *listcache.Stats {
+	if r.listStore == nil {
+		return nil
+	}
+	stats := r.listStore.Stats()
+	return &stats
 }
 
 func (r vfsDebugCacheRuntime) ReadCache() readcache.DebugReadCache {

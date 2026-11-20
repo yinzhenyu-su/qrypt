@@ -68,6 +68,7 @@ type Core struct {
 	startedAt          time.Time
 	runtimeLayout      RuntimeLayout
 	readCacheDir       string
+	listCacheDir       string
 	thumbnailDir       string
 	thumbnailMax       int64
 	uploadDir          string
@@ -146,6 +147,7 @@ type RuntimeLayout struct {
 	RunDir       string
 	ConfigDir    string
 	ReadCacheDir string
+	ListCacheDir string
 	ThumbnailDir string
 	UploadDir    string
 	StateDir     string
@@ -203,7 +205,7 @@ func OpenConfig(ctx context.Context, cfg *config.Config, opts Options) (*Core, e
 	if readChunkLimit <= 0 {
 		readChunkLimit = DefaultReadChunkLimit
 	}
-	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, startedAt: time.Now().UTC(), runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), fuseMountPoint: cfg.EffectiveMountPoint(), vfsCancel: vfsCancel}
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, startedAt: time.Now().UTC(), runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, listCacheDir: runtime.ListCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), fuseMountPoint: cfg.EffectiveMountPoint(), vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
 	names := make([]string, 0, len(cfg.Mounts))
 	for _, mountCfg := range cfg.Mounts {
@@ -598,6 +600,10 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 	if thumbnailDir == "" {
 		thumbnailDir = filepath.Join(workDir, "cache", "thumbnail")
 	}
+	listCacheDir := util.ExpandHome(storage.ListCacheDir)
+	if listCacheDir == "" {
+		listCacheDir = filepath.Join(workDir, "cache", "lists")
+	}
 	uploadDir := util.ExpandHome(storage.UploadDir)
 	if uploadDir == "" {
 		uploadDir = filepath.Join(workDir, "upload")
@@ -618,6 +624,7 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 		RootDir:      workDir,
 		RunDir:       filepath.Join(workDir, "run"),
 		ReadCacheDir: readCacheDir,
+		ListCacheDir: listCacheDir,
 		ThumbnailDir: thumbnailDir,
 		UploadDir:    uploadDir,
 		StateDir:     stateDir,
@@ -640,6 +647,9 @@ func mergeRuntimeLayout(base, override RuntimeLayout) RuntimeLayout {
 	}
 	if override.ReadCacheDir != "" {
 		base.ReadCacheDir = util.ExpandHome(override.ReadCacheDir)
+	}
+	if override.ListCacheDir != "" {
+		base.ListCacheDir = util.ExpandHome(override.ListCacheDir)
 	}
 	if override.ThumbnailDir != "" {
 		base.ThumbnailDir = util.ExpandHome(override.ThumbnailDir)
@@ -665,7 +675,7 @@ func mergeRuntimeLayout(base, override RuntimeLayout) RuntimeLayout {
 }
 
 func ensureRuntimeLayout(layout RuntimeLayout) error {
-	for _, dir := range []string{layout.ConfigDir, layout.RunDir, layout.ReadCacheDir, layout.ThumbnailDir, layout.UploadDir, layout.StateDir, layout.DriverDir, layout.LogDir, layout.TmpDir} {
+	for _, dir := range []string{layout.ConfigDir, layout.RunDir, layout.ReadCacheDir, layout.ListCacheDir, layout.ThumbnailDir, layout.UploadDir, layout.StateDir, layout.DriverDir, layout.LogDir, layout.TmpDir} {
 		if dir == "" {
 			continue
 		}
@@ -842,6 +852,13 @@ func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, l
 		}
 		drv = crypt.NewDriver(drv, cp, crypt.DriverOptions{ContentDedup: enc.ContentDedup})
 	}
+	listTTL, listMaxBytes, err := listCacheSettings(cfg, mountCfg)
+	if err != nil {
+		result.err = err
+		return result
+	}
+	mountListCacheDir := filepath.Join(layout.ListCacheDir, mountCfg.Name)
+	listIdentity := listCacheIdentity(cfg, mountCfg, rootID, enc)
 	maxBytes := readCache.MaxSizeBytes()
 	// An unset max_size falls back to the default; an explicit "0"
 	// disables the read cache for this mount (the store short-circuits).
@@ -863,17 +880,21 @@ func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, l
 		return result
 	}
 	fs, err := vfs.New(drv, vfs.Options{
-		Name:          mountCfg.Name,
-		ReadCacheDir:  mountReadCacheDir,
-		UploadDir:     mountUploadDir,
-		CacheMaxBytes: maxBytes,
-		RootID:        rootID,
-		Encrypted:     enc.Password != "",
-		TestEnabled:   mountCfg.TestEnabled,
-		UploadDelay:   uploadDelay,
-		UploadWorkers: upload.UploadWorkers,
-		DeleteDelay:   deleteDelay,
-		Read:          readOverride,
+		Name:              mountCfg.Name,
+		ReadCacheDir:      mountReadCacheDir,
+		UploadDir:         mountUploadDir,
+		CacheMaxBytes:     maxBytes,
+		RootID:            rootID,
+		Encrypted:         enc.Password != "",
+		TestEnabled:       mountCfg.TestEnabled,
+		UploadDelay:       uploadDelay,
+		UploadWorkers:     upload.UploadWorkers,
+		DeleteDelay:       deleteDelay,
+		Read:              readOverride,
+		ListCacheDir:      mountListCacheDir,
+		ListCacheTTL:      listTTL,
+		ListCacheMaxBytes: listMaxBytes,
+		ListCacheIdentity: listIdentity,
 	})
 	if err != nil {
 		result.err = err

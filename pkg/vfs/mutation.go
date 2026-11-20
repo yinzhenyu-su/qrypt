@@ -87,7 +87,14 @@ type listedChildrenCache interface {
 // The commit semantics live in the view package; this adapter only supplies
 // the two cross-domain functions.
 func newVFSViewCommitter(v *VFS) view.Committer {
-	return view.NewCommitter(v.view, newVFSVisibilityRuntime(v), v.invalidateReadCache, v.seedReadCacheFromStaging)
+	return view.NewCommitter(v.view, newVFSVisibilityRuntime(v), v.invalidateReadCache, v.seedReadCacheFromStaging, func(paths ...string) {
+		if v.listCache != nil {
+			for _, cachePath := range paths {
+				v.listCache.Delete(cachePath)
+			}
+		}
+		v.listGen.Add(1)
+	})
 }
 
 // Compile-time assertions: the view committer serves both the commit

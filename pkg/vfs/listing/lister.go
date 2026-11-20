@@ -18,20 +18,31 @@ import (
 // (overlay + cache + pending), so the lister never reaches into the
 // overlay's sources.
 type Lister struct {
-	remote Remote
-	view   View
-	state  *State
-	health HealthRecorder
+	remote    Remote
+	view      View
+	state     *State
+	health    HealthRecorder
+	listCache ListCache
+}
+
+// ListCache is the persisted directory-listing store. Entries are the raw
+// remote listing; the view projects local state on top after a hit. Put is
+// called with the generation observed before the remote fetch; the store
+// discards the write when the owner has moved on.
+type ListCache interface {
+	Get(path string, now time.Time) ([]drive.Entry, bool)
+	Put(path string, entries []drive.Entry, generation uint64, fetchedAt time.Time)
 }
 
 // ListerDeps is the explicit dependency set for a listing lister. Health
 // is optional: nil falls back to a no-op sink so statistics never affect
 // correctness.
 type ListerDeps struct {
-	Remote Remote
-	View   View
-	State  *State
-	Health HealthRecorder
+	Remote    Remote
+	View      View
+	State     *State
+	Health    HealthRecorder
+	ListCache ListCache
 }
 
 // NewLister builds a lister from explicit dependencies. The health
@@ -41,7 +52,7 @@ func NewLister(deps ListerDeps) *Lister {
 	if deps.Health == nil {
 		deps.Health = noopHealth{}
 	}
-	return &Lister{remote: deps.Remote, view: deps.View, state: deps.State, health: deps.Health}
+	return &Lister{remote: deps.Remote, view: deps.View, state: deps.State, health: deps.Health, listCache: deps.ListCache}
 }
 
 // State returns the listing domain state.
@@ -153,6 +164,10 @@ func decodeListPageCursor(cursor string) (listPageCursor, bool) {
 
 // ListNoPrefetch lists a directory without scheduling prefetch.
 func (l *Lister) ListNoPrefetch(ctx context.Context, path string) ([]drive.Entry, error) {
+	path = CleanVirtualPath(path)
+	if entries, ok := l.cachedChildren(path); ok {
+		return entries, nil
+	}
 	entry, err := l.remote.Resolve(ctx, path)
 	if err != nil {
 		return nil, err
@@ -203,6 +218,9 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, parentPath)
 		}
 		now := time.Now()
+		if entries, ok := l.cachedChildren(parentPath); ok {
+			return entries, nil
+		}
 		if entries, ok := l.view.FreshListCache(parentPath, now); ok {
 			return entries, nil
 		}
@@ -235,9 +253,16 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 func loadRemoteChildrenWithRuntime(ctx context.Context, parentPath, parentID string, prefetch bool, l *Lister) ([]drive.Entry, error) {
 	parentPath = CleanVirtualPath(parentPath)
 	now := time.Now()
+	generation := l.view.ListGeneration()
 	entries, err := l.remote.ListChildren(ctx, parentID)
 	if err != nil {
 		return nil, err
+	}
+	if l.listCache != nil {
+		// Persist the raw remote listing before the view projects local
+		// state onto it: the file must never contain pending uploads,
+		// rename shadows or delayed deletes.
+		l.listCache.Put(parentPath, entries, generation, now)
 	}
 	if prefetch {
 		if !l.IsCurrentPrefetchDir(parentPath, parentID) {
@@ -245,6 +270,19 @@ func loadRemoteChildrenWithRuntime(ctx context.Context, parentPath, parentID str
 		}
 	}
 	return l.commitRemoteList(parentPath, entries, now.Add(listCacheTTL)), nil
+}
+
+// cachedChildren serves a directory from the persisted listing cache,
+// projecting the current local state on top. A hit costs no remote call.
+func (l *Lister) cachedChildren(path string) ([]drive.Entry, bool) {
+	if l.listCache == nil {
+		return nil, false
+	}
+	entries, ok := l.listCache.Get(path, time.Now())
+	if !ok {
+		return nil, false
+	}
+	return l.view.ProjectChildren(path, entries), true
 }
 
 func (l *Lister) commitRemoteList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
