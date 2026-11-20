@@ -110,3 +110,56 @@ func TestInvalidationListenerPanicDoesNotBlockOtherListeners(t *testing.T) {
 		t.Fatal("listener after panicking listener was not called")
 	}
 }
+
+// TestVFSNotifyInvalidationEmitsParent covers the publisher used after a
+// driver-level copy bypasses the Committer: the changed path and its parent
+// directory must both be announced to subscribed FUSE sessions.
+func TestVFSNotifyInvalidationEmitsParent(t *testing.T) {
+	t.Parallel()
+	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	var paths []string
+	unsubscribe := fs.SubscribeInvalidations(func(path string) {
+		paths = append(paths, path)
+	})
+	defer unsubscribe()
+
+	if err := fs.NotifyInvalidation(t.Context(), "videos/../videos/movie.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/videos/movie.bin", "/videos"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("invalidation paths = %v, want %v", paths, want)
+	}
+}
+
+// TestNamespaceNotifyInvalidationRoutesToMount checks that a namespace path is
+// routed to the owning mount and re-prefixed for namespace subscribers.
+func TestNamespaceNotifyInvalidationRoutesToMount(t *testing.T) {
+	t.Parallel()
+	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+	ns, err := NewNamespace([]Mount{{Name: "quark", FS: fs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var paths []string
+	unsubscribe := ns.SubscribeInvalidations(func(path string) {
+		paths = append(paths, path)
+	})
+	defer unsubscribe()
+
+	if err := ns.NotifyInvalidation(t.Context(), "/quark/videos/movie.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/quark/videos/movie.bin", "/quark/videos"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("namespace invalidation paths = %v, want %v", paths, want)
+	}
+}

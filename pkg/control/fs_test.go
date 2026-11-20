@@ -21,6 +21,7 @@ type fsStub struct {
 	removedDir  bool
 	renamed     [2]string
 	invalidated []string
+	mkdirCalls  int
 }
 
 func (s *fsStub) Stat(ctx context.Context, path string) (FSEntry, error) {
@@ -54,6 +55,7 @@ func (s *fsStub) WriteAt(ctx context.Context, path string, offset int64, data []
 }
 func (s *fsStub) Flush(ctx context.Context, path string) error { return nil }
 func (s *fsStub) Mkdir(ctx context.Context, path string) (FSEntry, error) {
+	s.mkdirCalls++
 	return FSEntry{Name: "dir", IsDir: true, Path: path}, nil
 }
 func (s *fsStub) Remove(ctx context.Context, path string, dir bool) error {
@@ -186,5 +188,45 @@ func TestFSCopyErrorMapsToNotFound(t *testing.T) {
 	server.handleFS(recorder, httptest.NewRequest(http.MethodPost, "/v1/fs/copy", strings.NewReader(`{"source":"/local/missing","destination":"/local/b"}`)))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("copy status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestFSMutationOperationIDReplaysResponse checks that a repeated idempotency
+// key executes the mutation once and replays the first response.
+func TestFSMutationOperationIDReplaysResponse(t *testing.T) {
+	stub := &fsStub{}
+	server := &CommandServer{fs: stub, operations: newOperationMemo()}
+
+	send := func(id string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/fs/mkdir", strings.NewReader(`{"path":"/local/dir"}`))
+		if id != "" {
+			request.Header.Set(OperationIDHeader, id)
+		}
+		server.handleFS(recorder, request)
+		return recorder
+	}
+
+	first := send("op-1")
+	second := send("op-1")
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("status first=%d second=%d", first.Code, second.Code)
+	}
+	if stub.mkdirCalls != 1 {
+		t.Fatalf("mkdir calls = %d, want 1 for a repeated operation id", stub.mkdirCalls)
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("replayed body = %q, want %q", second.Body.String(), first.Body.String())
+	}
+
+	third := send("op-2")
+	if third.Code != http.StatusOK || stub.mkdirCalls != 2 {
+		t.Fatalf("new operation id: status=%d calls=%d, want 200/2", third.Code, stub.mkdirCalls)
+	}
+
+	// No key means no dedup: the handler runs again.
+	fourth := send("")
+	if fourth.Code != http.StatusOK || stub.mkdirCalls != 3 {
+		t.Fatalf("keyless: status=%d calls=%d, want 200/3", fourth.Code, stub.mkdirCalls)
 	}
 }

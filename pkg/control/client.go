@@ -77,6 +77,9 @@ func (c *Client) PostJSON(ctx context.Context, path string, value any) ([]byte, 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if id := operationID(ctx); id != "" {
+		req.Header.Set(OperationIDHeader, id)
+	}
 	return c.do(req, path)
 }
 

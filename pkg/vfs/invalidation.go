@@ -1,10 +1,13 @@
 package vfs
 
 import (
-	"github.com/yinzhenyu/qrypt/pkg/logging"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
+	"context"
+	pathpkg "path"
 	"strings"
 	"sync"
+
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 type invalidationState struct {
@@ -57,6 +60,22 @@ func (s *invalidationState) emit(path string) {
 
 func (v *VFS) SubscribeInvalidations(listener func(string)) func() {
 	return v.invalidations.subscribe(listener)
+}
+
+// NotifyInvalidation publishes stale kernel-view paths for path and its parent
+// directory. Mutations that bypass the Committer (for example a driver-level
+// copy) use it so subscribed FUSE sessions drop cached attributes and directory
+// entries within the notification window. It does not drop qrypt caches.
+func (v *VFS) NotifyInvalidation(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	clean := vfstypes.CleanVirtualPath(path)
+	v.emitInvalidation(clean)
+	if parent := pathpkg.Dir(clean); parent != clean {
+		v.emitInvalidation(parent)
+	}
+	return nil
 }
 
 // emitInvalidation publishes one stale kernel-view path (glossary: 内核视图

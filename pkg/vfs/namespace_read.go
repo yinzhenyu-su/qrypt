@@ -50,6 +50,19 @@ func (n *Namespace) InvalidateListCache(ctx context.Context, path string) error 
 	return mount.InvalidateListCache(ctx, rest)
 }
 
+// NotifyInvalidation publishes stale kernel-view paths for a namespace path so
+// FUSE sessions subscribed to the namespace refresh it.
+func (n *Namespace) NotifyInvalidation(ctx context.Context, path string) error {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return err
+	}
+	if root {
+		return nil
+	}
+	return mount.NotifyInvalidation(ctx, rest)
+}
+
 func (n *Namespace) ClearReadCacheForMount(name string) error {
 	name = vfstypes.CleanMountName(name)
 	n.mu.RLock()

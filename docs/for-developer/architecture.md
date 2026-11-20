@@ -164,6 +164,15 @@ so nothing else would observe it). Background list fetches compare a mutation
 generation before persisting, so a listing that raced a mutation is refetched
 instead of cached.
 
+Every mutating RPC carries an `X-Qrypt-Operation-Id` header. The CLI data plane
+generates one per logical mutation and mostly retries verbatim; the control
+server replays the recorded response for a repeated id within ten minutes, so a
+transport retry cannot apply the same mkdir/remove/rename/copy twice. Direct
+driver copies also publish `NotifyInvalidation` for the copied path and its
+parent, so subscribed FUSE sessions drop their kernel attribute and directory
+caches instead of waiting for the attribute/entry timeout (one second by
+default) to expire.
+
 `internal/cli/fs/core_client.go` owns the connect-or-lazily-start helper; the
 test suite pins `QRYPT_CORE_FS_REQUIRED=0` to keep exercising the legacy
 in-process path for `fs sync` (which still needs a wait-for-all-transfers
