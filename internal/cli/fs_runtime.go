@@ -48,9 +48,9 @@ func openFileSystem(cmd *cobra.Command) (context.Context, builtFS, func(), error
 	var fs builtFS
 	var cleanup func()
 	if selectedMount != "" {
-		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, selectedMount, true, bandwidth)
+		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, state.path, selectedMount, true, bandwidth)
 	} else {
-		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, "", true, bandwidth)
+		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, state.path, "", true, bandwidth)
 	}
 	if err != nil {
 		stop()

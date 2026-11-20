@@ -33,7 +33,7 @@ var packagePolicy = map[string]map[string]bool{
 	"config":       allow("crypt", "drive", "util"),
 	"contracttest": allow("drive", "vfs"),
 	"control":      allow("buildinfo", "contracttest", "drive", "logging", "share", "task", "util", "vfs"),
-	"core":         allow("config", "control", "crypt", "drive", "limits", "logging", "media", "share", "task", "util", "vfs"),
+	"core":         allow("buildinfo", "config", "control", "crypt", "drive", "limits", "logging", "media", "share", "task", "util", "vfs"),
 	"crypt":        allow("drive"),
 	"drive":        allow("clock", "readbudget", "util"),
 	"drivers":      allow("drive", "logging", "testsupport", "util"),

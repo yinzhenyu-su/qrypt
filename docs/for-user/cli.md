@@ -162,6 +162,21 @@ qrypt mount --isolated --name quark-encrypt --isolated-log-level debug
 
 挂载成功后会向标准输出打印一段 JSON（`mount_point`、`qrypt_home`、`config`、`mounts`），供脚本定位临时挂载点；正常退出（`Ctrl+C`、`SIGTERM`、`SIGHUP`）或出错返回时自动卸载并删除临时目录。进程被 `SIGKILL` 或机器断电时来不及清理，会留下临时目录和失联的挂载点，可用 `./scripts/ci/test-layers.sh clean-temp` 回收（残留挂载需要 `QRYPT_TEMP_FORCE_UNMOUNT=1` 才强制卸载）。`--isolated-cache` 调整读缓存大小（默认 `2G`），`--isolated-log-file` 把结构化日志写到指定文件，`--isolated-keep` 保留临时目录以便排查。也可以在隔离挂载上运行 `qrypt probe tune read`、`qrypt probe test read --path` 等只读探针，不需要修改配置文件里的 `test_enabled`。
 
+## 常驻 Core
+
+```sh
+qrypt core serve [--detach | --foreground] [--keep] [--idle-timeout 20m] [--log FILE]
+qrypt core status [--json]
+qrypt core stop [--drain] [--force]
+```
+
+缓存、上传日志和挂载状态由 Core 持有。同一份工作目录（`storage.work_dir`，未配置时是 `~/.qrypt`）同一时刻只允许一个 Core，避免两个进程同时写上传日志和读缓存索引。`qrypt core serve` 启动后会常驻，`core status` 查看状态，`core stop` 请求退出。
+
+- `--detach` 在后台启动（重新执行自身并脱离当前会话），命令立即返回；配合 `--log FILE` 记录后台日志。`--foreground` 在当前终端运行。
+- 默认 20 分钟没有活动（无挂载、无进行中的任务或上传）后自动退出；`--keep` 关闭空闲退出，`--idle-timeout` 调整空闲时间。
+- 启动时会记录配置指纹。用不同配置再次启动会被拒绝，需要先停止再用当前配置重启；`core status` 在 Core 未运行时显示 `stopped`，锁仍被持有但控制端点不可达时显示 `unreachable` 并给出持锁进程。
+- 在 Core 运行期间，其他会打开同一工作目录的进程（`fs`、再次 `mount`、再次 `core serve`）会被拒绝并提示已有运行时持有该状态；先 `core stop`。迁移期这个约束同样适用于 `qrypt mount`：`qrypt mount` 运行期间 `qrypt fs` 命令会被拒绝，后续版本会把 `fs`/`mount` 改为经 Core 的客户端，届时即可同时使用。
+
 ## 文件系统操作
 
 ```sh

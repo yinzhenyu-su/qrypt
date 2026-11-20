@@ -135,6 +135,23 @@ full diagnostics surface on both `*VFS` and `*Namespace`
    this Core API and adapts it for gomobile; desktop CLI/FUSE paths may also use
    the constructed `vfs.FileSystem` where appropriate.
 
+
+### Single Writer and Resident Core
+
+A storage root (work dir) is owned by at most one runtime at a time. The
+`pkg/core/ownerlock` package takes a `work_dir/owner.lock` advisory lock before
+the VFS and its workers are built, and holds it until `Core.Close` has stopped
+the workers and flushed caches. `pkg/core.BuildFileSystem` acquires it when
+`Options.Owner` is set; `qrypt core serve` keeps the resulting Core resident and
+exposes `GET /v1/control/status` / `POST /v1/control/shutdown` over the control
+endpoint for `qrypt core status` and `qrypt core stop`.
+
+Several runtimes in one process (for example `fs copy` opening both ends, or
+`Core.Reload` opening a replacement before closing the old instance) share the
+same lease through an in-process registry; the OS lock only excludes other
+processes. The migration is staged: legacy `fs`/`mount` commands still build
+their own runtime but respect the same lock, and later issues replace those
+paths with Core clients.
 This keeps construction policy out of VFS and keeps provider details out of the
 mount layer.
 
