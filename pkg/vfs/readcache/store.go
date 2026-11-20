@@ -808,15 +808,18 @@ func (c *Store) handleReadCacheWrites(writes []readCacheWrite) {
 		if recovered := recover(); recovered != nil {
 			c.log.Warnf("[CACHE] async put chunk panic recovered writes=%d panic=%v", len(writes), recovered)
 		}
-		for range writes {
-			c.cacheWriteWG.Done()
-		}
+		// Drain the accounting before releasing waiters: WaitReadCacheWrites
+		// promises that no write bytes or in-flight entries remain once it
+		// returns, and tests (and flush paths) rely on that ordering.
 		c.cacheWriteMu.Lock()
 		for _, write := range writes {
 			c.cacheWriteBytes.Add(-int64(len(write.data)))
 			delete(c.cacheWritesInFlight, chunkKey(write.fid, write.index))
 		}
 		c.cacheWriteMu.Unlock()
+		for range writes {
+			c.cacheWriteWG.Done()
+		}
 	}()
 	groups := map[string][]readCacheWrite{}
 	var paths []string
