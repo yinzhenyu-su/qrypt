@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -47,6 +48,29 @@ func NewClient(socketPath string) (*Client, error) {
 			Transport: transport,
 		},
 	}, nil
+}
+
+// FSResolve resolves one namespace path to its backend identity.
+func (c *Client) FSResolve(ctx context.Context, path string) (FSResolveResult, error) {
+	var out FSResolveResult
+	body, err := c.Get(ctx, "/v1/fs/resolve?path="+url.QueryEscape(path))
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// CloseIdleConnections releases pooled keep-alive connections. One-shot CLI
+// commands call it on exit so a finished command leaves no transport
+// goroutines behind (tests verify this with goleak).
+func (c *Client) CloseIdleConnections() {
+	if c == nil || c.httpClient == nil {
+		return
+	}
+	c.httpClient.CloseIdleConnections()
 }
 
 func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {

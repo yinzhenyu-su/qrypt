@@ -180,10 +180,11 @@ tasks (permanent upload failures surface immediately). `fsclient.FS.WaitIdle`
 exposes that call; it is the only whole-filesystem settle primitive, so it is
 reserved for commands with a global wait contract.
 
-`internal/cli/fs/core_client.go` owns the connect-or-lazily-start helper; the
-test suite pins `QRYPT_CORE_FS_REQUIRED=0` to keep exercising the legacy
-in-process path for `fs list --remote-names` / `fs copy --dry-run`, which rely
-on in-process backend details.
+`internal/cli/fs/core_client.go` owns the connect-or-lazily-start helper. Every
+`fs` command goes through the Core data plane; there is no in-process fallback
+or environment switch left. `fs list --remote-names` and `fs copy --dry-run`
+also run through the data plane (the resolve endpoint returns remote names and
+dry-run only needs reads).
 
 Journal maintenance (`fs journal replay/prune`) edits the upload journal files
 directly, while a resident Core keeps the journal in memory and rewrites it on
@@ -225,12 +226,12 @@ fingerprint from `GET /v1/control/status` before returning a data-plane client;
 a mismatch tells the user to restart the Core instead of letting two builds or
 two configurations write the same state.
 
-Several runtimes in one process (for example `fs copy` opening both ends, or
-`Core.Reload` opening a replacement before closing the old instance) share the
-same lease through an in-process registry; the OS lock only excludes other
-processes. The migration is staged: legacy `fs`/`mount` commands still build
-their own runtime but respect the same lock, and later issues replace those
-paths with Core clients.
+Several runtimes in one process (for example a test helper or `Core.Reload`
+opening a replacement before closing the old instance) share the same lease
+through an in-process registry; the OS lock only excludes other processes.
+Every `fs` command now goes through `internal/cli/core.EnsureClient` and the
+Core data plane, so the only remaining in-process runtime owner is the
+`qrypt core serve` process itself.
 ### Core-Hosted Mounts
 
 FUSE sessions are hosted by the resident Core so every client shares one

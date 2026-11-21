@@ -266,6 +266,12 @@ func looksLikeTestBinary(exe string) bool {
 	return strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".test.exe")
 }
 
+// EnsureCoreHook, when non-nil, replaces the detached `core serve` spawn used
+// by EnsureCore. The CLI test binary installs it to run a Core in-process: it
+// must not re-exec itself as a server, and tests need the real data plane.
+// Production leaves it nil.
+var EnsureCoreHook func(ctx context.Context, rt cliruntime.Runtime, state cliruntime.ConfigState) error
+
 func EnsureCore(ctx context.Context, rt cliruntime.Runtime, state cliruntime.ConfigState) error {
 	if state.Cfg == nil {
 		return fmt.Errorf("core: config required")
@@ -274,6 +280,9 @@ func EnsureCore(ctx context.Context, rt cliruntime.Runtime, state cliruntime.Con
 	endpoint := corepkg.ControlSocketPath(state.Cfg, corepkg.RuntimeLayout{RunDir: runDir})
 	if _, err := fetchStatus(ctx, endpoint); err == nil {
 		return nil
+	}
+	if EnsureCoreHook != nil {
+		return EnsureCoreHook(ctx, rt, state)
 	}
 	exe, err := spawnExecutable()
 	if err != nil {

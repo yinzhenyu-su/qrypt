@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -183,18 +184,22 @@ func CopyFile(ctx context.Context, fs executorFS, rel string, source, destinatio
 	dstPath := JoinVFS(destination.VFSPath, rel)
 	switch {
 	case source.Kind == TargetVFS && destination.Kind == TargetVFS:
-		copier, ok := fs.(diagnostics.DriverCopySource)
-		if !ok {
-			return fmt.Errorf("direct copy requires a filesystem with driver debug resolution")
+		if copier, ok := fs.(diagnostics.DriverCopySource); ok {
+			// Propagate the source mtime through the driver copy so a
+			// destination backend that can persist it (CapabilityMtime)
+			// converges on the next run; other backends ignore the stamp.
+			result := drivecopy.RunDirectDriverCopyWithModTime(ctx, copier, srcPath, dstPath, true, UnixModTime(sourceModTime))
+			if !result.Pass {
+				return fmt.Errorf("direct copy: %s", drivecopy.DriverCopyError(result))
+			}
+			return nil
 		}
-		// Propagate the source mtime through the driver copy so a
-		// destination backend that can persist it (CapabilityMtime)
-		// converges on the next run; other backends ignore the stamp.
-		result := drivecopy.RunDirectDriverCopyWithModTime(ctx, copier, srcPath, dstPath, true, UnixModTime(sourceModTime))
-		if !result.Pass {
-			return fmt.Errorf("direct copy: %s", drivecopy.DriverCopyError(result))
+		// Client filesystems (the resident Core data plane) do not expose the
+		// driver directly: stream through the shared reader/writer interface.
+		if err := copyVFSFile(ctx, fs, srcPath, dstPath); err != nil {
+			return err
 		}
-		return nil
+		return SetModTime(ctx, fs, dstPath, sourceModTime)
 	case source.Kind == TargetLocal && destination.Kind == TargetVFS:
 		if err := PutFile(ctx, fs, OSPath(source.LocalPath, rel), dstPath); err != nil {
 			return err
@@ -212,6 +217,42 @@ func CopyFile(ctx context.Context, fs executorFS, rel string, source, destinatio
 		return nil
 	}
 	return fmt.Errorf("unsupported sync pair: %v -> %v", source.Kind, destination.Kind)
+}
+
+// copyVFSFile streams one VFS file to another path through the filesystem
+// interface. It is the fallback for client filesystems that cannot run a
+// backend-to-backend copy.
+func copyVFSFile(ctx context.Context, fs executorFS, srcPath, dstPath string) error {
+	entry, err := fs.Stat(ctx, srcPath)
+	if err != nil {
+		return err
+	}
+	reader, err := fs.Read(ctx, srcPath, 0, entry.Size)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	if err := fs.Create(ctx, dstPath); err != nil {
+		return err
+	}
+	buf := make([]byte, 256*1024)
+	var offset int64
+	for {
+		n, readErr := reader.Read(buf)
+		if n > 0 {
+			if _, writeErr := fs.WriteAt(ctx, dstPath, buf[:n], offset); writeErr != nil {
+				return writeErr
+			}
+			offset += int64(n)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	return fs.Flush(ctx, dstPath)
 }
 
 // SetModTime applies the source mtime to a VFS path when the filesystem

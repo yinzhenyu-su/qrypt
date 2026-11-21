@@ -1,16 +1,10 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"os/signal"
-	"time"
-
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
-	"github.com/yinzhenyu/qrypt/pkg/logging"
-	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
@@ -26,112 +20,7 @@ type builtFS interface {
 	vfs.FileSystem
 	vfs.Lifecycle
 	vfs.UploadInspector
-	TaskSource() task.Source
 	diagnostics.DebugSnapshotProvider
-}
-
-func openFileSystem(cmd *cobra.Command) (context.Context, builtFS, func(), error) {
-	state, err := commandConfig(cmd)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if state.cfg == nil {
-		return nil, nil, nil, configNotFoundError()
-	}
-	ctx, stop := signal.NotifyContext(commandContext(cmd), shutdownSignals()...)
-	selectedMount := commandFSMount(cmd)
-	bandwidth, err := bandwidthOverrideFromFlags(cmd)
-	if err != nil {
-		stop()
-		return nil, nil, nil, err
-	}
-	var fs builtFS
-	var cleanup func()
-	if selectedMount != "" {
-		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, state.path, selectedMount, true, bandwidth)
-	} else {
-		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, state.path, "", true, bandwidth)
-	}
-	if err != nil {
-		stop()
-		return nil, nil, nil, err
-	}
-	fs.Start(ctx)
-	return ctx, fs, func() {
-		// Shut down in dependency order: wait for the filesystem's workers
-		// (journal/staging writes, read-cache flush) to finish BEFORE
-		// cleaning up external resources, then stop the signal context.
-		// Cancelling first would make Close asynchronous and let cleanup
-		// race the still-running workers.
-		if err := fs.Close(context.Background()); err != nil {
-			logging.L.Warnf("[CLI] filesystem close: %v", err)
-		}
-		cleanup()
-		stop()
-	}, nil
-}
-
-func commandFSMount(cmd *cobra.Command) string {
-	return cliruntime.FlagStringValue(cmd, "mount")
-}
-
-// fileSystemIdlePollInterval is how often a wait polls the filesystem while
-// operations are still pending. Production keeps the 50ms cadence; tests
-// shorten it (see TestMain) because most CLI commands end with an idle wait
-// and a coarse poll otherwise dominates their runtime.
-var fileSystemIdlePollInterval = 50 * time.Millisecond
-
-func waitFileSystemIdle(ctx context.Context, fs cliruntime.OpenedFileSystem, timeout time.Duration) error {
-	// No deadline (timeout <= 0): wait until the filesystem is idle or the
-	// context is cancelled (Ctrl-C). fs sync uses this because its transfer
-	// size is unbounded; a fixed timeout would report a healthy slow upload
-	// as a failure. A non-positive timer never fires, so stopping it keeps
-	// the select below simple.
-	timer := time.NewTimer(timeout)
-	if timeout <= 0 {
-		timer.Stop()
-	}
-	defer timer.Stop()
-	ticker := time.NewTicker(fileSystemIdlePollInterval)
-	defer ticker.Stop()
-	for {
-		uploads, deletes, err := fileSystemActivity(ctx, fs)
-		if err != nil {
-			return err
-		}
-		pending := cliruntime.PendingFiles(fs)
-		if len(pending) == 0 && uploads == 0 && deletes == 0 {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return fmt.Errorf("filesystem operations still pending after %s", timeout)
-		case <-ticker.C:
-		}
-	}
-}
-
-func fileSystemActivity(ctx context.Context, fs cliruntime.OpenedFileSystem) (uploads, deletes int, err error) {
-	items, err := fs.TaskSource().ListTasks(ctx, task.Filter{})
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, item := range items {
-		switch item.Type {
-		case task.TypeDeleteRemote:
-			// Delete records remain until completion or cancellation, including
-			// the handoff from timer to executor. A failed delete must not be
-			// reported as successfully drained either.
-			deletes++
-		case task.TypeUploadRemote:
-			if item.State == task.StateRunning || item.State == task.StateCanceling {
-				uploads++
-			}
-		}
-	}
-	return uploads, deletes, nil
 }
 
 // bandwidthOverrideFromFlags maps the fs --bwlimit flags onto bandwidth

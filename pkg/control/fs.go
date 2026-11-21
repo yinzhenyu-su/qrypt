@@ -26,6 +26,10 @@ type FSEntry struct {
 	IsDir    bool      `json:"is_dir"`
 	Size     int64     `json:"size"`
 	ModTime  time.Time `json:"mod_time,omitempty"`
+	// RemoteName carries the backend name when it differs from Name (encrypted
+	// mounts). It is only serialized for the list/stat responses; writes never
+	// send it because the owner resolves the path itself.
+	RemoteName string `json:"remote_name,omitempty"`
 }
 
 // FSCopyRequest is a direct backend-to-backend copy request.
@@ -73,6 +77,17 @@ type FSService interface {
 	// Copy runs a direct backend-to-backend copy and returns the driver_copy
 	// result document.
 	Copy(ctx context.Context, req FSCopyRequest) (json.RawMessage, error)
+	// Resolve reports the backend identity (remote name) of one namespace path
+	// for diagnostics-style clients such as `fs list --remote-names`.
+	Resolve(ctx context.Context, path string) (FSResolveResult, error)
+}
+
+// FSResolveResult is the backend identity of one namespace path.
+type FSResolveResult struct {
+	Path       string `json:"path"`
+	PlainName  string `json:"plain_name,omitempty"`
+	RemoteName string `json:"remote_name,omitempty"`
+	IsDir      bool   `json:"is_dir,omitempty"`
 }
 
 // FSSpace is the transport view of drive.Space.
@@ -183,6 +198,8 @@ func (s *CommandServer) handleFSOperation(w http.ResponseWriter, r *http.Request
 		s.handleFSWait(w, r)
 	case "idle":
 		s.handleFSIdle(w, r)
+	case "resolve":
+		s.handleFSResolve(w, r)
 	default:
 		writeNotFound(w, "unknown filesystem operation")
 	}
@@ -453,6 +470,28 @@ func (s *CommandServer) handleFSWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"path": req.Path, "settled": true})
+}
+
+func (s *CommandServer) handleFSResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if s.fs == nil {
+		writeUnavailable(w, "fs service unavailable")
+		return
+	}
+	path, err := fsQueryPath(r)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	info, err := s.fs.Resolve(r.Context(), path)
+	if err != nil {
+		writeFSError(w, err)
+		return
+	}
+	writeJSON(w, info)
 }
 
 func (s *CommandServer) handleFSIdle(w http.ResponseWriter, r *http.Request) {

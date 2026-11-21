@@ -18,6 +18,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 // FS is a remote vfs.FileSystem backed by control.Client.
@@ -217,7 +218,7 @@ func (f *FS) WaitIdle(ctx context.Context, timeout time.Duration) error {
 }
 
 func entryFromDTO(entry control.FSEntry) drive.Entry {
-	return drive.Entry{
+	out := drive.Entry{
 		ID:       entry.ID,
 		ParentID: entry.ParentID,
 		Name:     entry.Name,
@@ -225,6 +226,28 @@ func entryFromDTO(entry control.FSEntry) drive.Entry {
 		Size:     entry.Size,
 		ModTime:  entry.ModTime,
 	}
+	if entry.RemoteName != "" {
+		out = drive.WrapRemoteName(out, entry.RemoteName)
+	}
+	return out
 }
 
 var _ = drive.Entry{}
+
+// DebugResolve resolves a namespace path to its backend identity so diag
+// clients such as `fs list --remote-names` work against the Core data plane.
+func (f *FS) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (diagnostics.DebugResolveInfo, error) {
+	info, err := f.client.FSResolve(ctx, path)
+	if err != nil {
+		return diagnostics.DebugResolveInfo{}, err
+	}
+	out := diagnostics.DebugResolveInfo{
+		Path:      info.Path,
+		PlainName: info.PlainName,
+		IsDir:     info.IsDir,
+	}
+	if includeRemoteName {
+		out.RemoteName = info.RemoteName
+	}
+	return out, nil
+}

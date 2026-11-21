@@ -4,10 +4,6 @@ set -euo pipefail
 # Human-facing output is localized from the system locale. CI assertions below
 # intentionally match English text, so pin the language.
 export QRYPT_LANG=en
-# The legacy section below exercises the in-process filesystem path. Keep the
-# resident-Core data plane in its own section further down, because a running
-# Core owns the state directory and rejects a second in-process runtime.
-export QRYPT_CORE_FS_REQUIRED=0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKDIR="$(mktemp -d)"
@@ -67,6 +63,23 @@ qrypt() {
   "$BINARY" "$@" --config "$CONFIG"
 }
 
+# All fs commands go through the resident Core now. Start it once up front so
+# the smoke exercises the real socket path and a stable owner for the whole run.
+"$BINARY" core serve --foreground --config "$CONFIG" &
+CORE_PID=$!
+core_ready=
+for _ in $(seq 1 100); do
+  if "$BINARY" core status --config "$CONFIG" 2>/dev/null | grep -q "state: running"; then
+    core_ready=1
+    break
+  fi
+  sleep 0.1
+done
+if [ -z "$core_ready" ]; then
+  echo "resident Core did not become ready" >&2
+  exit 1
+fi
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -118,42 +131,5 @@ if qrypt fs pending | grep . >/dev/null; then
   qrypt fs pending --verbose >&2
   exit 1
 fi
-
-# Resident Core data plane: desktop CLI list/stat/put/mv go through a long-lived
-# Core over its control socket instead of opening an in-process VFS.
-export QRYPT_CORE_FS_REQUIRED=1
-"$BINARY" core serve --foreground --keep --config "$CONFIG" &
-CORE_PID=$!
-core_ready=
-for _ in $(seq 1 100); do
-  if "$BINARY" core status --config "$CONFIG" 2>/dev/null | grep -q "state: running"; then
-    core_ready=1
-    break
-  fi
-  sleep 0.1
-done
-if [ -z "$core_ready" ]; then
-  echo "resident Core did not become ready" >&2
-  exit 1
-fi
-
-qrypt fs list / | grep "local" >/dev/null
-qrypt fs put "$LOCAL" /local/core.txt --wait-timeout 10s
-cmp -s "$LOCAL" "$REMOTE/core.txt"
-qrypt fs stat /local/core.txt | grep "name: core.txt" >/dev/null
-qrypt fs mv /local/core.txt /local/core-moved.txt
-for _ in $(seq 1 100); do
-  if qrypt fs list /local 2>/dev/null | grep -q "core-moved.txt"; then
-    break
-  fi
-  sleep 0.1
-done
-qrypt fs list /local | grep "core-moved.txt" >/dev/null
-cmp -s "$LOCAL" "$REMOTE/core-moved.txt"
-
-"$BINARY" core stop --config "$CONFIG" >/dev/null
-wait "$CORE_PID" 2>/dev/null || true
-CORE_PID=
-export QRYPT_CORE_FS_REQUIRED=0
 
 echo "localfs smoke test passed"

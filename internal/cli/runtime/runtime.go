@@ -15,7 +15,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
-	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -29,18 +28,6 @@ const (
 	ExitPartial  = 3
 	ExitMismatch = 4
 )
-
-// OpenedFileSystem is the surface OpenFileSystem returns. The one-shot fs
-// commands need file operations plus upload inspection and task state
-// (idle-wait, pending uploads, activity counts), so the seam carries them
-// typed instead of re-discovering them via any-assertions. The filesystem is
-// already Started when a caller receives it; the returned cleanup function
-// owns the Close.
-type OpenedFileSystem interface {
-	vfs.FileSystem
-	vfs.UploadInspector
-	TaskSource() task.Source
-}
 
 // MountFileSystem is a built-but-not-started filesystem. The mount command
 // owns the lifecycle: it starts the filesystem, then closes it in dependency
@@ -89,9 +76,7 @@ type FileSystemBuilder interface {
 	DefaultCacheDir() string
 	MountOptionsFromConfig(cfg *config.Config) (mount.Options, error)
 	MountPointFromConfig(cfg *config.Config) (string, error)
-	OpenFileSystem(cmd *cobra.Command) (context.Context, OpenedFileSystem, func(), error)
 	ShutdownContext(cmd *cobra.Command) (context.Context, func())
-	WaitFileSystemIdle(ctx context.Context, fs OpenedFileSystem, timeout time.Duration) error
 }
 
 // Runtime is the seam the command subpackages share: building and opening the

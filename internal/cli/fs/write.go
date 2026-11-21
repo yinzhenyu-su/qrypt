@@ -51,15 +51,12 @@ func runPut(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if err != nil {
 			return err
 		}
-		if waiter, ok := fs.(interface {
+		waiter, ok := fs.(interface {
 			WaitPath(context.Context, string, time.Duration) error
-		}); ok {
-			return waiter.WaitPath(ctx, args[1], waitTimeout)
-		}
-		opened, ok := fs.(cliruntime.OpenedFileSystem)
+		})
 		if !ok {
 			return fmt.Errorf("filesystem does not expose upload durability")
 		}
-		return rt.WaitFileSystemIdle(ctx, opened, waitTimeout)
+		return waiter.WaitPath(ctx, args[1], waitTimeout)
 	}
 }
