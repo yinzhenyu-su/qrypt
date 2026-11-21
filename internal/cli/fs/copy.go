@@ -129,7 +129,7 @@ func runCopyThroughCore(rt cliruntime.Runtime, cmd *cobra.Command, ctx context.C
 			return rt.UsageError(cmd, "source %q is a directory (use --recursive to copy directories)", args[0])
 		}
 		if dryRun {
-			return rt.UsageError(cmd, "--dry-run requires the in-process filesystem; run with QRYPT_CORE_FS_REQUIRED=0")
+			return RunCopyDryRun(cmd, ctx, fs, args[0], args[1])
 		}
 		raw, err := client.CopyDirect(ctx, args[0], args[1], true, force)
 		if err != nil {
@@ -157,7 +157,7 @@ func runCopyThroughCore(rt cliruntime.Runtime, cmd *cobra.Command, ctx context.C
 		return nil
 	}
 	if dryRun {
-		return rt.UsageError(cmd, "--dry-run requires the in-process filesystem; run with QRYPT_CORE_FS_REQUIRED=0")
+		return RunCopyDryRun(cmd, ctx, fs, args[0], args[1])
 	}
 	raw, err := client.CopyDirect(ctx, args[0], args[1], false, force)
 	if err != nil {

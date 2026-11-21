@@ -83,7 +83,7 @@ func runSync(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		ctx = vfs.WithReadIntent(ctx, vfs.ReadIntentBulk)
 
 		result, err := syncer.Run(ctx, fs, func(context.Context, any) error {
-			return waitFilesystemSettled(ctx, rt, fs, 0)
+			return waitFilesystemSettled(ctx, fs, 0)
 		}, req)
 		if err != nil {
 			if errors.Is(err, syncer.ErrNoSession) {

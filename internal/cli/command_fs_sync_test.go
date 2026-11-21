@@ -13,7 +13,7 @@ import (
 
 func setupSyncTest(t *testing.T) (configPath, remote, local string) {
 	t.Helper()
-	t.Setenv("QRYPT_HOME", filepath.Join(t.TempDir(), "qrypt-home"))
+	t.Setenv("QRYPT_HOME", shortTempDir(t))
 	configPath, remote, local = setupCheckTest(t)
 	return configPath, remote, local
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	pathpkg "path"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,10 @@ func (s *fsStub) Truncate(ctx context.Context, path string, size int64) error { 
 func (s *fsStub) InvalidateList(ctx context.Context, path string) error {
 	s.invalidated = append(s.invalidated, path)
 	return nil
+}
+
+func (s *fsStub) Resolve(ctx context.Context, path string) (FSResolveResult, error) {
+	return FSResolveResult{Path: path, PlainName: pathpkg.Base(path)}, nil
 }
 
 func (s *fsStub) WaitIdle(ctx context.Context, timeout time.Duration) error {

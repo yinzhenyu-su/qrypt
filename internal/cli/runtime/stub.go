@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/pkg/config"
@@ -24,10 +23,8 @@ type TestRuntime struct {
 	ExitErrorFn                       func(int, error) error
 	MountOptionsFromConfigFn          func(*config.Config) (mount.Options, error)
 	MountPointFromConfigFn            func(*config.Config) (string, error)
-	OpenFileSystemFn                  func(*cobra.Command) (context.Context, OpenedFileSystem, func(), error)
 	ShutdownContextFn                 func(*cobra.Command) (context.Context, func())
 	UsageErrorFn                      func(*cobra.Command, string, ...any) error
-	WaitFileSystemIdleFn              func(context.Context, OpenedFileSystem, time.Duration) error
 	WithFSBandwidthFlagsFn            func(*cobra.Command) *cobra.Command
 	WithConfigFlagFn                  func(*cobra.Command) *cobra.Command
 	WithPersistentConfigFlagFn        func(*cobra.Command) *cobra.Command
@@ -105,13 +102,6 @@ func (t TestRuntime) MountPointFromConfig(cfg *config.Config) (string, error) {
 	return t.MountPointFromConfigFn(cfg)
 }
 
-func (t TestRuntime) OpenFileSystem(cmd *cobra.Command) (context.Context, OpenedFileSystem, func(), error) {
-	if t.OpenFileSystemFn == nil {
-		panic(unsetRuntimeMethod("OpenFileSystem"))
-	}
-	return t.OpenFileSystemFn(cmd)
-}
-
 func (t TestRuntime) ShutdownContext(cmd *cobra.Command) (context.Context, func()) {
 	if t.ShutdownContextFn == nil {
 		panic(unsetRuntimeMethod("ShutdownContext"))
@@ -124,13 +114,6 @@ func (t TestRuntime) UsageError(cmd *cobra.Command, format string, args ...any) 
 		panic(unsetRuntimeMethod("UsageError"))
 	}
 	return t.UsageErrorFn(cmd, format, args...)
-}
-
-func (t TestRuntime) WaitFileSystemIdle(ctx context.Context, fs OpenedFileSystem, timeout time.Duration) error {
-	if t.WaitFileSystemIdleFn == nil {
-		panic(unsetRuntimeMethod("WaitFileSystemIdle"))
-	}
-	return t.WaitFileSystemIdleFn(ctx, fs, timeout)
 }
 
 func (t TestRuntime) WithFSBandwidthFlags(cmd *cobra.Command) *cobra.Command {

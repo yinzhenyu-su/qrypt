@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"os/signal"
-	"time"
 
 	"github.com/spf13/cobra"
 	clidebug "github.com/yinzhenyu/qrypt/internal/cli/debug"
@@ -37,10 +36,6 @@ func (cliRuntime) OpenCoreForMount(ctx context.Context, cfg *config.Config, conf
 		ProbeListen:   probeListen,
 		Owner:         &core.OwnerOptions{ConfigPath: configPath},
 	})
-}
-
-func (cliRuntime) OpenFileSystem(cmd *cobra.Command) (context.Context, cliruntime.OpenedFileSystem, func(), error) {
-	return openFileSystem(cmd)
 }
 
 func (cliRuntime) CommandConfig(cmd *cobra.Command) (cliruntime.ConfigState, error) {
@@ -102,10 +97,6 @@ func (cliRuntime) ShutdownContext(cmd *cobra.Command) (context.Context, func()) 
 
 func (cliRuntime) UsageError(cmd *cobra.Command, format string, args ...any) error {
 	return commandUsageError(cmd, format, args...)
-}
-
-func (cliRuntime) WaitFileSystemIdle(ctx context.Context, fs cliruntime.OpenedFileSystem, timeout time.Duration) error {
-	return waitFileSystemIdle(ctx, fs, timeout)
 }
 
 func (cliRuntime) WithConfigFlag(cmd *cobra.Command) *cobra.Command {

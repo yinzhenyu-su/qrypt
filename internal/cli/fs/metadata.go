@@ -109,7 +109,7 @@ func runRm(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 				return err
 			}
 		}
-		if err := waitPathSettled(ctx, rt, fs, args[0], waitTimeout); err != nil {
+		if err := waitPathSettled(ctx, fs, args[0], waitTimeout); err != nil {
 			return err
 		}
 		asJSON, _ := cmd.Flags().GetBool("json")

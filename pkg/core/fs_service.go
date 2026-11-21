@@ -38,6 +38,16 @@ func fsEntryFromDrive(path string, entry drive.Entry) control.FSEntry {
 	}
 }
 
+// fsEntryFromDrive keeps the backend name for encrypted mounts so the CLI can
+// render --remote-names from the owner view instead of plaintext names.
+func fsEntryFromDriveWithRemote(path string, entry drive.Entry) control.FSEntry {
+	out := fsEntryFromDrive(path, entry)
+	if remote, ok := drive.EntryRemoteName(entry); ok && remote != entry.Name {
+		out.RemoteName = remote
+	}
+	return out
+}
+
 func (s coreFSService) fs() vfs.FileSystem {
 	return s.core.fs
 }
@@ -50,7 +60,7 @@ func (s coreFSService) Stat(ctx context.Context, path string) (control.FSEntry, 
 		}
 		return control.FSEntry{}, err
 	}
-	return fsEntryFromDrive(path, entry), nil
+	return fsEntryFromDriveWithRemote(path, entry), nil
 }
 
 // closestSibling returns the entry name in path's parent directory that is
@@ -141,7 +151,7 @@ func (s coreFSService) List(ctx context.Context, path string) ([]control.FSEntry
 	}
 	result := make([]control.FSEntry, 0, len(entries))
 	for _, entry := range entries {
-		result = append(result, fsEntryFromDrive(pathOf(path, entry.Name), entry))
+		result = append(result, fsEntryFromDriveWithRemote(pathOf(path, entry.Name), entry))
 	}
 	return result, nil
 }
@@ -271,7 +281,7 @@ func (s coreFSService) Mkdir(ctx context.Context, path string) (control.FSEntry,
 	if err != nil {
 		return control.FSEntry{}, err
 	}
-	return fsEntryFromDrive(path, entry), nil
+	return fsEntryFromDriveWithRemote(path, entry), nil
 }
 
 func (s coreFSService) Remove(ctx context.Context, path string, dir bool) error {
@@ -300,6 +310,23 @@ var activeTaskStates = []task.State{
 // WaitIdle waits for the whole owner filesystem to lose its pending upload and
 // task work. This is the Core-side replacement for the process-local
 // WaitFileSystemIdle used by `fs sync`.
+func (s coreFSService) Resolve(ctx context.Context, path string) (control.FSResolveResult, error) {
+	resolver, ok := s.fs().(diagnostics.DebugResolver)
+	if !ok {
+		return control.FSResolveResult{}, fmt.Errorf("core: resolve requires a filesystem with driver debug resolution")
+	}
+	info, err := resolver.DebugResolve(ctx, path, true)
+	if err != nil {
+		return control.FSResolveResult{}, err
+	}
+	return control.FSResolveResult{
+		Path:       info.Path,
+		PlainName:  info.PlainName,
+		RemoteName: info.RemoteName,
+		IsDir:      info.IsDir,
+	}, nil
+}
+
 func (s coreFSService) WaitIdle(ctx context.Context, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 30 * time.Second

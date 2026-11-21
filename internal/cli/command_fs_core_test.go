@@ -23,7 +23,6 @@ func TestFSCommandsThroughCore(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	configPath, _ := writeCoreServeTestConfig(t, base)
 	remote := filepath.Join(base, "remote")
-	t.Setenv("QRYPT_CORE_FS_REQUIRED", "1")
 
 	serveRoot := NewRootCommand()
 	var serveOut bytes.Buffer
@@ -244,7 +243,6 @@ func TestFSSyncThroughCore(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	configPath, _ := writeCoreServeTestConfig(t, base)
 	remote := filepath.Join(base, "remote")
-	t.Setenv("QRYPT_CORE_FS_REQUIRED", "1")
 
 	serveRoot := NewRootCommand()
 	var serveOut bytes.Buffer
@@ -319,7 +317,6 @@ func TestFSListRootWithoutCore(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	configPath, _ := writeCoreServeTestConfig(t, base)
-	t.Setenv("QRYPT_CORE_FS_REQUIRED", "1")
 
 	out, err := executeRoot(t, "fs", "--config", configPath, "list", "/", "--json")
 	if err != nil {

@@ -56,6 +56,13 @@ root_path = `+util.TOMLPath(remote)+`
 	if err := os.WriteFile(filepath.Join(remote, "dir", "file.txt"), []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The file was written behind the resident Core's back; refresh the listing
+	// so the externally added child becomes visible before the get.
+	refreshList := testCommand()
+	refreshList.Flags().Bool("refresh", true, "")
+	if err := clifs.NewListCmd(cliRuntime{}).RunE(refreshList, []string{"/local/dir"}); err != nil {
+		t.Fatalf("refresh listing: %v", err)
+	}
 	downloadPath := filepath.Join(tmp, "download.txt")
 	if err := clifs.NewGetCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/dir/file.txt", downloadPath}); err != nil {
 		t.Fatal(err)
@@ -540,20 +547,26 @@ root_path = `+util.TOMLPath(filepath.Join(tmp, "missing"))+`
 		t.Fatalf("expected selected mount listing, got %q", out.String())
 	}
 
-	// A full namespace build skips mounts that fail to initialize (see
-	// "skip failed mounts instead of blocking namespace open") and keeps
-	// serving the working ones, so the build must succeed and list only the
-	// healthy mount.
+	// The namespace root is derived from the configuration, so it lists every
+	// configured mount without initializing any of them. A mount whose backend
+	// cannot initialize fails on use instead of blocking the namespace.
 	root = NewRootCommand()
 	var fullOut bytes.Buffer
 	root.SetOut(&fullOut)
 	root.SetErr(&bytes.Buffer{})
 	root.SetArgs([]string{"fs", "--config", configPath, "list", "/"})
 	if err := root.Execute(); err != nil {
-		t.Fatalf("full namespace build: %v", err)
+		t.Fatalf("full namespace listing: %v", err)
 	}
-	if !strings.Contains(fullOut.String(), "local") || strings.Contains(fullOut.String(), "broken") {
-		t.Fatalf("expected only the healthy mount in the namespace listing, got %q", fullOut.String())
+	if !strings.Contains(fullOut.String(), "local") {
+		t.Fatalf("expected the healthy mount in the namespace listing, got %q", fullOut.String())
+	}
+	root = NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "stat", "/broken"})
+	if err := root.Execute(); err == nil {
+		t.Fatalf("expected the unavailable mount to fail on use")
 	}
 }
 

@@ -99,7 +99,6 @@ root_path = %s
 	counters := &perfCounters{}
 	activePerfCounters.Store(counters)
 	t.Cleanup(func() { activePerfCounters.Store(nil) })
-	t.Setenv("QRYPT_CORE_FS_REQUIRED", "1")
 
 	type coreRun struct {
 		done chan error
