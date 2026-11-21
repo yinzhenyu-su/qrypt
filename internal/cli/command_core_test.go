@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,6 +53,54 @@ func executeRoot(t *testing.T, args ...string) (string, error) {
 	root.SetArgs(args)
 	err := root.Execute()
 	return out.String(), err
+}
+
+func TestCoreEndpointPrintsConfigurationEndpoint(t *testing.T) {
+	base, err := os.MkdirTemp("", "qrypt-core-endpoint-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	configPath, _ := writeCoreServeTestConfig(t, base)
+
+	out, err := executeRoot(t, "core", "endpoint", "--json", "--config", configPath)
+	if err != nil {
+		t.Fatalf("core endpoint --json: %v (%s)", err, out)
+	}
+	var report struct {
+		Endpoint        string `json:"endpoint"`
+		Network         string `json:"network"`
+		RunDir          string `json:"run_dir"`
+		Running         bool   `json:"running"`
+		PID             int    `json:"pid"`
+		ProtocolVersion int    `json:"protocol_version"`
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode endpoint json: %v (%s)", err, out)
+	}
+	if report.Endpoint == "" || !strings.Contains(report.Endpoint, "control") {
+		t.Fatalf("endpoint = %q", report.Endpoint)
+	}
+	if report.Network != "unix" {
+		t.Fatalf("network = %q", report.Network)
+	}
+	if report.RunDir == "" {
+		t.Fatal("expected run_dir")
+	}
+	if report.Running {
+		t.Fatalf("expected running=false with no Core started (pid %d)", report.PID)
+	}
+
+	plain, err := executeRoot(t, "core", "endpoint", "--config", configPath)
+	if err != nil {
+		t.Fatalf("core endpoint: %v (%s)", err, plain)
+	}
+	if !strings.Contains(plain, "endpoint: "+report.Endpoint) {
+		t.Fatalf("plain output missing endpoint: %s", plain)
+	}
+	if !strings.Contains(plain, "running: false") {
+		t.Fatalf("plain output missing running state: %s", plain)
+	}
 }
 
 func TestCoreServeStatusStop(t *testing.T) {

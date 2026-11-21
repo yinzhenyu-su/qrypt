@@ -139,7 +139,8 @@ full diagnostics surface on both `*VFS` and `*Namespace`
 ### CLI Data Plane
 
 `pkg/control` serves `/v1/fs/*` from the owner Core, and `pkg/fsclient` adapts
-that endpoint back into a `vfs.FileSystem`. The read commands (`fs list`,
+that endpoint back into a `vfs.FileSystem`. The wire contract between them is
+specified in [Control Protocol](control-protocol.md). The read commands (`fs list`,
 `fs stat`, `fs cat`, `fs find`, `fs du`, `fs df`, `fs pending`) and the write
 commands (`fs put`, `fs mv`, `fs mkdir`, `fs rm`, `fs copy`, `fs get`,
 `fs check`) connect through this client, so their reads and mutations land on

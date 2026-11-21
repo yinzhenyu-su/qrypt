@@ -24,7 +24,7 @@ func shareActivePlusFailedStates() []task.State {
 
 func (s *CommandServer) shareServiceOrError(w http.ResponseWriter) (shareapi.Service, bool) {
 	if s == nil || s.share == nil {
-		http.Error(w, "share control unavailable: no running Core", http.StatusNotImplemented)
+		writeNotImplemented(w, "share control unavailable: no running Core")
 		return nil, false
 	}
 	return s.share, true
@@ -40,7 +40,7 @@ func (s *CommandServer) handleShareLinks(w http.ResponseWriter, r *http.Request)
 	case http.MethodPost:
 		var req shareapi.LinkCreateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid share link create request: "+err.Error(), http.StatusBadRequest)
+			writeBadRequest(w, "invalid share link create request: "+err.Error())
 			return
 		}
 		created, err := service.CreateShareLink(r.Context(), req)
@@ -55,7 +55,7 @@ func (s *CommandServer) handleShareLinks(w http.ResponseWriter, r *http.Request)
 		if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
 			parsed, err := strconv.Atoi(raw)
 			if err != nil || parsed < 1 {
-				http.Error(w, "limit must be a positive integer", http.StatusBadRequest)
+				writeBadRequest(w, "limit must be a positive integer")
 				return
 			}
 			limit = parsed
@@ -72,7 +72,7 @@ func (s *CommandServer) handleShareLinks(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, shareapi.LinkList{SchemaVersion: 1, Shares: page.Shares, Next: page.Next})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 	}
 }
 
@@ -84,7 +84,7 @@ func (s *CommandServer) handleShareLink(w http.ResponseWriter, r *http.Request) 
 	}
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/control/share/links/"), "/")
 	if id == "" {
-		http.Error(w, "link id required", http.StatusBadRequest)
+		writeBadRequest(w, "link id required")
 		return
 	}
 	mount := strings.TrimSpace(r.URL.Query().Get("mount"))
@@ -99,7 +99,7 @@ func (s *CommandServer) handleShareLink(w http.ResponseWriter, r *http.Request) 
 	case http.MethodPatch:
 		var req shareapi.LinkUpdateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid share link update request: "+err.Error(), http.StatusBadRequest)
+			writeBadRequest(w, "invalid share link update request: "+err.Error())
 			return
 		}
 		req.ID = id
@@ -119,7 +119,7 @@ func (s *CommandServer) handleShareLink(w http.ResponseWriter, r *http.Request) 
 		}
 		writeJSON(w, map[string]string{"id": id})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 	}
 }
 
@@ -127,7 +127,7 @@ func (s *CommandServer) handleShareLink(w http.ResponseWriter, r *http.Request) 
 // a provider. The CLI uses it to ask for a missing --mount.
 func (s *CommandServer) handleShareResolve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	service, ok := s.shareServiceOrError(w)
@@ -136,7 +136,7 @@ func (s *CommandServer) handleShareResolve(w http.ResponseWriter, r *http.Reques
 	}
 	var req shareapi.ResolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid share resolve request: "+err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, "invalid share resolve request: "+err.Error())
 		return
 	}
 	result, err := service.ResolveShareLink(r.Context(), req)
@@ -149,7 +149,7 @@ func (s *CommandServer) handleShareResolve(w http.ResponseWriter, r *http.Reques
 
 func (s *CommandServer) handleShareInspect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	service, ok := s.shareServiceOrError(w)
@@ -158,7 +158,7 @@ func (s *CommandServer) handleShareInspect(w http.ResponseWriter, r *http.Reques
 	}
 	var req shareapi.InspectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid share inspect request: "+err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, "invalid share inspect request: "+err.Error())
 		return
 	}
 	preview, err := service.InspectShareLink(r.Context(), req)
@@ -179,7 +179,7 @@ func (s *CommandServer) handleShareTasks(w http.ResponseWriter, r *http.Request)
 	case http.MethodPost:
 		var req shareapi.ReceiveRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid receive create request: "+err.Error(), http.StatusBadRequest)
+			writeBadRequest(w, "invalid receive create request: "+err.Error())
 			return
 		}
 		created, err := service.CreateShareTask(r.Context(), req.OperationRequest())
@@ -194,7 +194,7 @@ func (s *CommandServer) handleShareTasks(w http.ResponseWriter, r *http.Request)
 		if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
 			parsed, err := strconv.Atoi(raw)
 			if err != nil || parsed < 1 {
-				http.Error(w, "limit must be a positive integer", http.StatusBadRequest)
+				writeBadRequest(w, "limit must be a positive integer")
 				return
 			}
 			limit = parsed
@@ -216,7 +216,7 @@ func (s *CommandServer) handleShareTasks(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, shareapi.TaskList{SchemaVersion: 1, Tasks: tasks})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 	}
 }
 
@@ -229,14 +229,14 @@ func (s *CommandServer) handleShareTask(w http.ResponseWriter, r *http.Request) 
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/control/share/tasks/")
 	rest = strings.Trim(rest, "/")
 	if rest == "" {
-		http.Error(w, "task id required", http.StatusBadRequest)
+		writeBadRequest(w, "task id required")
 		return
 	}
 	id, action, _ := strings.Cut(rest, "/")
 	switch action {
 	case "":
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeMethodNotAllowed(w)
 			return
 		}
 		current, err := service.GetShareTask(r.Context(), id)
@@ -256,7 +256,7 @@ func (s *CommandServer) handleShareTask(w http.ResponseWriter, r *http.Request) 
 
 func (s *CommandServer) handleShareAction(w http.ResponseWriter, r *http.Request, id string, action func(ctx context.Context, id string) error) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	if err := action(r.Context(), id); err != nil {
@@ -268,7 +268,7 @@ func (s *CommandServer) handleShareAction(w http.ResponseWriter, r *http.Request
 
 func (s *CommandServer) handleShareWait(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	service, ok := s.shareServiceOrError(w)
@@ -277,11 +277,11 @@ func (s *CommandServer) handleShareWait(w http.ResponseWriter, r *http.Request) 
 	}
 	var req shareapi.WaitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid share wait request: "+err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, "invalid share wait request: "+err.Error())
 		return
 	}
 	if strings.TrimSpace(req.ID) == "" {
-		http.Error(w, "task id required", http.StatusBadRequest)
+		writeBadRequest(w, "task id required")
 		return
 	}
 	current, err := service.WaitShareTask(r.Context(), req.ID, req.Timeout())
@@ -303,7 +303,7 @@ func writeShareError(w http.ResponseWriter, err error) {
 	case shareapi.ErrorNotFound:
 		status = http.StatusNotFound
 	}
-	http.Error(w, err.Error(), status)
+	writeStatus(w, status, err.Error())
 }
 
 // SetShareService attaches the provider-neutral share surface. Without it the

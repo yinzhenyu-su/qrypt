@@ -41,14 +41,14 @@ func (s *CommandServer) SetMountService(service MountService) {
 
 func (s *CommandServer) handleMounts(w http.ResponseWriter, r *http.Request) {
 	if s.mounts == nil {
-		http.Error(w, "mount service unavailable", http.StatusServiceUnavailable)
+		writeUnavailable(w, "mount service unavailable")
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
 		items, err := s.mounts.ListMounts(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			writeUnavailable(w, err.Error())
 			return
 		}
 		if items == nil {
@@ -58,32 +58,32 @@ func (s *CommandServer) handleMounts(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req MountAttachRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid mount request: "+err.Error(), http.StatusBadRequest)
+			writeBadRequest(w, "invalid mount request: "+err.Error())
 			return
 		}
 		status, err := s.mounts.AttachMount(r.Context(), req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
+			writeConflict(w, err.Error())
 			return
 		}
 		writeJSON(w, status)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 	}
 }
 
 func (s *CommandServer) handleMountByID(w http.ResponseWriter, r *http.Request) {
 	if s.mounts == nil {
-		http.Error(w, "mount service unavailable", http.StatusServiceUnavailable)
+		writeUnavailable(w, "mount service unavailable")
 		return
 	}
 	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	id, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/v1/control/mounts/"))
 	if err != nil || id == "" {
-		http.Error(w, "invalid mount id", http.StatusBadRequest)
+		writeBadRequest(w, "invalid mount id")
 		return
 	}
 	if err := s.mounts.DetachMount(r.Context(), id); err != nil {
@@ -91,7 +91,7 @@ func (s *CommandServer) handleMountByID(w http.ResponseWriter, r *http.Request) 
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
 		}
-		http.Error(w, err.Error(), status)
+		writeStatus(w, status, err.Error())
 		return
 	}
 	writeJSON(w, map[string]string{"id": id})

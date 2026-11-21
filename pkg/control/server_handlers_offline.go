@@ -23,7 +23,7 @@ func offlineActivePlusFailedStates() []task.State {
 
 func (s *CommandServer) offlineServiceOrError(w http.ResponseWriter) (OfflineService, bool) {
 	if s == nil || s.offline == nil {
-		http.Error(w, "offline control unavailable: no running Core", http.StatusNotImplemented)
+		writeNotImplemented(w, "offline control unavailable: no running Core")
 		return nil, false
 	}
 	return s.offline, true
@@ -37,7 +37,7 @@ func (s *CommandServer) handleOfflineTasks(w http.ResponseWriter, r *http.Reques
 	case http.MethodGet:
 		s.handleOfflineList(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 	}
 }
 
@@ -48,7 +48,7 @@ func (s *CommandServer) handleOfflineCreate(w http.ResponseWriter, r *http.Reque
 	}
 	var req OfflineCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid offline create request: "+err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, "invalid offline create request: "+err.Error())
 		return
 	}
 	created, err := service.CreateOfflineTask(r.Context(), req.OperationRequest())
@@ -69,7 +69,7 @@ func (s *CommandServer) handleOfflineList(w http.ResponseWriter, r *http.Request
 	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 {
-			http.Error(w, "limit must be a positive integer", http.StatusBadRequest)
+			writeBadRequest(w, "limit must be a positive integer")
 			return
 		}
 		limit = parsed
@@ -108,14 +108,14 @@ func (s *CommandServer) handleOfflineTask(w http.ResponseWriter, r *http.Request
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/control/offline/tasks/")
 	rest = strings.Trim(rest, "/")
 	if rest == "" {
-		http.Error(w, "task id required", http.StatusBadRequest)
+		writeBadRequest(w, "task id required")
 		return
 	}
 	id, action, _ := strings.Cut(rest, "/")
 	switch action {
 	case "":
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeMethodNotAllowed(w)
 			return
 		}
 		current, err := service.GetOfflineTask(r.Context(), id)
@@ -140,7 +140,7 @@ func (s *CommandServer) handleOfflineTask(w http.ResponseWriter, r *http.Request
 // task of another type.
 func (s *CommandServer) handleOfflineDismiss(w http.ResponseWriter, r *http.Request, id string, service OfflineService) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	if _, err := service.GetOfflineTask(r.Context(), id); err != nil {
@@ -158,7 +158,7 @@ func (s *CommandServer) handleOfflineDismiss(w http.ResponseWriter, r *http.Requ
 // narrowed to one mount. Cloud files are untouched; only the task records go.
 func (s *CommandServer) handleOfflineFinishedDismiss(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	service, ok := s.offlineServiceOrError(w)
@@ -168,7 +168,7 @@ func (s *CommandServer) handleOfflineFinishedDismiss(w http.ResponseWriter, r *h
 	var req OfflineDismissFinishedRequest
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid offline dismiss request: "+err.Error(), http.StatusBadRequest)
+			writeBadRequest(w, "invalid offline dismiss request: "+err.Error())
 			return
 		}
 	}
@@ -186,7 +186,7 @@ func (s *CommandServer) handleOfflineFinishedDismiss(w http.ResponseWriter, r *h
 
 func (s *CommandServer) handleOfflineAction(w http.ResponseWriter, r *http.Request, id string, action func(ctx context.Context, id string) error) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	if err := action(r.Context(), id); err != nil {
@@ -198,7 +198,7 @@ func (s *CommandServer) handleOfflineAction(w http.ResponseWriter, r *http.Reque
 
 func (s *CommandServer) handleOfflineInspect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	service, ok := s.offlineServiceOrError(w)
@@ -207,7 +207,7 @@ func (s *CommandServer) handleOfflineInspect(w http.ResponseWriter, r *http.Requ
 	}
 	var req OfflineInspectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid offline inspect request: "+err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, "invalid offline inspect request: "+err.Error())
 		return
 	}
 	preview, err := service.InspectOffline(r.Context(), req.OperationRequest())
@@ -220,7 +220,7 @@ func (s *CommandServer) handleOfflineInspect(w http.ResponseWriter, r *http.Requ
 
 func (s *CommandServer) handleOfflineWait(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	service, ok := s.offlineServiceOrError(w)
@@ -229,11 +229,11 @@ func (s *CommandServer) handleOfflineWait(w http.ResponseWriter, r *http.Request
 	}
 	var req OfflineWaitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid offline wait request: "+err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, "invalid offline wait request: "+err.Error())
 		return
 	}
 	if req.ID == "" {
-		http.Error(w, "task id required", http.StatusBadRequest)
+		writeBadRequest(w, "task id required")
 		return
 	}
 	current, err := service.WaitOfflineTask(r.Context(), req.ID, req.OfflineTimeout())
@@ -255,5 +255,5 @@ func writeOfflineError(w http.ResponseWriter, err error) {
 	case OfflineErrorNotFound:
 		status = http.StatusNotFound
 	}
-	http.Error(w, err.Error(), status)
+	writeStatus(w, status, err.Error())
 }

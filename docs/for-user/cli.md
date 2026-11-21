@@ -168,6 +168,7 @@ qrypt mount --isolated --name quark-encrypt --isolated-log-level debug
 ```sh
 qrypt core serve [--detach | --foreground] [--keep] [--idle-timeout 20m] [--log FILE]
 qrypt core status [--json]
+qrypt core endpoint [--json]
 qrypt core stop [--drain] [--force]
 ```
 
@@ -176,6 +177,7 @@ qrypt core stop [--drain] [--force]
 - `--detach` 在后台启动（重新执行自身并脱离当前会话），命令立即返回；配合 `--log FILE` 记录后台日志。`--foreground` 在当前终端运行。
 - 默认 20 分钟没有活动（无挂载、无进行中的任务或上传）后自动退出；`--keep` 关闭空闲退出，`--idle-timeout` 调整空闲时间。
 - 由 `qrypt mount` 或 `qrypt fs` 等命令按需启动的 Core 不会加 `--keep`，因此同样会在空闲后自动退出；有 FUSE 挂载或未完成的上传/任务时不算空闲。
+- `core endpoint` 输出当前配置的 control 端点路径（Unix socket），其他程序按此路径直连 Core；`--json` 额外给出 `network`、`run_dir`、`running`、`pid`、`protocol_version`、`version`。端点路径只由配置文件与运行时目录推导，Core 未启动时同样会输出。
 - 启动时会记录配置指纹。用不同配置再次启动会被拒绝，需要先停止再用当前配置重启；`core status` 在 Core 未运行时显示 `stopped`，锁仍被持有但控制端点不可达时显示 `unreachable` 并给出持锁进程。
 - 客户端连接 Core 时会校验 control 协议版本、qrypt 版本与配置指纹。升级二进制或修改配置后，旧的 Core 不会继续服务新客户端：先 `qrypt core stop`（或重启 Core）再重试。
 - 在 Core 运行期间，其他会打开同一工作目录的进程（再次 `core serve`、隔离挂载等）会被拒绝并提示已有运行时持有该状态；先 `qrypt core stop`。`qrypt mount` 与 `qrypt unmount` 经 Core 的控制端点工作，可以与 `qrypt core serve` 同时使用。
