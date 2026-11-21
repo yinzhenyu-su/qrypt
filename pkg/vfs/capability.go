@@ -71,7 +71,7 @@ func (v *VFS) capabilitiesForPath(ctx context.Context, path, mount, displayPath 
 
 func (n *Namespace) CapabilitiesForPath(ctx context.Context, path string) (CapabilityInfo, error) {
 	path = vfstypes.CleanVirtualPath(path)
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return CapabilityInfo{}, err
 	}

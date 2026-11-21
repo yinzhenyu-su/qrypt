@@ -55,6 +55,11 @@ type Options struct {
 	// composition root injects the pkg/mount implementation; embedded runtimes
 	// leave it nil so cgofuse never enters their binary.
 	MountHost MountHost
+	// LazyMounts opens namespace mounts on first access instead of at open
+	// time. The resident Core sets this so a cold `fs` command pays Init and
+	// root-resolve only for the mount its path touches; embedded and
+	// single-mount runtimes keep eager initialization.
+	LazyMounts bool
 }
 
 type UploadSourceProvider interface {
@@ -722,72 +727,123 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		return nil, nil, fmt.Errorf("config: no mounts selected")
 	}
 
-	results := make([]mountBuildResult, len(mountConfigs))
-	var wg sync.WaitGroup
-	for i, mountCfg := range mountConfigs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results[i] = buildMount(ctx, cfg, layout, limiter, credentialManager, mountCfg)
-		}()
-	}
-	wg.Wait()
-
-	mounts := make([]vfs.Mount, 0, len(results))
-	drivers := make([]drive.Driver, 0, len(results))
-	var mountErrs []error
-	for i, result := range results {
-		if result.driver != nil {
-			drivers = append(drivers, result.driver)
-		}
-		if result.mount.FS != nil {
-			mounts = append(mounts, result.mount)
-		}
-		if result.err != nil {
-			name := mountConfigs[i].Name
-			logging.L.Warnf("config: mount %q failed, continuing with remaining mounts: %v", name, result.err)
-			mountErrs = append(mountErrs, fmt.Errorf("config: mount %q: %w", name, result.err))
-			mountFailures = append(mountFailures, vfs.MountFailure{Name: name, Err: result.err})
-		}
-	}
-	if len(mounts) == 0 {
-		// A single failing mount must not block the whole namespace: keep the
-		// mounts that initialized and only fail the open when none did.
-		closeMounts(mounts)
-		dropAll(ctx, drivers)
-		if len(mountErrs) == 1 {
-			return nil, nil, mountErrs[0]
-		}
-		return nil, nil, fmt.Errorf("config: all mounts failed: %w", errors.Join(mountErrs...))
-	}
-
 	if opts.MountName != "" && !opts.ForceNamespace {
-		// The single-mount fast path hands back the drive's own VFS. The
-		// mount's FS field is typed vfs.MountedFileSystem (which does not
-		// declare the observation surfaces), but every mount built here is a
-		// *vfs.VFS, so the BuiltFileSystem contract is re-established in one
-		// place instead of being re-asserted by every CLI caller.
-		fs := mounts[0].FS
+		result := buildMount(ctx, cfg, layout, limiter, credentialManager, mountConfigs[0])
+		if result.err != nil {
+			if result.driver != nil {
+				dropAll(ctx, []drive.Driver{result.driver})
+			}
+			return nil, nil, fmt.Errorf("config: mount %q: %w", mountConfigs[0].Name, result.err)
+		}
+		fs := result.mount.FS
 		opened, ok := fs.(BuiltFileSystem)
 		if !ok {
-			return nil, nil, fmt.Errorf("config: mount %q does not expose upload/diagnostics surfaces", mounts[0].Name)
+			closeMounts([]vfs.Mount{result.mount})
+			if result.driver != nil {
+				dropAll(ctx, []drive.Driver{result.driver})
+			}
+			return nil, nil, fmt.Errorf("config: mount %q does not expose upload/diagnostics surfaces", mountConfigs[0].Name)
 		}
 		return opened, func() {
 			flushReadCache(fs)
+			closeMounts([]vfs.Mount{result.mount})
+			if result.driver != nil {
+				dropAll(ctx, []drive.Driver{result.driver})
+			}
+		}, nil
+	}
+
+	if !opts.LazyMounts {
+		results := make([]mountBuildResult, len(mountConfigs))
+		var wg sync.WaitGroup
+		for i, mountCfg := range mountConfigs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results[i] = buildMount(ctx, cfg, layout, limiter, credentialManager, mountCfg)
+			}()
+		}
+		wg.Wait()
+
+		mounts := make([]vfs.Mount, 0, len(results))
+		drivers := make([]drive.Driver, 0, len(results))
+		var mountErrs []error
+		for i, result := range results {
+			if result.driver != nil {
+				drivers = append(drivers, result.driver)
+			}
+			if result.mount.FS != nil {
+				mounts = append(mounts, result.mount)
+			}
+			if result.err != nil {
+				name := mountConfigs[i].Name
+				logging.L.Warnf("config: mount %q failed, continuing with remaining mounts: %v", name, result.err)
+				mountErrs = append(mountErrs, fmt.Errorf("config: mount %q: %w", name, result.err))
+				mountFailures = append(mountFailures, vfs.MountFailure{Name: name, Err: result.err})
+			}
+		}
+		if len(mounts) == 0 {
+			// A single failing mount must not block the whole namespace: keep the
+			// mounts that initialized and only fail the open when none did.
+			closeMounts(mounts)
+			dropAll(ctx, drivers)
+			if len(mountErrs) == 1 {
+				return nil, nil, mountErrs[0]
+			}
+			return nil, nil, fmt.Errorf("config: all mounts failed: %w", errors.Join(mountErrs...))
+		}
+		ns, err := vfs.NewNamespace(mounts)
+		if err != nil {
+			closeMounts(mounts)
+			dropAll(ctx, drivers)
+			return nil, nil, err
+		}
+		ns.SetMountFailures(mountFailures)
+		return ns, func() {
+			flushReadCache(ns)
 			closeMounts(mounts)
 			dropAll(ctx, drivers)
 		}, nil
 	}
-	ns, err := vfs.NewNamespace(mounts)
+
+	// Namespace mode: mounts are opened on first access, so a cold start pays
+	// the driver Init and root-resolve cost only for the mount a command
+	// actually touches. Root listing still knows every configured name.
+	var lazyMu sync.Mutex
+	var lazyDrivers []drive.Driver
+	lazyMounts := make([]vfs.LazyMount, 0, len(mountConfigs))
+	for _, mountCfg := range mountConfigs {
+		mountCfg := mountCfg
+		lazyMounts = append(lazyMounts, vfs.LazyMount{
+			Name: mountCfg.Name,
+			Open: func(openCtx context.Context) (*vfs.VFS, error) {
+				result := buildMount(openCtx, cfg, layout, limiter, credentialManager, mountCfg)
+				lazyMu.Lock()
+				if result.driver != nil {
+					lazyDrivers = append(lazyDrivers, result.driver)
+				}
+				lazyMu.Unlock()
+				if result.err != nil {
+					return nil, fmt.Errorf("config: mount %q: %w", mountCfg.Name, result.err)
+				}
+				fs, ok := result.mount.FS.(*vfs.VFS)
+				if !ok {
+					return nil, fmt.Errorf("config: mount %q does not expose a VFS instance", mountCfg.Name)
+				}
+				return fs, nil
+			},
+		})
+	}
+	ns, err := vfs.NewLazyNamespace(lazyMounts, mountFailures)
 	if err != nil {
-		closeMounts(mounts)
-		dropAll(ctx, drivers)
 		return nil, nil, err
 	}
-	ns.SetMountFailures(mountFailures)
 	return ns, func() {
 		flushReadCache(ns)
-		closeMounts(mounts)
+		_ = ns.Close(context.Background())
+		lazyMu.Lock()
+		drivers := append([]drive.Driver(nil), lazyDrivers...)
+		lazyMu.Unlock()
 		dropAll(ctx, drivers)
 	}, nil
 }

@@ -393,13 +393,16 @@ mkdir/upload/read 的 entry id 带 `ext:<mountId>` 前缀；主存储 ↔ 外挂
 `scripts/ci/perf-baseline.sh` 用 fake 计数驱动（`perf-localfs`）测量常驻 Core 的三类场景，
 输出 Init / Resolve / ListChildren / range 次数与 P50/P95：
 
-- 冷启动：无 Core 时启动，记录 Init、root resolve 次数与就绪耗时；
+- 冷启动：无 Core 时启动，就绪时 `init_calls` 必须为 0（lazy mount init），
+  首次 `fs list` 后恰好 1 次（只初始化被访问的 mount）；
 - 热 owner：同一 Core 连续 20 次 `fs list`，10s 内存 TTL 内应为 0 次 `ListChildren`；
-- TTL 过期与重启后命中：TTL 过期后一次 list 必须回源；Core 重启后同一段读应由
-  磁盘 read cache 命中（0 次驱动 `Read`）。
+- TTL 与重启后命中：内存 TTL 过期但仍在一个 30s 持久化 TTL 内时应 0 次回源；
+  超过持久化 TTL 后一次 list 必须回源；Core 重启后同一段读应由磁盘 read cache
+  命中（0 次驱动 `Read`）。
 
-这些数字是持久化目录缓存（#32）的合并 gate：如果“省掉的 ListChildren 次数”和
-重启后 read cache 的省读量没有实际变化，就不合并 #32。测试默认跳过，nightly 的
+这些数字是持久化目录缓存（#32）与 lazy mount init（#52）的合并 gate：如果
+“省掉的 ListChildren 次数”、重启后 read cache 的省读量或懒加载的 Init 次数
+没有实际变化，就不再继续堆缓存/启动优化。测试默认跳过，nightly 的
 `Nightly gate (perf)` 任务会运行并把表格写进 job summary；本地等价命令：
 
 ```bash

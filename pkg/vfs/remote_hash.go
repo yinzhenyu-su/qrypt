@@ -39,7 +39,7 @@ func (v *VFS) RemoteHashInfo(ctx context.Context, path string) (drive.RemoteHash
 // RemoteHashInfo is the namespace-level version: it resolves the path to its
 // mount and delegates to that mount's backend.
 func (n *Namespace) RemoteHashInfo(ctx context.Context, path string) (drive.RemoteHashInfo, error) {
-	mount, rest, _, err := n.resolve(path)
+	mount, rest, _, err := n.resolve(ctx, path)
 	if err != nil {
 		return drive.RemoteHashInfo{}, err
 	}
@@ -52,7 +52,7 @@ func (n *Namespace) RemoteHashInfo(ctx context.Context, path string) (drive.Remo
 // RemoteHash is the namespace-level version: it resolves the path to its
 // mount and delegates to that mount's backend.
 func (n *Namespace) RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error) {
-	mount, rest, _, err := n.resolve(path)
+	mount, rest, _, err := n.resolve(ctx, path)
 	if err != nil {
 		return "", "", err
 	}
@@ -79,7 +79,7 @@ func (v *VFS) EncryptedHash(ctx context.Context, path string, plain io.Reader, p
 
 // EncryptedHash is the namespace-level version.
 func (n *Namespace) EncryptedHash(ctx context.Context, path string, plain io.Reader, plainSize int64, algorithm drive.HashAlgorithm) (string, error) {
-	mount, rest, _, err := n.resolve(path)
+	mount, rest, _, err := n.resolve(ctx, path)
 	if err != nil {
 		return "", err
 	}
