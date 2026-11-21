@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
@@ -15,6 +16,9 @@ import (
 // capabilities, health, and the task journal, so no product client has to read
 // the diagnostic endpoint.
 func TestControlServerExposesProductSurface(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("control server test uses a unix domain socket")
+	}
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
