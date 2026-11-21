@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -22,9 +21,7 @@ import (
 	clicore "github.com/yinzhenyu/qrypt/internal/cli/core"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/internal/httpapi"
-	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 const (
@@ -38,13 +35,18 @@ const (
 func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "http",
-		Short: "Serve the read-only HTTP API for a resident Core",
-		Long: `Serve a read-only HTTP API backed by the resident Core.
+		Short: "Serve the HTTP API for a resident Core",
+		Long: `Serve the HTTP API backed by the resident Core.
 
 The gateway runs as its own process and reaches the Core through the local
 control endpoint, so the Core never listens on a network port. Every request is
 authorized with a bearer token; browser clients use the same token from a CORS
-allowlist. Bind to loopback by default; a non-loopback address requires TLS.`,
+allowlist. Bind to loopback by default; a non-loopback address requires TLS.
+
+Read endpoints are available in v1; v2 adds writable endpoints (upload, mkdir,
+remove, rename, copy, truncate). Uploads resume by offset, retries can carry
+X-Qrypt-Operation-Id for idempotency, and requests that carry cookies must also
+send X-Qrypt-CSRF-Token.`,
 		Example: `  qrypt http serve
   qrypt http serve --listen 127.0.0.1:9000
   qrypt http serve --listen 0.0.0.0:8443 --tls-cert ./cert.pem --tls-key ./key.pem`,
@@ -73,7 +75,8 @@ func newServeCommand(rt cliruntime.Runtime) *cobra.Command {
 		Long: `Run the HTTP gateway for the configured state directory.
 
 The command lazily starts the resident Core when none is running, then serves
-the read-only v1 API until SIGINT/SIGTERM. Without --token a random bearer token
+the HTTP API (read endpoints in v1, write endpoints in v2) until
+SIGINT/SIGTERM. Without --token a random bearer token
 is generated and printed once. The Core keeps running after the gateway exits
 unless it was started by this command and is idle.`,
 		Example: `  qrypt http serve
@@ -134,7 +137,7 @@ func runServe(rt cliruntime.Runtime, cmd *cobra.Command, flags serveFlags) error
 	if err != nil {
 		return err
 	}
-	gateway := httpapi.New(coreAPI{client: client}, httpapi.Options{
+	gateway := httpapi.New(httpapi.NewClientCore(client), httpapi.Options{
 		Token:        token,
 		AllowOrigins: flags.allowOrigins,
 		AllowedHosts: flags.allowHosts,
@@ -199,34 +202,6 @@ func runServe(rt cliruntime.Runtime, cmd *cobra.Command, flags serveFlags) error
 }
 
 // coreAPI adapts the control client to the gateway's Core interface.
-type coreAPI struct {
-	client *control.Client
-}
-
-func (c coreAPI) RuntimeStatus(ctx context.Context) (control.RuntimeStatus, error) {
-	return c.client.RuntimeStatus(ctx)
-}
-
-func (c coreAPI) ListMounts(ctx context.Context) ([]control.MountStatus, error) {
-	return c.client.ListMounts(ctx)
-}
-
-func (c coreAPI) FSStat(ctx context.Context, requestPath string) (control.FSEntry, error) {
-	return c.client.FSStat(ctx, requestPath)
-}
-
-func (c coreAPI) FSList(ctx context.Context, requestPath string) ([]control.FSEntry, error) {
-	return c.client.FSList(ctx, requestPath)
-}
-
-func (c coreAPI) FSReadStream(ctx context.Context, requestPath string, offset, size int64, raw bool) (io.ReadCloser, error) {
-	return c.client.FSReadStream(ctx, requestPath, offset, size, raw)
-}
-
-func (c coreAPI) FSPendingUploads(ctx context.Context) ([]vfs.PendingUpload, error) {
-	return c.client.FSPendingUploads(ctx)
-}
-
 func normalizeListen(listen string) (string, error) {
 	listen = strings.TrimSpace(listen)
 	if listen == "" {

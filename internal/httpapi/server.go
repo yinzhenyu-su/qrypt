@@ -1,4 +1,5 @@
-// Package httpapi serves the read-only v1 HTTP API of a resident Core.
+// Package httpapi serves the resident Core HTTP API: read-only v1 endpoints
+// plus the v2 write endpoints (upload, mkdir, remove, rename, copy, truncate).
 //
 // The gateway is a separate process that talks to the Core over its local
 // control endpoint; the Core itself never listens on TCP. Keeping the
@@ -40,6 +41,15 @@ type Core interface {
 	FSList(ctx context.Context, path string) ([]control.FSEntry, error)
 	FSReadStream(ctx context.Context, path string, offset, size int64, raw bool) (io.ReadCloser, error)
 	FSPendingUploads(ctx context.Context) ([]vfs.PendingUpload, error)
+	FSCreate(ctx context.Context, path string) error
+	FSWriteAt(ctx context.Context, path string, offset int64, data []byte) (int, error)
+	FSFlush(ctx context.Context, path string) error
+	FSMkdir(ctx context.Context, path string) (control.FSEntry, error)
+	FSRemove(ctx context.Context, path string, dir bool) error
+	FSRename(ctx context.Context, source, destination string) error
+	FSCopy(ctx context.Context, req control.FSCopyRequest) (json.RawMessage, error)
+	FSTruncate(ctx context.Context, path string, size int64) error
+	FSWaitPath(ctx context.Context, path string, timeout time.Duration) error
 }
 
 // Options configures one gateway listener.
@@ -60,6 +70,8 @@ type Options struct {
 	MaxConcurrentReads int
 	// EventInterval is the SSE heartbeat period.
 	EventInterval time.Duration
+	// MaxUploadBytes bounds one upload request body. Zero picks 64 MiB.
+	MaxUploadBytes int64
 }
 
 func (o Options) withDefaults() Options {
@@ -74,6 +86,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.EventInterval <= 0 {
 		o.EventInterval = 15 * time.Second
+	}
+	if o.MaxUploadBytes <= 0 {
+		o.MaxUploadBytes = 64 << 20
 	}
 	return o
 }
@@ -140,7 +155,7 @@ func (s *Server) common(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range, If-Range, If-None-Match")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range, If-Range, If-None-Match, X-Qrypt-Operation-Id, X-Qrypt-CSRF-Token")
 			w.Header().Set("Access-Control-Expose-Headers", "ETag, Content-Range, Content-Length, Accept-Ranges")
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
@@ -389,24 +404,326 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 		s.handleList(w, r)
 	case "stat":
 		s.handleStat(w, r)
+	case "upload":
+		s.handleUpload(w, r)
+	case "upload/status":
+		s.handleUploadStatus(w, r)
+	case "mkdir":
+		s.handleMkdir(w, r)
+	case "remove":
+		s.handleRemove(w, r)
+	case "rename":
+		s.handleRename(w, r)
+	case "copy":
+		s.handleCopy(w, r)
+	case "truncate":
+		s.handleTruncate(w, r)
 	case "":
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint", false)
 	default:
-		if isWriteOperation(op) {
+		// create/write/flush/invalidate stay internal to the Core data plane:
+		// clients upload through /v1/fs/upload so offset accounting and path
+		// waiting happen in one place.
+		if op == "create" || op == "write" || op == "flush" || op == "invalidate" {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
-				"write endpoints are not available in the read-only v1 API", false)
+				"use /v1/fs/upload for writes", false)
 			return
 		}
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint", false)
 	}
 }
 
-func isWriteOperation(op string) bool {
-	switch op {
-	case "create", "write", "flush", "mkdir", "remove", "rename", "copy", "truncate", "invalidate", "upload":
+// --- write endpoints (v2) ----------------------------------------------
+
+// mutationContext forwards the client's idempotency key to the Core so a
+// retried write is replayed instead of applied twice.
+func (s *Server) mutationContext(r *http.Request) context.Context {
+	if id := strings.TrimSpace(r.Header.Get("X-Qrypt-Operation-Id")); id != "" {
+		return control.WithOperationID(r.Context(), id)
+	}
+	return r.Context()
+}
+
+// csrfAllowed protects cookie-carrying requests. Bearer tokens are not sent
+// automatically by browsers, so a request without cookies is already
+// CSRF-safe; one with cookies must prove it can read the token.
+func (s *Server) csrfAllowed(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("Cookie") == "" {
 		return true
 	}
-	return false
+	got := r.Header.Get("X-Qrypt-CSRF-Token")
+	if subtle.ConstantTimeCompare([]byte(got), []byte(s.opts.Token)) != 1 {
+		writeError(w, http.StatusForbidden, "forbidden", "missing or invalid CSRF token", false)
+		return false
+	}
+	return true
+}
+
+func decodeWriteBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST", false)
+		return false
+	}
+	defer r.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error(), false)
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST", false)
+		return
+	}
+	if !s.csrfAllowed(w, r) {
+		return
+	}
+	requestPath, err := normalizePath(r.URL.Query().Get("path"))
+	if err != nil || requestPath == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "path query is required", false)
+		return
+	}
+	offset := int64(0)
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		offset, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || offset < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "offset must be a non-negative integer", false)
+			return
+		}
+	}
+	wait, _ := strconv.ParseBool(r.URL.Query().Get("wait"))
+	ctx := s.mutationContext(r)
+	if offset == 0 {
+		if err := s.core.FSCreate(ctx, requestPath); err != nil {
+			writeCoreError(w, err)
+			return
+		}
+	} else if _, err := s.core.FSStat(ctx, requestPath); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+
+	body := http.MaxBytesReader(w, r.Body, s.opts.MaxUploadBytes)
+	defer body.Close()
+	buf := make([]byte, 256<<10)
+	written := offset
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			if _, err := s.core.FSWriteAt(ctx, requestPath, written, buf[:n]); err != nil {
+				writeCoreError(w, err)
+				return
+			}
+			written += int64(n)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(readErr, &maxErr) {
+				writeError(w, http.StatusRequestEntityTooLarge, "too_large", "upload body exceeds the server limit", false)
+				return
+			}
+			writeError(w, http.StatusBadRequest, "invalid_request", readErr.Error(), false)
+			return
+		}
+	}
+	if err := s.core.FSFlush(ctx, requestPath); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	if wait {
+		if err := s.core.FSWaitPath(ctx, requestPath, 30*time.Second); err != nil {
+			writeCoreError(w, err)
+			return
+		}
+	}
+	pending, _ := s.pendingFor(r.Context(), requestPath)
+	writeData(w, http.StatusOK, map[string]any{
+		"path":    requestPath,
+		"offset":  written,
+		"pending": pending,
+		"task": map[string]any{
+			"id":      requestPath,
+			"path":    requestPath,
+			"bytes":   written,
+			"pending": pending,
+		},
+	})
+}
+
+// handleUploadStatus reports how much of a path has been accepted and whether
+// an upload task is still pending, so a client can resume from the size.
+func (s *Server) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET", false)
+		return
+	}
+	requestPath, err := normalizePath(r.URL.Query().Get("path"))
+	if err != nil || requestPath == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "path query is required", false)
+		return
+	}
+	entry, err := s.core.FSStat(r.Context(), requestPath)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	pending, _ := s.pendingFor(r.Context(), requestPath)
+	writeData(w, http.StatusOK, map[string]any{"path": requestPath, "size": entry.Size, "pending": pending})
+}
+
+func (s *Server) pendingFor(ctx context.Context, requestPath string) (bool, error) {
+	pending, err := s.core.FSPendingUploads(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, upload := range pending {
+		if upload.Path == requestPath {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Server) handleMkdir(w http.ResponseWriter, r *http.Request) {
+	if !s.csrfAllowed(w, r) {
+		return
+	}
+	var request struct {
+		Path string `json:"path"`
+	}
+	if !decodeWriteBody(w, r, &request) {
+		return
+	}
+	requestPath, err := normalizePath(request.Path)
+	if err != nil || requestPath == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "path is required", false)
+		return
+	}
+	entry, err := s.core.FSMkdir(s.mutationContext(r), requestPath)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, entry)
+}
+
+func (s *Server) handleRemove(w http.ResponseWriter, r *http.Request) {
+	if !s.csrfAllowed(w, r) {
+		return
+	}
+	var request struct {
+		Path string `json:"path"`
+		Dir  bool   `json:"dir"`
+	}
+	if !decodeWriteBody(w, r, &request) {
+		return
+	}
+	requestPath, err := normalizePath(request.Path)
+	if err != nil || requestPath == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "path is required", false)
+		return
+	}
+	if err := s.core.FSRemove(s.mutationContext(r), requestPath, request.Dir); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{"path": requestPath, "removed": true})
+}
+
+func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
+	if !s.csrfAllowed(w, r) {
+		return
+	}
+	var request struct {
+		Source      string `json:"source"`
+		Destination string `json:"destination"`
+	}
+	if !decodeWriteBody(w, r, &request) {
+		return
+	}
+	source, err := normalizePath(request.Source)
+	if err != nil || source == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "source is required", false)
+		return
+	}
+	destination, err := normalizePath(request.Destination)
+	if err != nil || destination == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "destination is required", false)
+		return
+	}
+	if err := s.core.FSRename(s.mutationContext(r), source, destination); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{"source": source, "destination": destination, "renamed": true})
+}
+
+func (s *Server) handleCopy(w http.ResponseWriter, r *http.Request) {
+	if !s.csrfAllowed(w, r) {
+		return
+	}
+	var request struct {
+		Source      string `json:"source"`
+		Destination string `json:"destination"`
+		Recursive   bool   `json:"recursive"`
+		Force       bool   `json:"force"`
+	}
+	if !decodeWriteBody(w, r, &request) {
+		return
+	}
+	if _, err := normalizePath(request.Source); err != nil || request.Source == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "source is required", false)
+		return
+	}
+	if _, err := normalizePath(request.Destination); err != nil || request.Destination == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "destination is required", false)
+		return
+	}
+	result, err := s.core.FSCopy(s.mutationContext(r), control.FSCopyRequest{
+		Source: request.Source, Destination: request.Destination,
+		Recursive: request.Recursive, Force: request.Force,
+	})
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	if len(result) == 0 {
+		writeData(w, http.StatusOK, map[string]any{"source": request.Source, "destination": request.Destination})
+		return
+	}
+	writeData(w, http.StatusOK, result)
+}
+
+func (s *Server) handleTruncate(w http.ResponseWriter, r *http.Request) {
+	if !s.csrfAllowed(w, r) {
+		return
+	}
+	var request struct {
+		Path string `json:"path"`
+		Size int64  `json:"size"`
+	}
+	if !decodeWriteBody(w, r, &request) {
+		return
+	}
+	requestPath, err := normalizePath(request.Path)
+	if err != nil || requestPath == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "path is required", false)
+		return
+	}
+	if request.Size < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "size must be non-negative", false)
+		return
+	}
+	if err := s.core.FSTruncate(s.mutationContext(r), requestPath, request.Size); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{"path": requestPath, "size": request.Size})
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
