@@ -50,6 +50,13 @@ func TestVerifyCoreStatus(t *testing.T) {
 	if err := verifyCoreStatus(ok, state); err != nil {
 		t.Fatalf("matching Core rejected: %v", err)
 	}
+	if rel, err := filepath.Rel(".", configPath); err == nil {
+		relative := ok
+		relative.ConfigPath = rel
+		if err := verifyCoreStatus(relative, state); err != nil {
+			t.Fatalf("relative Core config path rejected: %v", err)
+		}
+	}
 
 	cases := []struct {
 		name    string

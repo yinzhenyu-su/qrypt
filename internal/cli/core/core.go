@@ -117,17 +117,18 @@ func serveForeground(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime
 		clone.Logging.LogFile = flags.logFile
 		cfg = &clone
 	}
-	runDir := corepkg.RuntimeRunDir(state.Path, cfg)
+	configPath := canonicalConfigPath(state.Path)
+	runDir := corepkg.RuntimeRunDir(configPath, cfg)
 	runtime := corepkg.RuntimeLayout{RunDir: runDir}
 	controlListen := corepkg.ControlSocketPath(cfg, runtime)
 
 	ctx, cancel := context.WithCancel(commandContext(cmd))
 	defer cancel()
 	instance, err := corepkg.OpenConfig(ctx, cfg, corepkg.Options{
-		ConfigPath:    state.Path,
+		ConfigPath:    configPath,
 		Runtime:       runtime,
 		ControlListen: controlListen,
-		Owner:         &corepkg.OwnerOptions{ConfigPath: state.Path},
+		Owner:         &corepkg.OwnerOptions{ConfigPath: configPath},
 		MountHost:     newFuseMountHost(rt, cfg),
 	})
 	if err != nil {
@@ -318,6 +319,23 @@ func EnsureClient(ctx context.Context, rt cliruntime.Runtime, state cliruntime.C
 }
 
 // verifyCoreStatus rejects a Core that cannot serve this client faithfully.
+// canonicalConfigPath resolves a config path to an absolute, symlink-free
+// form so a Core started with "./qrypt.toml" and a client resolving the same
+// file to an absolute path compare equal.
+func canonicalConfigPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return filepath.Clean(abs)
+}
+
 func verifyCoreStatus(status control.RuntimeStatus, state cliruntime.ConfigState) error {
 	if status.ProtocolVersion != control.ProtocolVersion {
 		return fmt.Errorf("core: resident Core speaks protocol v%d but this client speaks v%d; restart it with `qrypt core stop` and retry", status.ProtocolVersion, control.ProtocolVersion)
@@ -334,7 +352,8 @@ func verifyCoreStatus(status control.RuntimeStatus, state cliruntime.ConfigState
 	if err != nil {
 		return fmt.Errorf("core: resolve config path: %w", err)
 	}
-	if status.ConfigPath != "" && filepath.Clean(status.ConfigPath) != filepath.Clean(configPath) {
+	configPath = canonicalConfigPath(configPath)
+	if status.ConfigPath != "" && canonicalConfigPath(status.ConfigPath) != configPath {
 		return fmt.Errorf("core: resident Core uses config %q but this command uses %q; stop it with `qrypt core stop` and retry", status.ConfigPath, configPath)
 	}
 	want, err := ownerlock.FingerprintFile(configPath)
