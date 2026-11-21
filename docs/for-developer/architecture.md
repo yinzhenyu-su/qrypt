@@ -193,22 +193,43 @@ while a Core owns the journal, asking the user to stop it first.
 
 ### HTTP Gateway
 
-`internal/httpapi` is the read-only v1 HTTP surface. It is a thin client of the
-resident Core: the gateway process obtains the control endpoint and calls
-`/v1/control/status`, `/v1/fs/{stat,list,read}` and `/v1/fs/pending` through
-`pkg/control.Client`; the Core itself never listens on TCP. The package keeps
-its dependencies to `pkg/control`, `pkg/drive`, `pkg/vfs` and `pkg/logging`, and
-`internal/cli/http` wires it to the `qrypt http serve` command (lazy-starting
-the Core with `clicore.EnsureCore`).
+`internal/httpapi` is the HTTP surface (read-only v1 plus v2 write endpoints).
+It is a thin client of the resident Core: the gateway process obtains the
+control endpoint and calls `/v1/control/status`, `/v1/fs/*` and
+`/v1/control/mounts` through `pkg/control.Client`; the Core itself never listens
+on TCP. `httpapi.NewClientCore` adapts a control client to the `Core` interface,
+so production (`internal/cli/http`, which lazy-starts the Core with
+`clicore.EnsureClient`) and tests share one implementation.
 
 The handler tree enforces a bearer token (constant-time compare), a Host guard
 against DNS rebinding, an Origin allowlist with CORS headers, and a global rate
 limiter; per-stream concurrency is bounded for file reads. Responses use one
-envelope (`{"data":...}` or `{"error":{code,message,retryable}}`) and map
-control transport failures back to HTTP status codes (404/409/503/504). File
-reads are streamed from `/v1/fs/read` with `Range`/`ETag`/`HEAD` support, and
-`/v1/events` is an SSE heartbeat over Core status. Write endpoints deliberately
-return 405 in v1; they arrive with the multi-user phase.
+envelope (`{"data":...}` or `{"error":{code,message,retryable}}`).
+
+Read endpoints (`/v1/fs/read`, `/v1/fs/download`, `/v1/fs/{list,stat}`,
+`/v1/session`, `/v1/mounts`, `/v1/tasks`, `/v1/events`) keep the original v1
+contract: `Range`/`If-Range`, `ETag`, `304` and `HEAD` sharing one `serveFile`
+implementation.
+
+v2 adds writes:
+
+- `POST /v1/fs/upload?path=PATH[&offset=N][&wait=1]` streams the request body
+  into `FSWriteAt` at `offset` (offset 0 calls `FSCreate` first; a resume calls
+  `FSStat` to validate the target), flushes at the end, optionally waits for
+  the path to settle with `FSWaitPath`, and reports the resulting offset and
+  pending state.
+- `GET /v1/fs/upload/status?path=PATH` reports the stored size and whether an
+  upload for that path is still pending.
+- `POST /v1/fs/{mkdir,remove,rename,copy,truncate}` accept JSON bodies and map
+  to the same Core data-plane methods the CLI uses, so HTTP and CLI share one
+  mutation and invalidation path.
+- Low-level `create/write/flush` stay 405: clients must upload, which keeps the
+  resumable, size-bounded path.
+- Mutation context: `X-Qrypt-Operation-Id` is forwarded via
+  `control.WithOperationID` so Core-side retry deduplication applies; requests
+  that carry cookies must also send `X-Qrypt-CSRF-Token` equal to the bearer
+  token (constant-time compare), while script clients using only
+  `Authorization` are unaffected.
 
 ### Single Writer and Resident Core
 

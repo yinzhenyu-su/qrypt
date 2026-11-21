@@ -189,13 +189,15 @@ qrypt core stop [--drain] [--force]
 qrypt http serve [--listen 127.0.0.1:8800] [--token TOKEN] [--allow-origin ORIGIN] [--tls-cert FILE --tls-key FILE]
 ```
 
-`qrypt http serve` 为常驻 Core 提供只读 HTTP API，供浏览器或脚本访问同一份挂载视图。网关是独立进程，通过本地 control 端点访问 Core，Core 本身不监听网络端口；Core 未运行时先按需启动。
+`qrypt http serve` 为常驻 Core 提供 HTTP API，供浏览器或脚本访问同一份挂载视图。网关是独立进程，通过本地 control 端点访问 Core，Core 本身不监听网络端口；Core 未运行时先按需启动。v1 提供只读端点，v2 增加写入端点。
 
 - 默认只监听 `127.0.0.1:8800`。监听非回环地址时必须同时提供 `--tls-cert` 与 `--tls-key`，否则拒绝启动。
 - 除 `/v1/health` 外所有请求都需要 `Authorization: Bearer <token>`。省略 `--token` 时读取环境变量 `QRYPT_HTTP_TOKEN`，仍为空则生成随机 token 并打印一次。
 - 浏览器跨域访问需要把页面来源加进 `--allow-origin`；未指定时只接受本机来源。反向代理场景用 `--allow-host` 追加允许的 `Host` 头。
-- 只读端点：`GET /v1/health`、`GET /v1/session`、`GET /v1/mounts`、`GET /v1/tasks`、`GET /v1/events`（SSE）、`GET|HEAD /v1/fs/read`、`GET|HEAD /v1/fs/download`、`GET|POST /v1/fs/list`、`GET|POST /v1/fs/stat`。写操作返回 405。
-- 大文件支持 `Range`、`If-Range`、`If-None-Match`/`ETag` 与 `HEAD`，下载走 `/v1/fs/download` 并返回附件名。
+- 只读端点：`GET /v1/health`、`GET /v1/session`、`GET /v1/mounts`、`GET /v1/tasks`、`GET /v1/events`（SSE）、`GET|HEAD /v1/fs/read`、`GET|HEAD /v1/fs/download`、`GET|POST /v1/fs/list`、`GET|POST /v1/fs/stat`。
+- 写入端点（v2）：`POST /v1/fs/upload?path=PATH[&offset=N][&wait=1]` 接收原始字节流并按 offset 续传，默认单请求上限 64 MiB，结束后 Flush 并返回 `path/offset/pending/task`；`GET /v1/fs/upload/status?path=PATH` 返回已写入大小与是否仍有 pending 上传；`POST /v1/fs/mkdir`、`/v1/fs/remove`、`/v1/fs/rename`、`/v1/fs/copy`、`/v1/fs/truncate` 使用 JSON 请求体。`create/write/flush` 等低层端点仍返回 405，写入统一走 upload。
+- 幂等与 CSRF：写请求可带 `X-Qrypt-Operation-Id`，相同 id 的重试会重放首次结果而不重复执行。携带 Cookie 的写请求必须同时发送 `X-Qrypt-CSRF-Token`（值为 bearer token），否则返回 403；纯脚本客户端只用 Authorization 即可。
+- 大文件读取支持 `Range`、`If-Range`、`If-None-Match`/`ETag` 与 `HEAD`，下载走 `/v1/fs/download` 并返回附件名。
 
 ```sh
 export QRYPT_HTTP_TOKEN=$(openssl rand -hex 20)
@@ -203,6 +205,13 @@ qrypt http serve --detach
 curl -H "Authorization: Bearer $QRYPT_HTTP_TOKEN" "http://127.0.0.1:8800/v1/fs/list?path=/cloud"
 curl -H "Authorization: Bearer $QRYPT_HTTP_TOKEN" -H "Range: bytes=0-1023" \
   "http://127.0.0.1:8800/v1/fs/read?path=/cloud/movie.mp4" -o head.bin
+
+# v2: 写入、断点续传与幂等重试
+curl -X POST -H "Authorization: Bearer $QRYPT_HTTP_TOKEN" \
+  --data-binary @local.bin "http://127.0.0.1:8800/v1/fs/upload?path=/cloud/local.bin&wait=1"
+curl -X POST -H "Authorization: Bearer $QRYPT_HTTP_TOKEN" \
+  -H "X-Qrypt-Operation-Id: mkdir-cloud-backup" -H "Content-Type: application/json" \
+  -d '{"path":"/cloud/backup"}' "http://127.0.0.1:8800/v1/fs/mkdir"
 ```
 
 ## 文件系统操作

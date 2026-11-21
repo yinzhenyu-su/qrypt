@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,8 +21,24 @@ import (
 const testToken = "test-token"
 
 type fakeCore struct {
-	files map[string]string
-	dirs  map[string]bool
+	mu        sync.Mutex
+	files     map[string]string
+	dirs      map[string]bool
+	pending   map[string]bool
+	writes    []fakeWrite
+	mkdirs    []string
+	removes   []string
+	renames   [][2]string
+	copies    [][2]string
+	truncates []string
+	waits     []string
+	lastOpID  string
+}
+
+type fakeWrite struct {
+	path   string
+	offset int64
+	data   string
 }
 
 func newFakeCore() *fakeCore {
@@ -30,7 +47,8 @@ func newFakeCore() *fakeCore {
 			"/local/hello.txt": "hello world",
 			"/local/empty.txt": "",
 		},
-		dirs: map[string]bool{"/": true, "/local": true},
+		dirs:    map[string]bool{"/": true, "/local": true},
+		pending: map[string]bool{},
 	}
 }
 
@@ -90,6 +108,117 @@ func (c *fakeCore) FSReadStream(_ context.Context, path string, offset, size int
 
 func (c *fakeCore) FSPendingUploads(context.Context) ([]vfs.PendingUpload, error) {
 	return []vfs.PendingUpload{{Path: "/local/pending.txt", Size: 3}}, nil
+}
+
+func (c *fakeCore) FSCreate(ctx context.Context, path string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.files[path]; !ok {
+		c.files[path] = ""
+	}
+	c.lastOpID = control.OperationIDFromContext(ctx)
+	return nil
+}
+
+func (c *fakeCore) FSWriteAt(ctx context.Context, path string, offset int64, data []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	content, ok := c.files[path]
+	if !ok {
+		return 0, fmt.Errorf("%w: %s", drive.ErrNotFound, path)
+	}
+	if offset < 0 {
+		return 0, fmt.Errorf("negative offset")
+	}
+	end := offset + int64(len(data))
+	if end < offset {
+		return 0, fmt.Errorf("offset overflow")
+	}
+	if end > int64(len(content)) {
+		content += strings.Repeat("\x00", int(end)-len(content))
+	}
+	c.files[path] = content[:offset] + string(data) + content[end:]
+	c.lastOpID = control.OperationIDFromContext(ctx)
+	c.writes = append(c.writes, fakeWrite{path: path, offset: offset, data: string(data)})
+	return len(data), nil
+}
+
+func (c *fakeCore) FSFlush(context.Context, string) error { return nil }
+
+func (c *fakeCore) FSMkdir(_ context.Context, path string) (control.FSEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dirs[path] = true
+	c.mkdirs = append(c.mkdirs, path)
+	return control.FSEntry{ID: path, Name: pathBase(path), Path: path, IsDir: true}, nil
+}
+
+func (c *fakeCore) FSRemove(_ context.Context, path string, dir bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if dir {
+		delete(c.dirs, path)
+	} else {
+		delete(c.files, path)
+	}
+	c.removes = append(c.removes, path)
+	return nil
+}
+
+func (c *fakeCore) FSRename(_ context.Context, source, destination string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if content, ok := c.files[source]; ok {
+		delete(c.files, source)
+		c.files[destination] = content
+	} else if c.dirs[source] {
+		delete(c.dirs, source)
+		c.dirs[destination] = true
+	} else {
+		return fmt.Errorf("%w: %s", drive.ErrNotFound, source)
+	}
+	c.renames = append(c.renames, [2]string{source, destination})
+	return nil
+}
+
+func (c *fakeCore) FSCopy(_ context.Context, req control.FSCopyRequest) (json.RawMessage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	content, ok := c.files[req.Source]
+	if !ok {
+		if !c.dirs[req.Source] {
+			return nil, fmt.Errorf("%w: %s", drive.ErrNotFound, req.Source)
+		}
+		c.dirs[req.Destination] = true
+	} else {
+		c.files[req.Destination] = content
+	}
+	c.copies = append(c.copies, [2]string{req.Source, req.Destination})
+	return json.RawMessage(`{"copied":true}`), nil
+}
+
+func (c *fakeCore) FSTruncate(_ context.Context, path string, size int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	content, ok := c.files[path]
+	if !ok {
+		return fmt.Errorf("%w: %s", drive.ErrNotFound, path)
+	}
+	if int64(len(content)) < size {
+		content += strings.Repeat("\x00", int(size)-len(content))
+	} else {
+		content = content[:size]
+	}
+	c.files[path] = content
+	c.truncates = append(c.truncates, path)
+	return nil
+}
+
+func (c *fakeCore) FSWaitPath(_ context.Context, path string, _ time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.waits = append(c.waits, path)
+	return nil
 }
 
 func pathBase(value string) string {
@@ -326,12 +455,12 @@ func TestReadHeadRangeAndConditional(t *testing.T) {
 	}
 }
 
-func TestWriteEndpointsRejected(t *testing.T) {
+func TestLowLevelWriteEndpointsRejected(t *testing.T) {
 	server, _ := newTestServer(t, Options{})
-	for _, target := range []string{"/v1/fs/mkdir", "/v1/fs/remove", "/v1/fs/copy"} {
+	for _, target := range []string{"/v1/fs/create", "/v1/fs/write", "/v1/fs/flush", "/v1/fs/invalidate"} {
 		resp := doRequest(t, server, http.MethodPost, target, `{"path":"/local/x"}`, nil)
 		body := readBody(t, resp)
-		if resp.StatusCode != http.StatusMethodNotAllowed || !strings.Contains(body, "read-only") {
+		if resp.StatusCode != http.StatusMethodNotAllowed || !strings.Contains(body, "/v1/fs/upload") {
 			t.Fatalf("%s status = %d, body = %s", target, resp.StatusCode, body)
 		}
 	}
@@ -370,5 +499,149 @@ func TestTasksAndEvents(t *testing.T) {
 	}
 	if !strings.Contains(string(buffer[:read]), "event: status") {
 		t.Fatalf("unexpected event stream: %q", buffer[:read])
+	}
+}
+
+func TestUploadChunkedAndStatus(t *testing.T) {
+	server, core := newTestServer(t, Options{})
+	resp := doRequest(t, server, http.MethodPost, "/v1/fs/upload?path=/local/up.bin", "abc", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = doRequest(t, server, http.MethodPost, "/v1/fs/upload?path=/local/up.bin&offset=3", "de", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second upload status = %d", resp.StatusCode)
+	}
+	var envelope struct {
+		Data struct {
+			Offset  int64 `json:"offset"`
+			Pending bool  `json:"pending"`
+			Task    struct {
+				Path  string `json:"path"`
+				Bytes int64  `json:"bytes"`
+			} `json:"task"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	resp.Body.Close()
+	if envelope.Data.Offset != 5 || envelope.Data.Task.Bytes != 5 || envelope.Data.Task.Path != "/local/up.bin" {
+		t.Fatalf("unexpected upload response: %+v", envelope.Data)
+	}
+	core.mu.Lock()
+	if got := core.files["/local/up.bin"]; got != "abcde" {
+		t.Fatalf("stored content = %q", got)
+	}
+	if len(core.writes) != 2 || core.writes[1].offset != 3 {
+		t.Fatalf("writes = %+v", core.writes)
+	}
+	core.mu.Unlock()
+
+	resp = doRequest(t, server, http.MethodGet, "/v1/fs/upload/status?path=/local/up.bin", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status endpoint = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestUploadWaitAndCSRF(t *testing.T) {
+	server, core := newTestServer(t, Options{})
+	headers := map[string]string{"X-Qrypt-Operation-Id": "op-1", "X-Qrypt-CSRF-Token": testToken, "Cookie": "session=1"}
+	resp := doRequest(t, server, http.MethodPost, "/v1/fs/upload?path=/local/wait.bin&wait=1", "x", headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload with csrf = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	core.mu.Lock()
+	if len(core.waits) != 1 || core.waits[0] != "/local/wait.bin" {
+		t.Fatalf("waits = %v", core.waits)
+	}
+	if core.lastOpID != "op-1" {
+		t.Fatalf("operation id = %q, want op-1", core.lastOpID)
+	}
+	core.mu.Unlock()
+
+	resp = doRequest(t, server, http.MethodPost, "/v1/fs/upload?path=/local/bad.bin", "x", map[string]string{"Cookie": "session=1"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing csrf status = %d, want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestWriteMutationEndpoints(t *testing.T) {
+	server, core := newTestServer(t, Options{})
+	checks := []struct {
+		target string
+		body   string
+	}{
+		{"/v1/fs/mkdir", `{"path":"/local/newdir"}`},
+		{"/v1/fs/upload?path=/local/newdir/file.bin", "payload"},
+		{"/v1/fs/rename", `{"source":"/local/newdir/file.bin","destination":"/local/newdir/moved.bin"}`},
+		{"/v1/fs/copy", `{"source":"/local/newdir/moved.bin","destination":"/local/newdir/copied.bin"}`},
+		{"/v1/fs/truncate", `{"path":"/local/newdir/copied.bin","size":3}`},
+		{"/v1/fs/remove", `{"path":"/local/newdir/copied.bin"}`},
+	}
+	for _, check := range checks {
+		resp := doRequest(t, server, http.MethodPost, check.target, check.body, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d", check.target, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	if !core.dirs["/local/newdir"] || len(core.renames) != 1 || len(core.copies) != 1 || len(core.truncates) != 1 {
+		t.Fatalf("mutations not recorded: %+v", core)
+	}
+	if _, ok := core.files["/local/newdir/copied.bin"]; ok {
+		t.Fatal("removed file still present")
+	}
+}
+
+func TestWriteEndpointErrors(t *testing.T) {
+	server, _ := newTestServer(t, Options{MaxUploadBytes: 4})
+	resp := doRequest(t, server, http.MethodGet, "/v1/fs/mkdir", "", nil)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET mkdir = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = doRequest(t, server, http.MethodPost, "/v1/fs/mkdir", "{", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad JSON = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = doRequest(t, server, http.MethodPost, "/v1/fs/truncate", `{"path":"/local/missing.bin","size":1}`, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing truncate = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = doRequest(t, server, http.MethodPost, "/v1/fs/upload?path=/local/big.bin", "abcdef", nil)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized upload = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestConcurrentUploads(t *testing.T) {
+	server, _ := newTestServer(t, Options{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, name := range []string{"/local/a.bin", "/local/b.bin"} {
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			resp := doRequest(t, server, http.MethodPost, "/v1/fs/upload?path="+path, "data", nil)
+			if resp.StatusCode != http.StatusOK {
+				errs <- fmt.Errorf("upload %s = %d", path, resp.StatusCode)
+			}
+			resp.Body.Close()
+		}(name)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
