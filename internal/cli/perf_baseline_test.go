@@ -64,6 +64,13 @@ func TestResidentCoreBaseline(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "big.bin"), bigData, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	remote2 := filepath.Join(base, "remote2")
+	if err := os.MkdirAll(remote2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote2, "other.bin"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	configPath := filepath.Join(base, "qrypt.toml")
 	workDir := filepath.Join(base, "work")
@@ -79,7 +86,12 @@ name = "local"
 type = "perf-localfs"
 [mounts.params]
 root_path = %s
-`, util.TOMLPath(filepath.Join(base, "mnt")), util.TOMLPath(workDir), util.TOMLPath(remote))
+[[mounts]]
+name = "local2"
+type = "perf-localfs"
+[mounts.params]
+root_path = %s
+`, util.TOMLPath(filepath.Join(base, "mnt")), util.TOMLPath(workDir), util.TOMLPath(remote), util.TOMLPath(remote2))
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +153,9 @@ root_path = %s
 	// RPC can be served.
 	coldRun := startServe()
 	coldStart := waitRunning(t, coldRun)
-	coldInit := counters.initCalls.Load()
+	// Lazy mount init: a resident Core starts without opening any mount, so a
+	// command that touches one mount never pays the other mounts' Init cost.
+	coldInitAtReady := counters.initCalls.Load()
 
 	listStart := time.Now()
 	if out, err := executeRoot(t, "fs", "list", "/local", "--config", configPath); err != nil {
@@ -150,6 +164,7 @@ root_path = %s
 	firstList := time.Since(listStart)
 	firstListChildren := counters.listCalls.Load()
 	resolveCalls := counters.resolveCalls.Load()
+	coldInitAfterFirstList := counters.initCalls.Load()
 
 	rootListBefore := counters.listCalls.Load()
 	if out, err := executeRoot(t, "fs", "list", "/", "--config", configPath); err != nil {
@@ -170,14 +185,23 @@ root_path = %s
 	}
 	hotListChildren := counters.listCalls.Load() - hotBefore
 
-	// The in-memory listing cache has a 10s TTL. Wait it out and list once more
-	// to measure the miss path that the persistent list cache (#32) is meant to
-	// make free after a Core restart.
+	// The in-memory listing cache has a 10s TTL, but the persistent listing
+	// cache (#32) still serves the listing for 30s, so this call must not reach
+	// the driver. Measure both boundaries.
 	time.Sleep(11 * time.Second)
+	persistentBefore := counters.listCalls.Load()
+	persistentStart := time.Now()
+	if out, err := executeRoot(t, "fs", "list", "/local/dir", "--config", configPath); err != nil {
+		t.Fatalf("post-memory-TTL fs list: %v\n%s", err, out)
+	}
+	persistentList := time.Since(persistentStart)
+	persistentListChildren := counters.listCalls.Load() - persistentBefore
+
+	time.Sleep(20 * time.Second)
 	expiredBefore := counters.listCalls.Load()
 	expiredStart := time.Now()
 	if out, err := executeRoot(t, "fs", "list", "/local/dir", "--config", configPath); err != nil {
-		t.Fatalf("post-TTL fs list: %v\n%s", err, out)
+		t.Fatalf("post-persistent-TTL fs list: %v\n%s", err, out)
 	}
 	expiredList := time.Since(expiredStart)
 	expiredListChildren := counters.listCalls.Load() - expiredBefore
@@ -216,7 +240,7 @@ root_path = %s
 	// touching the driver.
 	restartRun := startServe()
 	restartStart := waitRunning(t, restartRun)
-	restartInit := counters.initCalls.Load() - coldInit
+	restartInit := counters.initCalls.Load() - coldInitAfterFirstList
 	restartRead := readRange(t)
 
 	rssKB := processRSSKB(t)
@@ -230,7 +254,8 @@ root_path = %s
 		fmt.Fprintf(&report, "| %s | %s | %v |\n", scenario, metric, value)
 	}
 	row("cold start", "ready_ms", coldStart.Milliseconds())
-	row("cold start", "init_calls", coldInit)
+	row("cold start", "init_calls_at_ready", coldInitAtReady)
+	row("cold start", "init_calls_after_first_list", coldInitAfterFirstList)
 	row("cold start", "resolve_calls", resolveCalls)
 	row("cold start", "first_list_ms", firstList.Milliseconds())
 	row("cold start", "first_list_children", firstListChildren)
@@ -238,8 +263,10 @@ root_path = %s
 	row("warm owner", "list_children_calls", hotListChildren)
 	row("warm owner", "list_p50_ms", hotP50.Milliseconds())
 	row("warm owner", "list_p95_ms", hotP95.Milliseconds())
-	row("after 10s TTL", "list_ms", expiredList.Milliseconds())
-	row("after 10s TTL", "list_children_calls", expiredListChildren)
+	row("after 10s memory TTL", "list_ms", persistentList.Milliseconds())
+	row("after 10s memory TTL", "list_children_calls", persistentListChildren)
+	row("after 30s persistent TTL", "list_ms", expiredList.Milliseconds())
+	row("after 30s persistent TTL", "list_children_calls", expiredListChildren)
 	row("namespace root", "list_children_calls", rootListChildren)
 	row("restart", "ready_ms", restartStart.Milliseconds())
 	row("restart", "init_calls", restartInit)
@@ -254,8 +281,11 @@ root_path = %s
 		}
 	}
 
-	if coldInit != 1 {
-		t.Fatalf("cold start should initialize one driver, got %d", coldInit)
+	if coldInitAtReady != 0 {
+		t.Fatalf("lazy cold start must not initialize mounts before first access, got %d", coldInitAtReady)
+	}
+	if coldInitAfterFirstList != 1 {
+		t.Fatalf("first list should initialize exactly the touched mount, got %d", coldInitAfterFirstList)
 	}
 	if firstListChildren < 1 {
 		t.Fatalf("first list should call the driver, got %d children calls", firstListChildren)
@@ -266,11 +296,14 @@ root_path = %s
 	if hotListChildren >= int64(len(hotDurations)) {
 		t.Fatalf("warm listings inside the 10s TTL should be served from memory, got %d driver calls for %d runs", hotListChildren, len(hotDurations))
 	}
-	if expiredListChildren < 1 {
-		t.Fatalf("listing after the TTL must reach the driver, got %d calls", expiredListChildren)
+	if persistentListChildren != 0 {
+		t.Fatalf("persistent listing cache should serve past the memory TTL, got %d driver calls", persistentListChildren)
 	}
-	if restartInit != 1 {
-		t.Fatalf("restart should initialize one driver, got %d", restartInit)
+	if expiredListChildren < 1 {
+		t.Fatalf("listing after the persistent TTL must reach the driver, got %d calls", expiredListChildren)
+	}
+	if restartInit > 1 {
+		t.Fatalf("restart should initialize at most the touched mount, got %d", restartInit)
 	}
 	if firstRead < 1 {
 		t.Fatalf("first read should call the driver, got %d", firstRead)

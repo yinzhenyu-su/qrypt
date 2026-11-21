@@ -151,7 +151,7 @@ func sourceUploadTemporaryName(name string) string {
 }
 
 func (n *Namespace) SupportsSourceUpload(path string) bool {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(context.Background(), path)
 	if err != nil || root || rest == "/" {
 		return false
 	}
@@ -159,7 +159,7 @@ func (n *Namespace) SupportsSourceUpload(path string) bool {
 }
 
 func (n *Namespace) SupportsResumableSourceUpload(path string) bool {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(context.Background(), path)
 	if err != nil || root || rest == "/" {
 		return false
 	}
@@ -167,7 +167,7 @@ func (n *Namespace) SupportsResumableSourceUpload(path string) bool {
 }
 
 func (n *Namespace) UploadSource(ctx context.Context, path string, req SourceUploadRequest) (drive.Entry, error) {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return drive.Entry{}, err
 	}

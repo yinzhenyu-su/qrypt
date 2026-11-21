@@ -38,7 +38,7 @@ func (n *Namespace) ClearReadCache() error {
 
 // InvalidateListCache routes a listing refresh through the owning mount.
 func (n *Namespace) InvalidateListCache(ctx context.Context, path string) error {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func (n *Namespace) InvalidateListCache(ctx context.Context, path string) error 
 // NotifyInvalidation publishes stale kernel-view paths for a namespace path so
 // FUSE sessions subscribed to the namespace refresh it.
 func (n *Namespace) NotifyInvalidation(ctx context.Context, path string) error {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func (n *Namespace) Stat(ctx context.Context, path string) (drive.Entry, error) 
 	if isVirtualRootAppleMetadataPath(path) {
 		return virtualRootAppleMetadataEntry(path), nil
 	}
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -113,7 +113,7 @@ func (n *Namespace) Stat(ctx context.Context, path string) (drive.Entry, error) 
 }
 
 func (n *Namespace) List(ctx context.Context, path string) ([]drive.Entry, error) {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func (n *Namespace) List(ctx context.Context, path string) ([]drive.Entry, error
 }
 
 func (n *Namespace) ListPage(ctx context.Context, path, cursor string, limit int) (ListPageResult, error) {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return ListPageResult{}, err
 	}
@@ -135,7 +135,7 @@ func (n *Namespace) ListPage(ctx context.Context, path, cursor string, limit int
 }
 
 func (n *Namespace) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +149,7 @@ func (n *Namespace) Read(ctx context.Context, path string, offset, size int64) (
 	if isVirtualRootAppleMetadataPath(path) {
 		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func (n *Namespace) Read(ctx context.Context, path string, offset, size int64) (
 
 // ReadStream opens a bounded-memory sequential reader for a mounted path.
 func (n *Namespace) ReadStream(ctx context.Context, path string) (io.ReadCloser, error) {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func (n *Namespace) CancelReadPrefetch(ctx context.Context, path string) error {
 	if isVirtualRootAppleMetadataPath(path) {
 		return nil
 	}
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ func (n *Namespace) ReadRaw(ctx context.Context, path string, offset, size int64
 	if isVirtualRootAppleMetadataPath(path) {
 		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +214,7 @@ func (n *Namespace) ReadRaw(ctx context.Context, path string, offset, size int64
 }
 
 func (n *Namespace) RefreshPath(path string) {
-	mount, rest, _, err := n.resolve(path)
+	mount, rest, _, err := n.resolve(context.Background(), path)
 	if err != nil || mount == nil {
 		return
 	}

@@ -46,12 +46,19 @@ func (n *Namespace) Mounts() []MountInfo {
 		return nil
 	}
 	n.mu.RLock()
-	mounts := make([]MountInfo, 0, len(n.mounts)+len(n.failures))
+	mounts := make([]MountInfo, 0, len(n.mounts)+len(n.lazy)+len(n.failures))
 	for name, fs := range n.mounts {
 		mounts = append(mounts, MountInfo{
 			Name:      name,
 			Path:      "/" + name,
 			Encrypted: fs.encrypted,
+		})
+	}
+	for name := range n.lazy {
+		mounts = append(mounts, MountInfo{
+			Name:  name,
+			Path:  "/" + name,
+			State: "lazy",
 		})
 	}
 	failures := make([]MountInfo, 0, len(n.failures))

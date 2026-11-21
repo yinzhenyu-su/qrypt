@@ -267,17 +267,26 @@ func mountAsVFS(name string, fs MountedFileSystem) (*VFS, error) {
 type Namespace struct {
 	mu     sync.RWMutex
 	mounts map[string]*VFS
+	// lazy holds configured mounts whose VFS has not been opened yet. Opening
+	// happens on first access to the mount so a cold start initializes only
+	// the mounts a command actually touches.
+	lazy map[string]*lazyMount
 	// failures are configured mounts that could not be initialized when the
 	// namespace was built; they surface through Mounts() (state "failed").
 	failures []MountFailure
 	// subs tracks live invalidation subscriptions so AddMount/RemoveMount
 	// can attach and detach mounts without breaking the listener contract.
-	subs      map[*invalidationSubscription]struct{}
+	subs map[*invalidationSubscription]struct{}
+	// startCtx is the lifecycle context from the first Start call; lazily
+	// opened mounts are started with it so their workers behave like the
+	// eagerly built ones.
+	startCtx  context.Context
 	createdAt time.Time
+	closed    bool
 }
 
 func NewNamespace(mounts []Mount) (*Namespace, error) {
-	ns := &Namespace{mounts: map[string]*VFS{}, subs: map[*invalidationSubscription]struct{}{}, createdAt: time.Now()}
+	ns := &Namespace{mounts: map[string]*VFS{}, lazy: map[string]*lazyMount{}, subs: map[*invalidationSubscription]struct{}{}, createdAt: time.Now()}
 	for _, mount := range mounts {
 		name := vfstypes.CleanMountName(mount.Name)
 		if name == "" {
@@ -347,9 +356,16 @@ func (n *Namespace) RemoveMount(name string) error {
 // only propagates - it never replaces or re-owns a mount's lifecycle, and
 // there is no way to stop one mount without cancelling the shared context.
 func (n *Namespace) Start(ctx context.Context) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
+	n.mu.Lock()
+	if n.startCtx == nil {
+		n.startCtx = ctx
+	}
+	mounts := make([]*VFS, 0, len(n.mounts))
 	for _, fs := range n.mounts {
+		mounts = append(mounts, fs)
+	}
+	n.mu.Unlock()
+	for _, fs := range mounts {
 		fs.Start(ctx)
 	}
 }
@@ -363,12 +379,14 @@ func (n *Namespace) Start(ctx context.Context) {
 // does not prevent the remaining mounts from closing. Close is idempotent
 // because each mount's Close is idempotent.
 func (n *Namespace) Close(ctx context.Context) error {
-	n.mu.RLock()
+	n.mu.Lock()
+	n.closed = true
+	n.startCtx = nil
 	mounts := make([]*VFS, 0, len(n.mounts))
 	for _, fs := range n.mounts {
 		mounts = append(mounts, fs)
 	}
-	n.mu.RUnlock()
+	n.mu.Unlock()
 	errCh := make(chan error, len(mounts))
 	var wg sync.WaitGroup
 	for _, fs := range mounts {
@@ -410,7 +428,9 @@ func firstVirtualSegment(path string) string {
 	return name
 }
 
-func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
+// resolve maps a namespace path to its mount, opening a lazily configured
+// mount on first access.
+func (n *Namespace) resolve(ctx context.Context, path string) (*VFS, string, bool, error) {
 	name, rest, root := splitNamespacePath(path)
 	if root {
 		return nil, "/", true, nil
@@ -418,11 +438,42 @@ func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 	name = vfstypes.CleanMountName(name)
 	n.mu.RLock()
 	mount := n.mounts[name]
+	lazy := n.lazy[name]
+	closed := n.closed
 	n.mu.RUnlock()
-	if mount == nil {
+	if mount != nil {
+		return mount, rest, false, nil
+	}
+	if lazy == nil {
 		return nil, "", false, fmt.Errorf("%w: unknown mount %q", ErrNotFound, name)
 	}
+	if closed {
+		return nil, "", false, fmt.Errorf("vfs: namespace is closed")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mount, err := lazy.resolve(ctx, func(fs *VFS) { n.attachLazy(name, fs) })
+	if err != nil {
+		return nil, "", false, fmt.Errorf("vfs: mount %q: %w", name, err)
+	}
 	return mount, rest, false, nil
+}
+
+// attachLazy registers a lazily opened mount, starts its workers with the
+// namespace lifecycle context, and extends live invalidation subscriptions.
+func (n *Namespace) attachLazy(name string, fs *VFS) {
+	n.mu.Lock()
+	n.mounts[name] = fs
+	delete(n.lazy, name)
+	for sub := range n.subs {
+		sub.attach(name, fs)
+	}
+	startCtx := n.startCtx
+	n.mu.Unlock()
+	if startCtx != nil {
+		fs.Start(startCtx)
+	}
 }
 
 // SetReadPlanOverride applies a measurement-only override to one mount.
@@ -447,18 +498,17 @@ func (n *Namespace) ClearReadPlanOverride() {
 }
 
 func (n *Namespace) ReadSourceForPath(path string) *drive.ReadSource {
-	mount, rest, isRoot, err := n.resolve(path)
+	mount, rest, isRoot, err := n.resolve(context.Background(), path)
 	if err != nil || isRoot {
 		return nil
 	}
 	return mount.ReadSourceForPath(rest)
 }
+
 func (n *Namespace) ReadSourceForMount(name string) *drive.ReadSource {
 	name = vfstypes.CleanMountName(name)
-	n.mu.RLock()
-	mount := n.mounts[name]
-	n.mu.RUnlock()
-	if mount == nil {
+	mount, _, _, err := n.resolve(context.Background(), "/"+name)
+	if err != nil || mount == nil {
 		return nil
 	}
 	return mount.ReadSourceForMount(name)
@@ -467,8 +517,11 @@ func (n *Namespace) ReadSourceForMount(name string) *drive.ReadSource {
 func (n *Namespace) rootEntries() []drive.Entry {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	names := make([]string, 0, len(n.mounts))
+	names := make([]string, 0, len(n.mounts)+len(n.lazy))
 	for name := range n.mounts {
+		names = append(names, name)
+	}
+	for name := range n.lazy {
 		names = append(names, name)
 	}
 	sort.Strings(names)

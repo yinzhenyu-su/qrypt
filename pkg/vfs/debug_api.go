@@ -158,7 +158,7 @@ func (n *Namespace) DebugInjectUploadCancel(ctx context.Context, req faultinject
 	if req.Path == "" {
 		return faultinject.DebugUploadCancelResult{}, fmt.Errorf("vfs: namespace debug upload cancel requires path")
 	}
-	mount, rest, root, err := n.resolve(req.Path)
+	mount, rest, root, err := n.resolve(ctx, req.Path)
 	if err != nil {
 		return faultinject.DebugUploadCancelResult{}, err
 	}
@@ -238,11 +238,29 @@ func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]diagno
 		health, _ := m.fs.MountHealth(ctx, m.name)
 		results = append(results, health...)
 	}
+	// Lazily configured mounts are healthy but not opened yet; report them so
+	// health output lists every configured mount without forcing a cold init.
+	n.mu.RLock()
+	lazyNames := make([]string, 0, len(n.lazy))
+	for name := range n.lazy {
+		lazyNames = append(lazyNames, name)
+	}
+	n.mu.RUnlock()
+	sort.Strings(lazyNames)
+	for _, name := range lazyNames {
+		results = append(results, diagnostics.MountHealth{
+			Mount:     name,
+			OK:        true,
+			Level:     "lazy",
+			CheckedAt: time.Now(),
+		})
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Mount < results[j].Mount })
 	return results, nil
 }
 
 func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (diagnostics.DebugResolveInfo, error) {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return diagnostics.DebugResolveInfo{}, err
 	}
@@ -293,7 +311,7 @@ func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string)
 }
 
 func (n *Namespace) DebugConsistency(ctx context.Context, path string) (diagnostics.ConsistencyReport, error) {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return diagnostics.ConsistencyReport{}, err
 	}
@@ -414,7 +432,7 @@ func (n *Namespace) DebugInjectReadFault(ctx context.Context, req faultinject.De
 		return faultinject.DebugReadFault{}, fmt.Errorf("vfs: read fault requires a path")
 	}
 	fullPath := vfstypes.CleanVirtualPath(req.Path)
-	mount, rest, root, err := n.resolve(fullPath)
+	mount, rest, root, err := n.resolve(ctx, fullPath)
 	if err != nil {
 		return faultinject.DebugReadFault{}, err
 	}
@@ -458,7 +476,7 @@ func (n *Namespace) DebugReadFaults(ctx context.Context) []faultinject.DebugRead
 // DebugInvalidateReadCache drops one file's cached read state on the mount
 // that owns path. The path is a namespace path such as /cloud/movie.mp4.
 func (n *Namespace) DebugInvalidateReadCache(ctx context.Context, path string) (string, error) {
-	mount, rest, root, err := n.resolve(path)
+	mount, rest, root, err := n.resolve(ctx, path)
 	if err != nil {
 		return "", err
 	}
@@ -472,7 +490,7 @@ func (n *Namespace) DebugStaging(ctx context.Context, path string) (diagnostics.
 	path = vfstypes.CleanVirtualPath(path)
 	report := diagnostics.DebugStagingReport{}
 	if path != "/" {
-		mount, rest, root, err := n.resolve(path)
+		mount, rest, root, err := n.resolve(ctx, path)
 		if err != nil {
 			return diagnostics.DebugStagingReport{}, err
 		}

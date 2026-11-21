@@ -490,6 +490,11 @@ root_path = `+util.TOMLPath(remote)+`
 		t.Fatal(err)
 	}
 	defer c.Close(ctx)
+	// Namespace mounts are opened lazily; list the mount so its read-cache
+	// directory exists before this test writes into it.
+	if _, err := c.fs.List(ctx, "/quark"); err != nil {
+		t.Fatal(err)
+	}
 
 	readingFile := filepath.Join(runtime.ReadCacheDir, "quark", "data.batch")
 	if err := os.WriteFile(readingFile, []byte("read-cache"), 0o644); err != nil {

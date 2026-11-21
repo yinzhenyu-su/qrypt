@@ -250,6 +250,15 @@ session in `Core.Close` before the VFS is closed. Control endpoints:
 This keeps construction policy out of VFS and keeps provider details out of the
 mount layer.
 
+The resident Core opens namespace mounts lazily (`core.Options.LazyMounts`):
+`vfs.NewLazyNamespace` records every configured name for root listings and
+mount health, but a driver's `Init` and root resolve happen on the first
+operation that touches that mount, coalesced per mount. A cold `qrypt fs`
+command therefore pays the startup cost of exactly the mount it uses, not of
+every configured mount. eager construction remains the default for
+`Core.BuildFileSystem` callers (mobile, tests, isolated mounts), and
+`Core.Close` closes every mount opened lazily.
+
 ### Persisted Listing Cache
 
 `pkg/vfs/listcache` persists each directory's raw remote listing as one JSON
