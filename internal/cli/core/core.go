@@ -55,6 +55,7 @@ caches, upload workers and journal that mounts and one-shot fs commands use.`,
 	rt.WithPersistentConfigFlag(cmd)
 	cmd.AddCommand(newServeCommand(rt))
 	cmd.AddCommand(newStatusCommand(rt))
+	cmd.AddCommand(newEndpointCommand(rt))
 	cmd.AddCommand(newStopCommand(rt))
 	return cmd
 }
@@ -117,17 +118,18 @@ func serveForeground(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime
 		clone.Logging.LogFile = flags.logFile
 		cfg = &clone
 	}
-	runDir := corepkg.RuntimeRunDir(state.Path, cfg)
+	configPath := canonicalConfigPath(state.Path)
+	runDir := corepkg.RuntimeRunDir(configPath, cfg)
 	runtime := corepkg.RuntimeLayout{RunDir: runDir}
 	controlListen := corepkg.ControlSocketPath(cfg, runtime)
 
 	ctx, cancel := context.WithCancel(commandContext(cmd))
 	defer cancel()
 	instance, err := corepkg.OpenConfig(ctx, cfg, corepkg.Options{
-		ConfigPath:    state.Path,
+		ConfigPath:    configPath,
 		Runtime:       runtime,
 		ControlListen: controlListen,
-		Owner:         &corepkg.OwnerOptions{ConfigPath: state.Path},
+		Owner:         &corepkg.OwnerOptions{ConfigPath: configPath},
 		MountHost:     newFuseMountHost(rt, cfg),
 	})
 	if err != nil {
@@ -318,6 +320,23 @@ func EnsureClient(ctx context.Context, rt cliruntime.Runtime, state cliruntime.C
 }
 
 // verifyCoreStatus rejects a Core that cannot serve this client faithfully.
+// canonicalConfigPath resolves a config path to an absolute, symlink-free
+// form so a Core started with "./qrypt.toml" and a client resolving the same
+// file to an absolute path compare equal.
+func canonicalConfigPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return filepath.Clean(abs)
+}
+
 func verifyCoreStatus(status control.RuntimeStatus, state cliruntime.ConfigState) error {
 	if status.ProtocolVersion != control.ProtocolVersion {
 		return fmt.Errorf("core: resident Core speaks protocol v%d but this client speaks v%d; restart it with `qrypt core stop` and retry", status.ProtocolVersion, control.ProtocolVersion)
@@ -334,7 +353,8 @@ func verifyCoreStatus(status control.RuntimeStatus, state cliruntime.ConfigState
 	if err != nil {
 		return fmt.Errorf("core: resolve config path: %w", err)
 	}
-	if status.ConfigPath != "" && filepath.Clean(status.ConfigPath) != filepath.Clean(configPath) {
+	configPath = canonicalConfigPath(configPath)
+	if status.ConfigPath != "" && canonicalConfigPath(status.ConfigPath) != configPath {
 		return fmt.Errorf("core: resident Core uses config %q but this command uses %q; stop it with `qrypt core stop` and retry", status.ConfigPath, configPath)
 	}
 	want, err := ownerlock.FingerprintFile(configPath)
@@ -422,6 +442,96 @@ func runStatus(rt cliruntime.Runtime, cmd *cobra.Command, flags statusFlags) err
 		fmt.Fprintf(out, "detail: %s\n", report.Detail)
 	}
 	return nil
+}
+
+type endpointFlags struct {
+	json bool
+}
+
+// endpointReport is the machine-readable `core endpoint --json` payload. The
+// endpoint is configuration-derived, so it is reported even when no Core is
+// running; Running and the process fields then describe the reachable Core.
+type endpointReport struct {
+	Endpoint        string `json:"endpoint"`
+	Network         string `json:"network"`
+	RunDir          string `json:"run_dir,omitempty"`
+	Running         bool   `json:"running"`
+	PID             int    `json:"pid,omitempty"`
+	ProtocolVersion int    `json:"protocol_version,omitempty"`
+	Version         string `json:"version,omitempty"`
+}
+
+func newEndpointCommand(rt cliruntime.Runtime) *cobra.Command {
+	flags := endpointFlags{}
+	cmd := &cobra.Command{
+		Use:   "endpoint",
+		Short: "Print the control endpoint of this configuration",
+		Long: `Print the control endpoint that an attached client must dial for this
+configuration. The path is derived from the config file and the runtime layout,
+so it is printed before a Core starts; "running" then says whether one answers.`,
+		Example: `  qrypt core endpoint
+  qrypt core endpoint --json`,
+		Args: cliruntime.NoArgs(rt),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runEndpoint(rt, cmd, flags)
+		},
+	}
+	cmd.Flags().BoolVar(&flags.json, "json", false, "print machine-readable JSON")
+	return cmd
+}
+
+func runEndpoint(rt cliruntime.Runtime, cmd *cobra.Command, flags endpointFlags) error {
+	state, err := rt.CommandConfig(cmd)
+	if err != nil {
+		return err
+	}
+	if state.Cfg == nil {
+		return rt.ConfigNotFoundError()
+	}
+	runDir := corepkg.RuntimeRunDir(state.Path, state.Cfg)
+	endpoint := corepkg.ControlSocketPath(state.Cfg, corepkg.RuntimeLayout{RunDir: runDir})
+	report := endpointReport{
+		Endpoint: endpoint,
+		Network:  endpointNetwork(endpoint),
+		RunDir:   runDir,
+	}
+	if status, err := fetchStatus(cmd.Context(), endpoint); err == nil {
+		report.Running = true
+		report.PID = status.PID
+		report.ProtocolVersion = status.ProtocolVersion
+		report.Version = status.Version
+	}
+	out := cmd.OutOrStdout()
+	if flags.json {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+	fmt.Fprintf(out, "endpoint: %s\n", report.Endpoint)
+	fmt.Fprintf(out, "network: %s\n", report.Network)
+	if report.RunDir != "" {
+		fmt.Fprintf(out, "run_dir: %s\n", report.RunDir)
+	}
+	fmt.Fprintf(out, "running: %t\n", report.Running)
+	if report.Running {
+		fmt.Fprintf(out, "pid: %d\n", report.PID)
+		fmt.Fprintf(out, "protocol_version: %d\n", report.ProtocolVersion)
+		if report.Version != "" {
+			fmt.Fprintf(out, "version: %s\n", report.Version)
+		}
+	}
+	return nil
+}
+
+func endpointNetwork(endpoint string) string {
+	switch {
+	case strings.HasPrefix(endpoint, "tcp:"),
+		strings.HasPrefix(endpoint, "http://"),
+		strings.HasPrefix(endpoint, "https://"):
+		return "tcp"
+	default:
+		return "unix"
+	}
 }
 
 func printStatus(out io.Writer, status control.RuntimeStatus) {

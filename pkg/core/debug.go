@@ -83,6 +83,11 @@ func (c *Core) StartControlServer(ctx context.Context, listen string) error {
 	server.SetRuntimeService(coreRuntimeService{core: c})
 	server.SetMountService(coreMountService{core: c})
 	server.SetFSService(coreFSService{core: c})
+	server.SetTaskJournal(c)
+	server.SetMountCatalog(coreMountCatalog{core: c})
+	if source, ok := c.fs.(control.MountHealthSource); ok {
+		server.SetMountHealthSource(source)
+	}
 	if err := server.Start(ctx); err != nil {
 		return err
 	}

@@ -98,22 +98,48 @@ func (c *Client) OpenStream(ctx context.Context, path string) (io.ReadCloser, er
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		resp.Body.Close()
-		return nil, &TransportError{Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		return nil, newTransportError(path, resp.StatusCode, body)
 	}
 	return resp.Body, nil
 }
 
-// TransportError is a non-2xx control response. It preserves the response
-// status and body so a caller (the CLI) can classify the server's failure,
-// while Error() keeps the historical message shape.
+// TransportError is a non-2xx control response. Code, Retryable, and Details
+// come from the error envelope; Body always holds the human-readable message so
+// callers that match on text keep working, and Raw holds the untouched body for
+// diagnostics.
 type TransportError struct {
-	Path   string
-	Status int
-	Body   string
+	Path      string
+	Status    int
+	Body      string
+	Code      ErrorCode
+	Retryable bool
+	Details   map[string]any
+	Raw       string
 }
 
 func (e *TransportError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("control: %s returned status %d (%s): %s", e.Path, e.Status, e.Code, e.Body)
+	}
 	return fmt.Sprintf("control: %s returned status %d: %s", e.Path, e.Status, e.Body)
+}
+
+// newTransportError decodes an error envelope when the server sent one and
+// falls back to the raw text otherwise, so every non-2xx answer reaches the
+// caller as a TransportError with a usable message.
+func newTransportError(path string, status int, body []byte) *TransportError {
+	raw := strings.TrimSpace(string(body))
+	transport := &TransportError{Path: path, Status: status, Body: raw, Raw: raw}
+	var envelope ErrorEnvelope
+	if raw != "" && json.Unmarshal(body, &envelope) == nil && envelope.Error.Code != "" {
+		transport.Code = envelope.Error.Code
+		transport.Retryable = envelope.Error.Retryable
+		transport.Details = envelope.Error.Details
+		if envelope.Error.Message != "" {
+			transport.Body = envelope.Error.Message
+		}
+	}
+	return transport
 }
 
 func (c *Client) do(req *http.Request, path string) ([]byte, error) {
@@ -127,7 +153,7 @@ func (c *Client) do(req *http.Request, path string) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &TransportError{Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		return nil, newTransportError(path, resp.StatusCode, body)
 	}
 	return body, nil
 }

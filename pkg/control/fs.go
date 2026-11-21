@@ -96,7 +96,7 @@ func (s *CommandServer) SetFSService(service FSService) {
 
 func (s *CommandServer) handleFS(w http.ResponseWriter, r *http.Request) {
 	if s.fs == nil {
-		http.Error(w, "filesystem service unavailable", http.StatusServiceUnavailable)
+		writeUnavailable(w, "filesystem service unavailable")
 		return
 	}
 	op := strings.TrimPrefix(r.URL.Path, "/v1/fs/")
@@ -184,7 +184,7 @@ func (s *CommandServer) handleFSOperation(w http.ResponseWriter, r *http.Request
 	case "idle":
 		s.handleFSIdle(w, r)
 	default:
-		http.Error(w, "unknown filesystem operation", http.StatusNotFound)
+		writeNotFound(w, "unknown filesystem operation")
 	}
 }
 
@@ -199,31 +199,19 @@ func fsQueryPath(r *http.Request) (string, error) {
 	return value, nil
 }
 
-func fsErrorStatus(err error) int {
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "not found"), strings.Contains(msg, "no such file"):
-		return http.StatusNotFound
-	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline exceeded"):
-		return http.StatusGatewayTimeout
-	default:
-		return http.StatusConflict
-	}
-}
-
 func (s *CommandServer) handleFSStat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	path, err := fsQueryPath(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, err.Error())
 		return
 	}
 	entry, err := s.fs.Stat(r.Context(), path)
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, entry)
@@ -231,17 +219,17 @@ func (s *CommandServer) handleFSStat(w http.ResponseWriter, r *http.Request) {
 
 func (s *CommandServer) handleFSCopy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	var req FSCopyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, err.Error())
 		return
 	}
 	result, err := s.fs.Copy(r.Context(), req)
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -250,17 +238,17 @@ func (s *CommandServer) handleFSCopy(w http.ResponseWriter, r *http.Request) {
 
 func (s *CommandServer) handleFSList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	path, err := fsQueryPath(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, err.Error())
 		return
 	}
 	entries, err := s.fs.List(r.Context(), path)
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	if entries == nil {
@@ -271,12 +259,12 @@ func (s *CommandServer) handleFSList(w http.ResponseWriter, r *http.Request) {
 
 func (s *CommandServer) handleFSRead(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	path, err := fsQueryPath(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, err.Error())
 		return
 	}
 	offset, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
@@ -284,7 +272,7 @@ func (s *CommandServer) handleFSRead(w http.ResponseWriter, r *http.Request) {
 	raw := r.URL.Query().Get("raw") == "1"
 	stream, err := s.fs.ReadStream(r.Context(), path, offset, size, raw)
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	defer stream.Close()
@@ -313,11 +301,11 @@ type fsTruncateRequest struct {
 
 func writeFSRequest(w http.ResponseWriter, r *http.Request, value any) bool {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return false
 	}
 	if err := json.NewDecoder(r.Body).Decode(value); err != nil {
-		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, "invalid request: "+err.Error())
 		return false
 	}
 	return true
@@ -329,11 +317,11 @@ func (s *CommandServer) handleFSMutations(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if req.Path == "" {
-		http.Error(w, "missing path", http.StatusBadRequest)
+		writeBadRequest(w, "missing path")
 		return
 	}
 	if err := apply(r.Context(), req); err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"path": req.Path, "ok": true})
@@ -341,23 +329,23 @@ func (s *CommandServer) handleFSMutations(w http.ResponseWriter, r *http.Request
 
 func (s *CommandServer) handleFSWrite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	path, err := fsQueryPath(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, err.Error())
 		return
 	}
 	offset, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
-	data, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	data, err := io.ReadAll(io.LimitReader(r.Body, MaxWriteBytes))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, err.Error())
 		return
 	}
 	written, err := s.fs.WriteAt(r.Context(), path, offset, data)
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"written": written})
@@ -369,11 +357,11 @@ func (s *CommandServer) handleFSRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Path == "" {
-		http.Error(w, "missing path", http.StatusBadRequest)
+		writeBadRequest(w, "missing path")
 		return
 	}
 	if err := s.fs.Remove(r.Context(), req.Path, req.Dir); err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"path": req.Path, "ok": true})
@@ -385,11 +373,11 @@ func (s *CommandServer) handleFSRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Source == "" || req.Destination == "" {
-		http.Error(w, "missing source or destination", http.StatusBadRequest)
+		writeBadRequest(w, "missing source or destination")
 		return
 	}
 	if err := s.fs.Rename(r.Context(), req.Source, req.Destination); err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"source": req.Source, "destination": req.Destination, "ok": true})
@@ -401,11 +389,11 @@ func (s *CommandServer) handleFSTruncate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if req.Path == "" {
-		http.Error(w, "missing path", http.StatusBadRequest)
+		writeBadRequest(w, "missing path")
 		return
 	}
 	if err := s.fs.Truncate(r.Context(), req.Path, req.Size); err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"path": req.Path, "ok": true})
@@ -417,12 +405,12 @@ func (s *CommandServer) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Path == "" {
-		http.Error(w, "missing path", http.StatusBadRequest)
+		writeBadRequest(w, "missing path")
 		return
 	}
 	entry, err := s.fs.Mkdir(r.Context(), req.Path)
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, entry)
@@ -434,11 +422,11 @@ func (s *CommandServer) handleFSInvalidate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if req.Path == "" {
-		http.Error(w, "missing path", http.StatusBadRequest)
+		writeBadRequest(w, "missing path")
 		return
 	}
 	if err := s.fs.InvalidateList(r.Context(), req.Path); err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"invalidated": req.Path})
@@ -453,7 +441,7 @@ func (s *CommandServer) handleFSWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Path == "" {
-		http.Error(w, "missing path", http.StatusBadRequest)
+		writeBadRequest(w, "missing path")
 		return
 	}
 	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
@@ -461,7 +449,7 @@ func (s *CommandServer) handleFSWait(w http.ResponseWriter, r *http.Request) {
 		timeout = 30 * time.Second
 	}
 	if err := s.fs.WaitPath(r.Context(), req.Path, timeout); err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"path": req.Path, "settled": true})
@@ -475,7 +463,7 @@ func (s *CommandServer) handleFSIdle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.fs.WaitIdle(r.Context(), time.Duration(req.TimeoutMS)*time.Millisecond); err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"idle": true})
@@ -483,12 +471,12 @@ func (s *CommandServer) handleFSIdle(w http.ResponseWriter, r *http.Request) {
 
 func (s *CommandServer) handleFSSpace(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	space, err := s.fs.Space(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	writeJSON(w, space)
@@ -496,12 +484,12 @@ func (s *CommandServer) handleFSSpace(w http.ResponseWriter, r *http.Request) {
 
 func (s *CommandServer) handleFSMountSpaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	mounts, err := s.fs.MountSpaces(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	if mounts == nil {
@@ -512,12 +500,12 @@ func (s *CommandServer) handleFSMountSpaces(w http.ResponseWriter, r *http.Reque
 
 func (s *CommandServer) handleFSPendingUploads(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	pending, err := s.fs.PendingUploads(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), fsErrorStatus(err))
+		writeFSError(w, err)
 		return
 	}
 	if pending == nil {

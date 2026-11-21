@@ -11,6 +11,10 @@ export QRYPT_CORE_FS_REQUIRED=0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKDIR="$(mktemp -d)"
+# A developer machine may already run a resident Core for its own profile. Give
+# the smoke its own home so the owner lease, sockets and logs cannot collide.
+export QRYPT_HOME="$WORKDIR/home"
+mkdir -p "$QRYPT_HOME"
 CORE_PID=""
 cleanup() {
   if [ -n "$CORE_PID" ] && kill -0 "$CORE_PID" 2>/dev/null; then

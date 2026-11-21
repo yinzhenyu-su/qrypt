@@ -134,6 +134,7 @@ is at one of these paths (see [CLI Reference](docs/for-user/cli.md)).
 ## Developer Documentation
 
 - [Architecture](docs/for-developer/architecture.md) — layer overview and design rules
+- [Control Protocol](docs/for-developer/control-protocol.md) — the Core wire protocol: endpoints, idempotency, versioning and client rules
 - [Package boundaries](docs/for-developer/package-boundaries.md) — ownership, forbidden dependencies, and migration criteria
 - [Driver Development](docs/for-developer/driver-development.md) — how to add a new cloud-drive backend
 - [Debugging](docs/for-developer/debug.md) — diagnostic tools and troubleshooting

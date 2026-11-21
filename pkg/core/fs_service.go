@@ -3,9 +3,11 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	pathpkg "path"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/control"
@@ -43,9 +45,93 @@ func (s coreFSService) fs() vfs.FileSystem {
 func (s coreFSService) Stat(ctx context.Context, path string) (control.FSEntry, error) {
 	entry, err := s.fs().Stat(ctx, path)
 	if err != nil {
+		if errors.Is(err, drive.ErrNotFound) {
+			return control.FSEntry{}, notFoundHint(path, s.closestSibling(ctx, path))
+		}
 		return control.FSEntry{}, err
 	}
 	return fsEntryFromDrive(path, entry), nil
+}
+
+// closestSibling returns the entry name in path's parent directory that is
+// closest to the requested base name, used to turn a bare not-found error into
+// an actionable "did you mean ...?" message. Lookup failures are ignored: the
+// hint must never mask the original error.
+func (s coreFSService) closestSibling(ctx context.Context, path string) string {
+	parent := pathpkg.Dir(path)
+	if parent == path {
+		return ""
+	}
+	entries, err := s.fs().List(ctx, parent)
+	if err != nil {
+		return ""
+	}
+	return closestName(pathpkg.Base(path), entries)
+}
+
+// closestName picks the entry whose name is at most one edit away from want
+// (case-insensitively). A single typo is the common case and keeps the hint
+// unambiguous.
+func closestName(want string, entries []drive.Entry) string {
+	lowered := strings.ToLower(want)
+	best := ""
+	bestDistance := 2
+	for _, entry := range entries {
+		distance := editDistance(strings.ToLower(entry.Name), lowered, bestDistance)
+		if distance < bestDistance {
+			best, bestDistance = entry.Name, distance
+		}
+	}
+	return best
+}
+
+// editDistance returns the Levenshtein distance between a and b, or limit
+// when the distance is at least limit.
+func editDistance(a, b string, limit int) int {
+	if abs(len(a)-len(b)) >= limit {
+		return limit
+	}
+	previous := make([]int, len(b)+1)
+	current := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current[0] = i
+		rowMin := current[0]
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
+			if current[j] < rowMin {
+				rowMin = current[j]
+			}
+		}
+		if rowMin >= limit {
+			return limit
+		}
+		previous, current = current, previous
+	}
+	if previous[len(b)] >= limit {
+		return limit
+	}
+	return previous[len(b)]
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func notFoundHint(path, suggestion string) error {
+	if suggestion == "" {
+		return fmt.Errorf("%w: %s", drive.ErrNotFound, path)
+	}
+	return fmt.Errorf("%w: %s (did you mean %q?)", drive.ErrNotFound, path, suggestion)
 }
 
 func (s coreFSService) List(ctx context.Context, path string) ([]control.FSEntry, error) {

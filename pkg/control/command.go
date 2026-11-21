@@ -51,22 +51,25 @@ type RuntimeService interface {
 }
 
 type CommandServer struct {
-	network    string
-	address    string
-	service    CommandService
-	runtime    RuntimeService
-	mounts     MountService
-	fs         FSService
-	operations *operationMemo
-	offline    OfflineService
-	share      shareapi.Service
-	server     *http.Server
-	listener   net.Listener
-	stop       context.CancelFunc
-	cancelBase context.CancelFunc
-	closeOnce  sync.Once
-	closeDone  chan struct{}
-	closeErr   error
+	network     string
+	address     string
+	service     CommandService
+	runtime     RuntimeService
+	mounts      MountService
+	fs          FSService
+	operations  *operationMemo
+	offline     OfflineService
+	share       shareapi.Service
+	journal     TaskJournal
+	mountHealth MountHealthSource
+	catalog     MountCatalog
+	server      *http.Server
+	listener    net.Listener
+	stop        context.CancelFunc
+	cancelBase  context.CancelFunc
+	closeOnce   sync.Once
+	closeDone   chan struct{}
+	closeErr    error
 }
 
 func NewCommandServer(endpoint string, service CommandService) (*CommandServer, error) {
@@ -109,6 +112,10 @@ func (s *CommandServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/control/status", s.handleRuntimeStatus)
 	mux.HandleFunc("/v1/control/shutdown", s.handleRuntimeShutdown)
+	mux.HandleFunc("/v1/control/capabilities", s.handleCapabilities)
+	mux.HandleFunc("/v1/control/health", s.handleHealth)
+	mux.HandleFunc("/v1/control/tasks", s.handleTasks)
+	mux.HandleFunc("/v1/control/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/v1/control/mounts", s.handleMounts)
 	mux.HandleFunc("/v1/control/mounts/", s.handleMountByID)
 	mux.HandleFunc("/v1/fs/", s.handleFS)
@@ -208,16 +215,16 @@ func (s *CommandServer) SetRuntimeService(service RuntimeService) {
 
 func (s *CommandServer) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	if s.runtime == nil {
-		http.Error(w, "runtime status unavailable", http.StatusServiceUnavailable)
+		writeUnavailable(w, "runtime status unavailable")
 		return
 	}
 	status, err := s.runtime.Status(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		writeUnavailable(w, err.Error())
 		return
 	}
 	writeJSON(w, status)
@@ -225,15 +232,15 @@ func (s *CommandServer) handleRuntimeStatus(w http.ResponseWriter, r *http.Reque
 
 func (s *CommandServer) handleRuntimeShutdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	if s.runtime == nil {
-		http.Error(w, "runtime shutdown unavailable", http.StatusServiceUnavailable)
+		writeUnavailable(w, "runtime shutdown unavailable")
 		return
 	}
 	if err := s.runtime.Shutdown(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeConflict(w, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -254,16 +261,16 @@ func (s *CommandServer) handleRetryTask(w http.ResponseWriter, r *http.Request) 
 
 func (s *CommandServer) handleTaskAction(w http.ResponseWriter, r *http.Request, action func(context.Context, string) error) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w)
 		return
 	}
 	var req taskActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
-		http.Error(w, "task id required", http.StatusBadRequest)
+		writeBadRequest(w, "task id required")
 		return
 	}
 	if err := action(r.Context(), req.ID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBadRequest(w, err.Error())
 		return
 	}
 	writeJSON(w, map[string]string{"id": req.ID})

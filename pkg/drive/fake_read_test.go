@@ -23,10 +23,14 @@ func seedFakeReadFile(t *testing.T, d *FakeDriver, size int) Entry {
 
 func TestFakeDriverReadRecordsConcurrency(t *testing.T) {
 	d := NewFakeDriver()
-	d.ReadDelay = 20 * time.Millisecond
+	// Park every read on the gate: the assertion is about reads being in
+	// flight together, so the test must create that state instead of hoping
+	// that a wall-clock delay covers the goroutine scheduling it depends on.
+	const readers = 4
+	gate := make(chan struct{}, readers)
+	d.Gate = gate
 	entry := seedFakeReadFile(t, d, 4<<20)
 
-	const readers = 4
 	var wg sync.WaitGroup
 	errs := make(chan error, readers)
 	for i := 0; i < readers; i++ {
@@ -42,6 +46,18 @@ func TestFakeDriverReadRecordsConcurrency(t *testing.T) {
 			_, err = io.Copy(io.Discard, rc)
 			errs <- err
 		}(i)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for d.ReadStats().Active < readers && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	// Release whatever is parked, including on the timeout path, so no
+	// goroutine outlives the test.
+	for i := 0; i < readers; i++ {
+		gate <- struct{}{}
+	}
+	if active := d.ReadStats().Active; active < readers {
+		t.Fatalf("only %d of %d reads reached the driver", active, readers)
 	}
 	wg.Wait()
 	close(errs)
