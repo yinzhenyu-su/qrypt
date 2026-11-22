@@ -2,6 +2,16 @@
 
 实施按 design.md 的交付切片推进；切片边界即评审与合并边界。Gate 0（存储引擎 spike）未通过时，不引入生产依赖、不写生产接线、不切换存储。Slice 1 先完成 `localstate` 基础层、旧格式导入/迁移和测试 seam；Slice 2–5 通过该 seam 落地行为；Slice 6 才做生产切换。每个切片的行为测试与 21 项审查回归随该切片交付，不把故障测试推迟到最终验收。所有测试使用仓库内夹具、本地驱动/HTTP 服务及真实内容文件，不依赖审查时的临时文件或真实云盘账号。
 
+## P0. 单对象恢复最小切片（单 owner Core 前置）
+
+本组先交付可验证的最小闭环：只覆盖单对象写操作，复用既有切片的基础层与测试 seam。Gate 0 通过前只允许提交契约、harness 与测试，不引入生产存储依赖或生产接线。
+
+- [ ] 0.1 写 ADR/契约片段：单 owner Core 是唯一写入口；operation ID 生命周期与幂等窗口；`applied`/`absent`/`unknown` 判定与 `reconciliation_required` 语义；明确不做跨对象原子，copy/递归删除为部分成功。
+- [ ] 0.2 故障注入 harness：`QRYPT_TEST_CRASH_AT` 在 intent 落盘后、远端调用中、远端成功后、result 落盘前/后注入 kill -9（re-exec 子进程）；对 mkdir/remove(file)/rename/truncate/put 五类操作复现重复写或丢失记录，先以失败测试证明缺陷。
+- [ ] 0.3 durable operation 记录：intent→remote→result 三段持久化并 fsync；启动时加载未完成 operation 并进入判定；单对象操作接入，未知结果不得自动重试。
+- [ ] 0.4 数据面与 CLI 契约：写 RPC 强制 Operation-ID；新增 operation 查询（`GET /v1/operations/{id}` 或等价）与 `outcome_unknown` 错误码；`core ops list/show` 只读入口。
+- [ ] 0.5 验收：崩溃点矩阵无重复远端对象、无静默丢失；`core status` 暴露待对账计数/ID；同 ID 客户端重试复用结果；nightly 故障注入 job 连续绿后记录基线。
+
 ## Gate 0. 存储引擎 Spike（前置条件，不进入生产）
 
 未通过本组不引入任何生产依赖、不写生产接线、不进入 Slice 1；产出决策记录与证据表。

@@ -78,17 +78,17 @@ func TestHTTPWriteVisibleToFS(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	out, err := executeRoot(t, "core", "endpoint", "--json", "--config", configPath)
+	out, err := executeRoot(t, "core", "status", "--json", "--config", configPath)
 	if err != nil {
-		t.Fatalf("core endpoint: %v\n%s", err, out)
+		t.Fatalf("core status: %v\n%s", err, out)
 	}
-	var endpoint struct {
+	var status struct {
 		Endpoint string `json:"endpoint"`
 	}
-	if err := json.Unmarshal([]byte(out), &endpoint); err != nil {
-		t.Fatalf("decode endpoint: %v\n%s", err, out)
+	if err := json.Unmarshal([]byte(out), &status); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, out)
 	}
-	client, err := control.NewClient(endpoint.Endpoint)
+	client, err := control.NewClient(status.Endpoint)
 	if err != nil {
 		t.Fatalf("control client: %v", err)
 	}

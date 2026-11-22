@@ -226,6 +226,16 @@ Core 保存 Task/item 与对象/操作的关联，`resume_offset` 在活跃会�
 
 边界：所有权占用错误必须在维护命令与挂载入口一致返回；`ErrStale` 不等于失败，过期操作仍须记录实际远端结果。该分类是 `task.Error.Code`、FUSE errno 与调试快照的共同来源。
 
+### D10. 单 owner Core 下的恢复判定边界
+
+单 owner Core（`pkg/core/ownerlock`）保证同一 state dir 只有一个可写运行时，operation 账本由 Core 独占读写，客户端不再各自维护可写 VFS。恢复判定只依据可验证的远端效果：
+
+- `applied`：后置条件（对象存在且身份/内容匹配）成立，写回 recorded 结果，不重复写。
+- `absent`：可证明操作未生效（对象不存在且无部分效果），允许同 ID 重试。
+- `unknown`：超时/断开且无法证明任一情况，标记 `reconciliation_required`，永不自动再写；由 `core ops reconcile` 显式处理。
+
+跨对象原子性不作为承诺：单对象操作原子；目录 copy/递归删除按项记 journal、operation 聚合状态可为 `partial`，同 ID 续传。该判定与 D5 发布协议、D9 错误分类共用同一状态机，客户端重试只按 operation ID 重放，不重新发起新的远端写。
+
 ## Risks / Trade-offs
 
 - [存储引擎平台支持未经验证] → Gate 0 验证全部目标（含 Android/iOS 绑定、Windows nocgo、启动能力探测、体积与性能数字）；缺工具链记为阻塞，不进入生产切换。

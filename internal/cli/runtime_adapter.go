@@ -103,11 +103,6 @@ func (cliRuntime) WithConfigFlag(cmd *cobra.Command) *cobra.Command {
 	return withConfigFlag(cmd)
 }
 
-func (cliRuntime) WithFSBandwidthFlags(cmd *cobra.Command) *cobra.Command {
-	addFSBandwidthFlags(cmd)
-	return cmd
-}
-
 func (cliRuntime) WithPersistentConfigFlag(cmd *cobra.Command) *cobra.Command {
 	cmd.PersistentFlags().StringP("config", "c", "", "config file path (auto-discovered when omitted)")
 	cmd.PersistentPreRunE = prepareConfig

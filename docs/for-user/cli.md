@@ -168,7 +168,6 @@ qrypt mount --isolated --name quark-encrypt --isolated-log-level debug
 ```sh
 qrypt core serve [--detach | --foreground] [--keep] [--idle-timeout 20m] [--log FILE]
 qrypt core status [--json]
-qrypt core endpoint [--json]
 qrypt core stop [--drain] [--force]
 ```
 
@@ -177,7 +176,7 @@ qrypt core stop [--drain] [--force]
 - `--detach` 在后台启动（重新执行自身并脱离当前会话），命令立即返回；配合 `--log FILE` 记录后台日志。`--foreground` 在当前终端运行。
 - 默认 20 分钟没有活动（无挂载、无进行中的任务或上传）后自动退出；`--keep` 关闭空闲退出，`--idle-timeout` 调整空闲时间。
 - 由 `qrypt mount` 或 `qrypt fs` 等命令按需启动的 Core 不会加 `--keep`，因此同样会在空闲后自动退出；有 FUSE 挂载或未完成的上传/任务时不算空闲。
-- `core endpoint` 输出当前配置的 control 端点路径（Unix socket），其他程序按此路径直连 Core；`--json` 额外给出 `network`、`run_dir`、`running`、`pid`、`protocol_version`、`version`。端点路径只由配置文件与运行时目录推导，Core 未启动时同样会输出。
+- `core status --json` 同时给出 control 端点（`endpoint`，Unix socket 或 Windows named pipe）、`network` 与 `run_dir`，以及 `running`、`pid`、`protocol_version`、`version`；这些值只由配置文件与运行时目录推导，Core 未启动时同样会输出。其他程序按 `endpoint` 直连 Core。`core endpoint` 已弃用，仅作为下个 minor 移除前的隐藏别名保留。
 - 启动时会记录配置指纹。用不同配置再次启动会被拒绝，需要先停止再用当前配置重启；`core status` 在 Core 未运行时显示 `stopped`，锁仍被持有但控制端点不可达时显示 `unreachable` 并给出持锁进程。
 - 客户端连接 Core 时会校验 control 协议版本、qrypt 版本与配置指纹。升级二进制或修改配置后，旧的 Core 不会继续服务新客户端：先 `qrypt core stop`（或重启 Core）再重试。
 - 在 Core 运行期间，其他会打开同一工作目录的进程（再次 `core serve`、隔离挂载等）会被拒绝并提示已有运行时持有该状态；先 `qrypt core stop`。`qrypt mount` 与 `qrypt unmount` 经 Core 的控制端点工作，可以与 `qrypt core serve` 同时使用。
@@ -226,15 +225,11 @@ qrypt fs cat REMOTE
 qrypt fs get REMOTE LOCAL [--force]
 qrypt fs put LOCAL REMOTE [--wait-timeout DURATION]
 qrypt fs copy SOURCE DESTINATION [--recursive] [--force] [--dry-run] [--json]
-qrypt fs crypt-encode [MOUNT] NAME [--json]
-qrypt fs crypt-decode [MOUNT] NAME [--json]
 qrypt fs mkdir REMOTE
 qrypt fs mv SOURCE DESTINATION [--json]
 qrypt fs rm REMOTE [--wait-timeout DURATION] [--json]
 qrypt fs pending [--verbose | --json]
 qrypt fs journal [--config PATH | --cache-dir PATH] [--json]
-qrypt fs journal replay [--config PATH | --cache-dir PATH] [--json]
-qrypt fs journal prune [--config PATH | --cache-dir PATH] [--json] [--failed]
 ```
 
 `fs` 命令组支持 `--config PATH`，既可写在子命令前，也可写在子命令后：
@@ -254,27 +249,23 @@ qrypt fs list / --config PATH
 
 `sync SOURCE DESTINATION` 单向同步：让 `DESTINATION` 匹配 `SOURCE`（`SOURCE` 权威，至少一端是虚拟路径）。默认只新增缺失文件、更新变化文件（大小，`--hash` 时含内容哈希），**不删除** `DESTINATION` 多余文件；`--delete` 才删除。`--compare` 选择比较策略：`size-mtime`（默认）、`mtime-only`（只看修改时间，忽略大小差异）、`hash`（等价 `--hash`）。`sync` 默认对支持后端内容哈希的网盘（阿里云盘 sha1、115 sha1、百度网盘 md5、OneDrive sha1）自动启用哈希比对，能检测同大小内容变化；无后端哈希的网盘（如夸克）自动降级为大小比对。注意：`mtime-only` 在无法保留 mtime 的网盘（如夸克，只记录上传时间）上会每次全量重传——只有明确知道目标端 mtime 可靠时才使用。上传会把源文件 mtime 传播给目标端；若目标网盘无法保留 mtime（如夸克，只记录上传时间），则 mtime 差异不触发内容重传（按 size/hash 判定），避免每次同步全量重传。文件/目录类型冲突默认不覆盖（报告 `conflict`，退出码 3），可用 `--conflict=skip` 跳过或 `--conflict=source` 让源端胜出。`--dry-run` 只输出计划不产生任何写入（退出码 0）；`--json` 输出结构化计划/结果（含 add/update/delete/skip/conflict/failed 汇总与按路径排序的条目）。同步执行顺序保证先建目录再传文件、先删子项再删目录；单个文件失败不中断其余文件，存在失败时退出码 3。同步会等待所有上传完成后才返回（不设超时，慢网盘不会误报失败）；Ctrl-C 可中断，中断后会话保留，用 `--resume` 继续。`--resume` 继续上次中断/部分失败的会话：只重试未完成和失败的文件，不重新扫描两棵树。会话计划保存在工作目录的 `sync/` 子目录（默认 `~/.qrypt/sync/`，同一对源/目标共享一个会话目录），全部完成后自动清除，中断遗留的会话 7 天未动会在下次同步时自动清理；`--dry-run` 不写任何会话。
 
-`fs journal` 是只读报告；`fs journal replay/prune` 会直接改写 Core 持有的上传日志文件，因此 Core 运行时会拒绝并提示先 `qrypt core stop`，避免维护结果被 Core 的内存状态覆盖。
+`fs journal` 是只读报告。会改写上传日志的 `fs journal replay/prune` 已移除：日志由常驻 Core 持有，维护与对账将收敛到 `qrypt core ops reconcile`。
 
-`fs` 命令组还支持 `--bwlimit` 系列 flag，覆盖配置中的 `[bandwidth]` 段：
-
-```sh
-qrypt fs --bwlimit 10M list /
-qrypt fs --bwlimit-download 5M get REMOTE LOCAL
-qrypt fs --bwlimit-upload 2M put LOCAL REMOTE
-qrypt fs --bwlimit 10M --bwlimit-upload 2M copy SRC DST
-```
-
-`--bwlimit SIZE` 同时限制下载与上传；`--bwlimit-download` / `--bwlimit-upload` 单独限制一个方向，可与 `--bwlimit` 组合（细粒度 flag 优先）。
-
-`crypt-encode` / `crypt-decode` 用指定 mount 的 `[mounts.encryption]` 配置对文件名逐段加解密，用于对照网盘后端存储的密文文件名和本地明文路径：
+## 文件名加解密
 
 ```sh
-qrypt fs crypt-encode [MOUNT] "hello.txt"    # 明文 → 密文（验证网盘里应显示的名字）
-qrypt fs crypt-decode [MOUNT] "b4l6g..."     # 密文 → 明文（反查本地对应文件）
+qrypt crypt encode [MOUNT] NAME [--json]
+qrypt crypt decode [MOUNT] NAME [--json]
 ```
 
-`MOUNT` 省略时使用第一个配置了加密的 mount。加密方向与挂载时 VFS 对后端文件名使用的算法一致（同一 password/salt/编码，可逐段处理多级路径）。未加密的 mount 会报错。
+`encode` / `decode` 用指定 mount 的 `[mounts.encryption]` 配置对文件名逐段加解密，用于对照网盘后端存储的密文文件名和本地明文路径：
+
+```sh
+qrypt crypt encode [MOUNT] "hello.txt"    # 明文 → 密文（验证网盘里应显示的名字）
+qrypt crypt decode [MOUNT] "b4l6g..."     # 密文 → 明文（反查本地对应文件）
+```
+
+`MOUNT` 省略时使用第一个配置了加密的 mount。加密方向与挂载时 VFS 对后端文件名使用的算法一致（同一 password/salt/编码，可逐段处理多级路径）。未加密的 mount 会报错。原 `fs crypt-encode` / `fs crypt-decode` 保留下个 minor 的隐藏别名，运行时会提示迁移。
 
 ## 离线下载
 
@@ -352,7 +343,7 @@ qrypt driver schema NAME [--json]
 
 ## 调试
 
-调试命令通过运行目录中的内置 debug socket 连接运行中的 debug server。Unix-like 系统使用 socket 文件，Windows 使用 named pipe。
+调试相关命令分成两组，边界固定、不互相隐藏：`debug` 只读，`probe` 可能写入本地缓存、远端测试数据或注入故障（使用可变控制端点）。两组命令的路径不迁移、不合并；选择命令组时应按是否允许写入判断。调试命令通过运行目录中的内置 debug socket 连接运行中的 server。Unix-like 系统使用 socket 文件，Windows 使用 named pipe。
 
 ```sh
 qrypt debug collect [REMOTE] [--dest DESTINATION] --mount NAME

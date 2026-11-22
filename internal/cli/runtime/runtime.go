@@ -54,7 +54,6 @@ type ErrorFactory interface {
 
 // FlagRegistrar wires the cobra flags that command subpackages share.
 type FlagRegistrar interface {
-	WithFSBandwidthFlags(cmd *cobra.Command) *cobra.Command
 	WithConfigFlag(cmd *cobra.Command) *cobra.Command
 	WithPersistentConfigFlag(cmd *cobra.Command) *cobra.Command
 	WithPersistentRuntimeConfigFlag(cmd *cobra.Command) *cobra.Command

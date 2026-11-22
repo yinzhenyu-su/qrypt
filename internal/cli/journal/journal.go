@@ -2,7 +2,6 @@ package journal
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,14 +11,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
-	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 )
 
 // Runtime is the slice of Runtime this package needs: config
@@ -68,12 +64,12 @@ type debugJournalEntry struct {
 func NewCommand(rt Runtime, use string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
-		Short: "Inspect and maintain the offline upload journal",
-		Long: `Inspect the offline upload journal and repair it: replay failed uploads
-so the next mount retries them, or prune entries whose staging data is gone.`,
+		Short: "Inspect the offline upload journal",
+		Long: `Inspect the upload journal owned by the resident Core. The journal is
+read-only from the CLI; maintenance moves to the Core's operation workflow.`,
 		Example: `  qrypt fs journal
-  qrypt fs journal replay --mount cloud
-  qrypt fs journal prune --mount cloud`,
+  qrypt fs journal --mount cloud
+  qrypt fs journal --json`,
 		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targets, err := TargetsFromCmd(rt, cmd)
@@ -100,34 +96,9 @@ so the next mount retries them, or prune entries whose staging data is gone.`,
 		},
 	}
 	addJournalTargetFlags(cmd)
-	cmd.AddCommand(NewReplayCmd(rt))
-	cmd.AddCommand(NewPruneCmd(rt))
+	cmd.AddCommand(newRemovedMaintenanceCmd("replay"))
+	cmd.AddCommand(newRemovedMaintenanceCmd("prune"))
 	return cmd
-}
-
-// ensureCoreStopped rejects journal maintenance while a resident Core owns the
-// journal: the Core keeps the journal in memory and would rewrite the files
-// behind the maintenance command.
-func ensureCoreStopped(rt Runtime, cmd *cobra.Command) error {
-	state, err := rt.CommandConfig(cmd)
-	if err != nil {
-		return err
-	}
-	if state.Cfg == nil || state.Path == "" {
-		return nil
-	}
-	runDir := core.RuntimeRunDir(state.Path, state.Cfg)
-	endpoint := core.ControlSocketPath(state.Cfg, core.RuntimeLayout{RunDir: runDir})
-	client, err := control.NewClient(endpoint)
-	if err != nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Second)
-	defer cancel()
-	if _, err := client.RuntimeStatus(ctx); err == nil {
-		return fmt.Errorf("the resident Core owns the upload journal; stop it with `qrypt core stop` before running this command")
-	}
-	return nil
 }
 
 // journalTargetsFromCmd resolves the journal directories to inspect from the
@@ -154,103 +125,17 @@ func addJournalTargetFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("json", false, "write JSON output")
 }
 
-func addJournalJSONFlag(cmd *cobra.Command) {
-	cmd.Flags().Bool("json", false, "write JSON output")
-}
-
-type MaintenanceResult struct {
-	Mount    string   `json:"mount"`
-	Dir      string   `json:"dir"`
-	Replayed int      `json:"replayed,omitempty"`
-	Pruned   int      `json:"pruned,omitempty"`
-	Entries  []string `json:"entries"`
-}
-
-func NewReplayCmd(rt Runtime) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "replay",
-		Short: "Reset failed offline uploads so the next mount retries them",
-		Long:  `Reset failed offline uploads in the journal so the next mount retries them.`,
-		Example: `  qrypt fs journal replay
-  qrypt fs journal replay --mount cloud`,
-		Args: cliruntime.NoArgs(rt),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := ensureCoreStopped(rt, cmd); err != nil {
-				return err
-			}
-			targets, err := TargetsFromCmd(rt, cmd)
-			if err != nil {
-				return err
-			}
-			asJSON, _ := cmd.Flags().GetBool("json")
-			var results []MaintenanceResult
-			for _, target := range targets {
-				replayed, err := upload.ReplayUploadJournal(target.Dir)
-				if err != nil {
-					return err
-				}
-				paths := make([]string, 0, len(replayed))
-				for _, pending := range replayed {
-					paths = append(paths, pending.Path)
-				}
-				results = append(results, MaintenanceResult{Mount: target.Name, Dir: target.Dir, Replayed: len(replayed), Entries: paths})
-				if !asJSON {
-					fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.fs.journal.replayed", target.Name, len(replayed)))
-				}
-			}
-			if asJSON {
-				return cliruntime.WritePrettyJSON(cmd.OutOrStdout(), results)
-			}
-			return nil
+// newRemovedMaintenanceCmd keeps the old entry points callable long enough to
+// explain where journal maintenance moved, without advertising them in help.
+func newRemovedMaintenanceCmd(use string) *cobra.Command {
+	return &cobra.Command{
+		Use:                use,
+		Hidden:             true,
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return fmt.Errorf("journal maintenance moved to the resident Core; `qrypt core ops reconcile` will replace `qrypt fs journal %s`", use)
 		},
 	}
-	addJournalJSONFlag(cmd)
-	return cmd
-}
-
-func NewPruneCmd(rt Runtime) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "prune",
-		Short: "Drop offline uploads whose staging data is gone",
-		Long: `Drop journal entries for offline uploads whose local staging data no
-longer exists. With --failed, also drop permanently failed uploads and their
-staging data; unmount first so the running mount cannot rewrite the journal.`,
-		Example: `  qrypt fs journal prune
-  qrypt fs journal prune --mount cloud
-  qrypt fs journal prune --mount cloud --failed`,
-		Args: cliruntime.NoArgs(rt),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := ensureCoreStopped(rt, cmd); err != nil {
-				return err
-			}
-			targets, err := TargetsFromCmd(rt, cmd)
-			if err != nil {
-				return err
-			}
-			asJSON, _ := cmd.Flags().GetBool("json")
-			failed, _ := cmd.Flags().GetBool("failed")
-			var results []MaintenanceResult
-			for _, target := range targets {
-				pruned, err := upload.PruneUploadJournalWithOptions(target.Dir, upload.PruneOptions{
-					IncludePermanentFailures: failed,
-				})
-				if err != nil {
-					return err
-				}
-				results = append(results, MaintenanceResult{Mount: target.Name, Dir: target.Dir, Pruned: pruned})
-				if !asJSON {
-					fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.fs.journal.pruned", target.Name, pruned))
-				}
-			}
-			if asJSON {
-				return cliruntime.WritePrettyJSON(cmd.OutOrStdout(), results)
-			}
-			return nil
-		},
-	}
-	addJournalJSONFlag(cmd)
-	cmd.Flags().Bool("failed", false, "also drop permanently failed uploads and their staging data")
-	return cmd
 }
 
 func WriteReportsJSON(rt Runtime, w io.Writer, reports []DebugReport) error {

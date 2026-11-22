@@ -142,3 +142,29 @@
 #### Scenario: One remote listing does not show the candidate
 - **WHEN** 超时后的首次查询未列出候选对象，但没有可靠证据证明其不存在
 - **THEN** 系统继续受控对账或等待恢复，不据此删除其他副本或盲目重放破坏性步骤
+
+### Requirement: Write operations have durable identities and classified recovery outcomes
+
+每个创建型或破坏型写操作 MUST 在调用远端前持久化 operation 记录，至少包含 operation ID、目标路径与身份、操作意图和成功后的后置条件；远端调用返回后 MUST 写回结果。进程重启后，未完成记录 MUST 依据可验证的远端事实分类为 `applied`、`absent` 或 `unknown`，且恢复判定 MUST NOT 依赖仅存在于内存的计数或成功标志。
+
+只有 `applied`（后置条件成立）和 `absent`（可证明未生效）可以自动收口；`unknown` MUST 标记为 `reconciliation_required` 并保持可见，系统 MUST NOT 对其自动重放破坏性步骤。同一 operation ID 的重试 MUST 返回已记录结果，MUST NOT 再次执行远端写；状态目录的排他所有者（单 owner Core）是唯一执行这些判定与收口的写入者。
+
+#### Scenario: Crash before the remote call starts
+- **WHEN** 进程在 intent 已持久化、远端调用尚未开始时退出
+- **THEN** 重启判定为 `absent`，同 operation ID 可以安全重试，不产生远端对象
+
+#### Scenario: Crash after the remote call succeeded
+- **WHEN** 远端已成功但 result 尚未持久化时进程退出，且远端对象身份与内容匹配后置条件
+- **THEN** 重启判定为 `applied` 并写回结果，不再次执行远端写，也不产生第二份对象
+
+#### Scenario: Crash with an unverifiable remote outcome
+- **WHEN** 重启后既无法证明操作未生效，也无法验证后置条件成立
+- **THEN** 判定为 `unknown`，标记 `reconciliation_required`，保留可恢复内容并在状态/维护输出中可见，不自动重试
+
+#### Scenario: Client retries an operation ID
+- **WHEN** 调用方用同一 operation ID 重试一个已经记录结果的写操作
+- **THEN** 系统回放已记录结果，不重新执行远端写，也不因客户端重试产生额外对象
+
+#### Scenario: Recovery runs more than once
+- **WHEN** 同一未完成记录在多轮恢复中被重复处理
+- **THEN** 分类和收口 MUST 幂等，重复恢复不改变已记录的远端事实

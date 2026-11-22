@@ -503,7 +503,7 @@ root_path = `+util.TOMLPath(remote)+`
 	}
 }
 
-func TestFSMountFlagInitializesOnlySelectedMount(t *testing.T) {
+func TestFSListRootDerivesFromConfigWithoutInitializingMounts(t *testing.T) {
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -535,22 +535,10 @@ root_path = `+util.TOMLPath(filepath.Join(tmp, "missing"))+`
 		t.Fatal(err)
 	}
 
-	root := NewRootCommand()
-	var out bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"fs", "--config", configPath, "--mount", "local", "list", "/local"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("fs --mount local list: %v", err)
-	}
-	if !strings.Contains(out.String(), "ok.txt") {
-		t.Fatalf("expected selected mount listing, got %q", out.String())
-	}
-
 	// The namespace root is derived from the configuration, so it lists every
 	// configured mount without initializing any of them. A mount whose backend
 	// cannot initialize fails on use instead of blocking the namespace.
-	root = NewRootCommand()
+	root := NewRootCommand()
 	var fullOut bytes.Buffer
 	root.SetOut(&fullOut)
 	root.SetErr(&bytes.Buffer{})

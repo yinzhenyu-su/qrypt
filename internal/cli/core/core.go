@@ -401,10 +401,13 @@ Falls back to the ownership lock when no control endpoint answers.`,
 }
 
 type statusReport struct {
-	State  string                 `json:"state"`
-	Status *control.RuntimeStatus `json:"status,omitempty"`
-	Owner  *ownerlock.Meta        `json:"owner,omitempty"`
-	Detail string                 `json:"detail,omitempty"`
+	State    string                 `json:"state"`
+	Endpoint string                 `json:"endpoint,omitempty"`
+	Network  string                 `json:"network,omitempty"`
+	RunDir   string                 `json:"run_dir,omitempty"`
+	Status   *control.RuntimeStatus `json:"status,omitempty"`
+	Owner    *ownerlock.Meta        `json:"owner,omitempty"`
+	Detail   string                 `json:"detail,omitempty"`
 }
 
 func runStatus(rt cliruntime.Runtime, cmd *cobra.Command, flags statusFlags) error {
@@ -415,9 +418,9 @@ func runStatus(rt cliruntime.Runtime, cmd *cobra.Command, flags statusFlags) err
 	if state.Cfg == nil {
 		return rt.ConfigNotFoundError()
 	}
-	report := statusReport{State: "stopped"}
 	runDir := corepkg.RuntimeRunDir(state.Path, state.Cfg)
 	endpoint := corepkg.ControlSocketPath(state.Cfg, corepkg.RuntimeLayout{RunDir: runDir})
+	report := statusReport{State: "stopped", Endpoint: endpoint, Network: endpointNetwork(endpoint), RunDir: runDir}
 	if status, err := fetchStatus(cmd.Context(), endpoint); err == nil {
 		report.State = "running"
 		report.Status = &status
@@ -436,6 +439,15 @@ func runStatus(rt cliruntime.Runtime, cmd *cobra.Command, flags statusFlags) err
 		return enc.Encode(report)
 	}
 	fmt.Fprintf(out, "state: %s\n", report.State)
+	if report.Endpoint != "" {
+		fmt.Fprintf(out, "endpoint: %s\n", report.Endpoint)
+	}
+	if report.Network != "" {
+		fmt.Fprintf(out, "network: %s\n", report.Network)
+	}
+	if report.RunDir != "" {
+		fmt.Fprintf(out, "run_dir: %s\n", report.RunDir)
+	}
 	if report.Status != nil {
 		printStatus(out, *report.Status)
 	}
@@ -476,13 +488,15 @@ func newEndpointCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "endpoint",
 		Short: "Print the control endpoint of this configuration",
-		Long: `Print the control endpoint that an attached client must dial for this
+		Long: "Deprecated: `qrypt core endpoint` will be removed in the next minor release; use `qrypt core status --json`.\n\n" + `Print the control endpoint that an attached client must dial for this
 configuration. The path is derived from the config file and the runtime layout,
 so it is printed before a Core starts; "running" then says whether one answers.`,
 		Example: `  qrypt core endpoint
   qrypt core endpoint --json`,
-		Args: cliruntime.NoArgs(rt),
+		Args:   cliruntime.NoArgs(rt),
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			cliruntime.WarnDeprecated(cmd, "qrypt core endpoint", "qrypt core status --json")
 			return runEndpoint(rt, cmd, flags)
 		},
 	}

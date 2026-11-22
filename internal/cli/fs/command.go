@@ -19,8 +19,6 @@ read, write, transfer, compare, and inspect files without mounting.`,
 		RunE: cliruntime.ShowHelp,
 	}
 	rt.WithPersistentRuntimeConfigFlag(cmd)
-	rt.WithFSBandwidthFlags(cmd)
-	cmd.PersistentFlags().String("mount", "", "only initialize one mount while keeping namespace paths such as /MOUNT/path")
 	cmd.AddCommand(NewListCmd(rt))
 	cmd.AddCommand(NewCatCmd(rt))
 	cmd.AddCommand(NewGetCmd(rt))

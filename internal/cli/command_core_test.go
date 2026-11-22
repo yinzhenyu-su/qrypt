@@ -55,7 +55,7 @@ func executeRoot(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
-func TestCoreEndpointPrintsConfigurationEndpoint(t *testing.T) {
+func TestCoreEndpointAliasAndStatusReportEndpoint(t *testing.T) {
 	base, err := os.MkdirTemp("", "qrypt-core-endpoint-")
 	if err != nil {
 		t.Fatal(err)
@@ -63,20 +63,23 @@ func TestCoreEndpointPrintsConfigurationEndpoint(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	configPath, _ := writeCoreServeTestConfig(t, base)
 
-	out, err := executeRoot(t, "core", "endpoint", "--json", "--config", configPath)
-	if err != nil {
-		t.Fatalf("core endpoint --json: %v (%s)", err, out)
+	root := NewRootCommand()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"core", "endpoint", "--json", "--config", configPath})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("core endpoint --json: %v", err)
 	}
 	var report struct {
-		Endpoint        string `json:"endpoint"`
-		Network         string `json:"network"`
-		RunDir          string `json:"run_dir"`
-		Running         bool   `json:"running"`
-		PID             int    `json:"pid"`
-		ProtocolVersion int    `json:"protocol_version"`
+		Endpoint string `json:"endpoint"`
+		Network  string `json:"network"`
+		RunDir   string `json:"run_dir"`
+		Running  bool   `json:"running"`
+		PID      int    `json:"pid"`
 	}
-	if err := json.Unmarshal([]byte(out), &report); err != nil {
-		t.Fatalf("decode endpoint json: %v (%s)", err, out)
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode endpoint json: %v (%s)", err, stdout.String())
 	}
 	if report.Endpoint == "" || !strings.Contains(report.Endpoint, "control") {
 		t.Fatalf("endpoint = %q", report.Endpoint)
@@ -90,16 +93,27 @@ func TestCoreEndpointPrintsConfigurationEndpoint(t *testing.T) {
 	if report.Running {
 		t.Fatalf("expected running=false with no Core started (pid %d)", report.PID)
 	}
+	if !strings.Contains(stderr.String(), "deprecated") {
+		t.Fatalf("endpoint alias emitted no deprecation notice: %q", stderr.String())
+	}
 
-	plain, err := executeRoot(t, "core", "endpoint", "--config", configPath)
-	if err != nil {
-		t.Fatalf("core endpoint: %v (%s)", err, plain)
+	// The endpoint facts moved into `core status --json`, which works even
+	// before a Core starts.
+	statusOut := runCommand(t, "core", "status", "--json", "--config", configPath)
+	var status struct {
+		State    string `json:"state"`
+		Endpoint string `json:"endpoint"`
+		Network  string `json:"network"`
+		RunDir   string `json:"run_dir"`
 	}
-	if !strings.Contains(plain, "endpoint: "+report.Endpoint) {
-		t.Fatalf("plain output missing endpoint: %s", plain)
+	if err := json.Unmarshal([]byte(statusOut), &status); err != nil {
+		t.Fatalf("decode status json: %v (%s)", err, statusOut)
 	}
-	if !strings.Contains(plain, "running: false") {
-		t.Fatalf("plain output missing running state: %s", plain)
+	if status.State != "stopped" {
+		t.Fatalf("state = %q, want stopped", status.State)
+	}
+	if status.Endpoint != report.Endpoint || status.Network != "unix" || status.RunDir != report.RunDir {
+		t.Fatalf("status endpoint fields = %+v, want endpoint=%q network=unix run_dir=%q", status, report.Endpoint, report.RunDir)
 	}
 }
 

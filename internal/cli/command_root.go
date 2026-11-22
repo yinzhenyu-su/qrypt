@@ -8,6 +8,7 @@ import (
 	clicontrol "github.com/yinzhenyu/qrypt/internal/cli/control"
 	clicore "github.com/yinzhenyu/qrypt/internal/cli/core"
 	clicredential "github.com/yinzhenyu/qrypt/internal/cli/credential"
+	clicrypt "github.com/yinzhenyu/qrypt/internal/cli/crypt"
 	clidebug "github.com/yinzhenyu/qrypt/internal/cli/debug"
 	clidriver "github.com/yinzhenyu/qrypt/internal/cli/driver"
 	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
@@ -65,6 +66,7 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	cmd.AddCommand(clicredential.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clidriver.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clifs.NewCommand(cliRuntime{}))
+	cmd.AddCommand(clicrypt.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clidebug.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clidebug.NewProbeCommand(cliRuntime{}))
 	cmd.AddCommand(clicontrol.NewCommand(cliRuntime{}))

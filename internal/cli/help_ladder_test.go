@@ -40,14 +40,14 @@ func TestHelpLadderEndToEnd(t *testing.T) {
 		t.Fatalf("command help has no examples:\n%s", cmdHelp)
 	}
 
-	// L2 deep: advanced flags appear only in the deep-help form, including
-	// inherited ones.
-	if defaultHelp := runCommand(t, "fs", "list", "--help"); strings.Contains(defaultHelp, "--bwlimit") {
-		t.Fatalf("advanced inherited flag leaked into default help:\n%s", defaultHelp)
-	}
-	deepHelp := runCommand(t, "fs", "list", "--help", "--advanced")
-	if !strings.Contains(deepHelp, "--bwlimit") {
-		t.Fatalf("deep help did not reveal the advanced inherited flag:\n%s", deepHelp)
+	// Removed bandwidth/mount flags must not resurface in either help form.
+	for _, help := range []string{
+		runCommand(t, "fs", "list", "--help"),
+		runCommand(t, "fs", "list", "--help", "--advanced"),
+	} {
+		if strings.Contains(help, "--bwlimit") || strings.Contains(help, "--mount ") {
+			t.Fatalf("removed fs flag appears in help:\n%s", help)
+		}
 	}
 
 	// L4: the machine-readable form describes the same command.

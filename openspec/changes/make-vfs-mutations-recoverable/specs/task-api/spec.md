@@ -64,3 +64,19 @@
 - **WHEN** 旧客户端收到未知的对账/缺源 phase
 - **THEN** 其依据现有 state、错误码和 action 仍能区分失败、等待和不可盲目重试，不会把任务误判为成功
 
+
+### Requirement: Mutation entry points carry operation IDs and expose unknown outcomes
+
+写操作入口 MUST 为每次创建型或破坏型写操作携带稳定 operation ID，并使其在客户端重试时保持不变；缺失 ID 的写请求 MUST 被拒绝或由入口生成后显式返回，调用方不得在重试时更换 ID。服务 MUST 能按 operation ID 查询已记录的命令状态与结果。无法判定远端结果时，入口 MUST 返回稳定错误码 `outcome_unknown`（或等价分类）并附可查询的 operation ID，MUST NOT 把它报告为成功，也 MUST NOT 提供会盲目重复破坏性操作的 action或自动重试。
+
+#### Scenario: Retry with the same operation ID
+- **WHEN** 客户端因超时用同一 operation ID 重试同一写操作
+- **THEN** 服务回放已记录结果，不重复执行远端写
+
+#### Scenario: Unknown outcome is returned explicitly
+- **WHEN** 远端调用超时且服务无法判定是否生效
+- **THEN** 响应返回 `outcome_unknown` 分类及 operation ID，调用方按对账流程处理，不当作成功或可安全盲重试
+
+#### Scenario: Operation status is queryable
+- **WHEN** 调用方按 operation ID 查询一个已完成、进行中或待对账的操作
+- **THEN** 查询返回与记录一致的阶段、结果或错误分类，未知 ID 返回可识别的不存在错误
