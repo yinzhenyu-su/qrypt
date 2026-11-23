@@ -122,6 +122,13 @@ func serveForeground(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime
 	runDir := corepkg.RuntimeRunDir(configPath, cfg)
 	runtime := corepkg.RuntimeLayout{RunDir: runDir}
 	controlListen := corepkg.ControlSocketPath(cfg, runtime)
+	// The resident Core owns the debug, probe and control surfaces. Debug
+	// starts through the [debug] config switch inside OpenConfig; the probe
+	// surface is what `qrypt probe` talks to, so the Core must always bind it:
+	// a non-isolated `qrypt mount` attaches to this Core instead of hosting
+	// the servers itself, and contract/bench runs expect probe.sock to exist
+	// next to control.sock.
+	probeListen := corepkg.ProbeSocketPath(cfg, runtime)
 
 	ctx, cancel := context.WithCancel(commandContext(cmd))
 	defer cancel()
@@ -129,6 +136,7 @@ func serveForeground(rt cliruntime.Runtime, cmd *cobra.Command, state cliruntime
 		ConfigPath:    configPath,
 		Runtime:       runtime,
 		ControlListen: controlListen,
+		ProbeListen:   probeListen,
 		Owner:         &corepkg.OwnerOptions{ConfigPath: configPath},
 		MountHost:     newFuseMountHost(rt, cfg),
 		LazyMounts:    true,
