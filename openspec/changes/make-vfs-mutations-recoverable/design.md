@@ -234,7 +234,7 @@ Core 保存 Task/item 与对象/操作的关联，`resume_offset` 在活跃会�
 - `absent`：可证明操作未生效（对象不存在且无部分效果），允许同 ID 重试。
 - `unknown`：超时/断开且无法证明任一情况，标记 `reconciliation_required`，永不自动再写；由 `core ops reconcile` 显式处理。
 
-跨对象原子性不作为承诺：单对象操作原子；目录 copy/递归删除按项记 journal、operation 聚合状态可为 `partial`，同 ID 续传。该判定与 D5 发布协议、D9 错误分类共用同一状态机，客户端重试只按 operation ID 重放，不重新发起新的远端写。
+跨对象原子性不作为承诺：单对象操作原子；目录 copy/递归删除按项记 journal、operation 聚合状态可为 `partial`，同 ID 续传。该判定与 D5 发布协议、D9 错误分类共用同一状态机，客户端重试只按 operation ID 重放，不重新发起新的远端写。长期契约与数据面影响记录在 `docs/adr/0003-write-operations-are-durable-and-classified.md`（对应任务 0.1）。
 
 ## Risks / Trade-offs
 

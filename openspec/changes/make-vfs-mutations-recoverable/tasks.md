@@ -6,7 +6,7 @@
 
 本组先交付可验证的最小闭环：只覆盖单对象写操作，复用既有切片的基础层与测试 seam。Gate 0 通过前只允许提交契约、harness 与测试，不引入生产存储依赖或生产接线。
 
-- [ ] 0.1 写 ADR/契约片段：单 owner Core 是唯一写入口；operation ID 生命周期与幂等窗口；`applied`/`absent`/`unknown` 判定与 `reconciliation_required` 语义；明确不做跨对象原子，copy/递归删除为部分成功。
+- [x] 0.1 写 ADR/契约片段：单 owner Core 是唯一写入口；operation ID 生命周期与幂等窗口；`applied`/`absent`/`unknown` 判定与 `reconciliation_required` 语义；明确不做跨对象原子，copy/递归删除为部分成功。
 - [ ] 0.2 故障注入 harness：`QRYPT_TEST_CRASH_AT` 在 intent 落盘后、远端调用中、远端成功后、result 落盘前/后注入 kill -9（re-exec 子进程）；对 mkdir/remove(file)/rename/truncate/put 五类操作复现重复写或丢失记录，先以失败测试证明缺陷。
 - [ ] 0.3 durable operation 记录：intent→remote→result 三段持久化并 fsync；启动时加载未完成 operation 并进入判定；单对象操作接入，未知结果不得自动重试。
 - [ ] 0.4 数据面与 CLI 契约：写 RPC 强制 Operation-ID；新增 operation 查询（`GET /v1/operations/{id}` 或等价）与 `outcome_unknown` 错误码；`core ops list/show` 只读入口。
@@ -16,7 +16,7 @@
 
 未通过本组不引入任何生产依赖、不写生产接线、不进入 Slice 1；产出决策记录与证据表。
 
-- [ ] 1.1 在隔离验证项目中选择固定版本的无 CGO 存储引擎候选（优先纯 Go SQLite，必要时纯 Go KV），审查许可证、维护与传递依赖；以事务回滚、重开读取、WAL/FULL 或等价语义和双进程锁测试输出验证，不以包可编译代替运行证据。
+- [x] 1.1 在隔离验证项目中选择固定版本的无 CGO 存储引擎候选（优先纯 Go SQLite，必要时纯 Go KV），审查许可证、维护与传递依赖；以事务回滚、重开读取、WAL/FULL 或等价语义和双进程锁测试输出验证，不以包可编译代替运行证据。
 - [ ] 1.2 按当前 `.github/workflows/ci.yaml` 的 Linux、Windows nocgo、Darwin amd64/arm64 目标验证候选的构建与运行约束；保留命令、平台与结果，缺少对应运行环境时明确阻塞，不以跨编译冒充运行测试。
 - [ ] 1.3 使用 `scripts/dev/build-android-aar.sh` 的 Android API 21/全 ABI 路径和 macOS iOS gomobile 绑定验证候选，至少在可用设备/模拟器运行账本事务及重启 smoke；记录执行环境与结果，任一必需目标未验证则不解除门槛。注意 gomobile 默认启用 cgo；非 arm64 Android/iOS 在 `CGO_ENABLED=0` 下的失败对空程序同样成立，不能据此判定引擎不可用。
 - [ ] 1.4 门槛通过后才固定生产依赖，在开发者存储说明中记录版本、平台结果、文件系统/同步限制及体积变化；验证现有无 CGO 构建仍成功且 `go mod tidy` 稳定。无合格候选时暂停并更新设计，不实现第二后端。
