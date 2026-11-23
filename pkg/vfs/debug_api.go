@@ -227,9 +227,23 @@ func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]diagno
 		key := vfstypes.CleanMountName(mountName)
 		n.mu.RLock()
 		vfs, ok := n.mounts[key]
+		lazy := n.lazy[key]
 		n.mu.RUnlock()
 		if !ok {
-			return nil, fmt.Errorf("vfs: mount %q not found", mountName)
+			if lazy == nil {
+				return nil, fmt.Errorf("vfs: mount %q not found", mountName)
+			}
+			// A named health check is an explicit request for that mount, so open
+			// a lazily configured mount instead of reporting it as absent. This is
+			// what lets a health probe distinguish "configured but failed to
+			// initialize" (an opener error) from "not configured" (not found). The
+			// lazy mount caches its opener result, so repeated probes do not re-run
+			// driver initialization.
+			opened, _, _, err := n.resolve(ctx, "/"+key)
+			if err != nil {
+				return nil, err
+			}
+			vfs = opened
 		}
 		return vfs.MountHealth(ctx, mountName)
 	}
