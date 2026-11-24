@@ -761,6 +761,16 @@ func (c *Store) PutChunkAsync(fid string, fileSize, index int64, data []byte, ac
 		c.cacheWriteWGMu.Unlock()
 		return
 	}
+	// The lock-free probe above can lose a race with a write that finishes
+	// between that probe and this lock: the in-flight entry is already gone
+	// and the chunk is now on disk. Re-check under the writer lock so a
+	// completed chunk is not queued a second time (asserted by
+	// TestReadCacheAsyncPutSkipsExistingAndPendingChunks).
+	if ok, err := c.HasChunk(fid, index); err == nil && ok {
+		c.cacheWriteMu.Unlock()
+		c.cacheWriteWGMu.Unlock()
+		return
+	}
 	if len(c.cacheWriteQueue) >= cap(c.cacheWriteQueue) {
 		c.cacheWriteMu.Unlock()
 		c.cacheWriteWGMu.Unlock()
