@@ -53,6 +53,15 @@ func TestVFSDeleteCancelsPrefetchButNotForeground(t *testing.T) {
 	fs.Start(ctx)
 	defer stopVFS(t, fs)
 
+	// Pin the read shape so the speculative window is the chunk after the
+	// foreground read: the adaptive plan otherwise picks a different lookahead
+	// under load, and this test would then watch an offset that never runs.
+	windowDepth := 1
+	if err := fs.SetReadPlanOverride("", vfs.ReadPlanOverride{MaxStreams: 1, WindowChunks: 1, PrefetchChunks: 1, PrefetchDepth: &windowDepth}); err != nil {
+		t.Fatalf("SetReadPlanOverride: %v", err)
+	}
+	defer fs.ClearReadPlanOverride()
+
 	// The first file's read completes and leaves its speculative window gated.
 	if rc, err := fs.Read(ctx, "/file.bin", 0, 1); err != nil {
 		t.Fatalf("Read: %v", err)
