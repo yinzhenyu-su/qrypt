@@ -299,6 +299,16 @@ func (s coreFSService) Truncate(ctx context.Context, path string, size int64) er
 	return s.fs().Truncate(ctx, path, size)
 }
 
+// SetModTime stamps a file's mtime through the owner VFS, which records it as
+// a pending/local override so the next listing and sync compare see it.
+func (s coreFSService) SetModTime(ctx context.Context, path string, modTime time.Time) error {
+	setter, ok := s.fs().(vfs.ModTimeWriter)
+	if !ok {
+		return fmt.Errorf("core: filesystem does not support mtime writes")
+	}
+	return setter.SetModTime(ctx, path, modTime)
+}
+
 var activeTaskStates = []task.State{
 	task.StateQueued,
 	task.StateScheduled,

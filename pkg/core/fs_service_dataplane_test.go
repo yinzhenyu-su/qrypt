@@ -86,6 +86,13 @@ func TestCoreFSServiceDataPlane(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(remote, "dir", "file.txt")); err != nil || string(data) != "hello world" {
 		t.Fatalf("remote content = %q, %v", data, err)
 	}
+	stamped := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	if err := svc.SetModTime(ctx, "/dir/file.txt", stamped); err != nil {
+		t.Fatalf("set modtime: %v", err)
+	}
+	if entry, err := svc.Stat(ctx, "/dir/file.txt"); err != nil || !entry.ModTime.Equal(stamped) {
+		t.Fatalf("stat after set modtime = %+v, %v; want %s", entry, err, stamped)
+	}
 
 	stream, err := svc.ReadStream(ctx, "/dir/file.txt", 0, 5, false)
 	if err != nil {

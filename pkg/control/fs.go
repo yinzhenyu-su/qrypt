@@ -55,6 +55,9 @@ type FSService interface {
 	WriteAt(ctx context.Context, path string, offset int64, data []byte) (int, error)
 	Flush(ctx context.Context, path string) error
 	Mkdir(ctx context.Context, path string) (FSEntry, error)
+	// SetModTime stamps a file's mtime so cross-side sync plans converge
+	// without re-uploading a file whose destination mtime is the upload time.
+	SetModTime(ctx context.Context, path string, modTime time.Time) error
 	Remove(ctx context.Context, path string, dir bool) error
 	Rename(ctx context.Context, source, destination string) error
 	Truncate(ctx context.Context, path string, size int64) error
@@ -126,7 +129,7 @@ func (s *CommandServer) handleFS(w http.ResponseWriter, r *http.Request) {
 // takes an optional idempotency key.
 func isFSMutation(op string) bool {
 	switch op {
-	case "create", "write", "flush", "mkdir", "remove", "rename", "truncate", "copy":
+	case "create", "write", "flush", "mkdir", "setmodtime", "remove", "rename", "truncate", "copy":
 		return true
 	}
 	return false
@@ -180,6 +183,8 @@ func (s *CommandServer) handleFSOperation(w http.ResponseWriter, r *http.Request
 		s.handleFSWrite(w, r)
 	case "mkdir":
 		s.handleFSMkdir(w, r)
+	case "setmodtime":
+		s.handleFSSetModTime(w, r)
 	case "rename":
 		s.handleFSRename(w, r)
 	case "truncate":
@@ -314,6 +319,27 @@ type fsRenameRequest struct {
 type fsTruncateRequest struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`
+}
+
+type fsSetModTimeRequest struct {
+	Path    string    `json:"path"`
+	ModTime time.Time `json:"mod_time"`
+}
+
+func (s *CommandServer) handleFSSetModTime(w http.ResponseWriter, r *http.Request) {
+	var req fsSetModTimeRequest
+	if !writeFSRequest(w, r, &req) {
+		return
+	}
+	if req.Path == "" || req.ModTime.IsZero() {
+		writeBadRequest(w, "path and mod_time are required")
+		return
+	}
+	if err := s.fs.SetModTime(r.Context(), req.Path, req.ModTime); err != nil {
+		writeFSError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 func writeFSRequest(w http.ResponseWriter, r *http.Request, value any) bool {
@@ -706,6 +732,11 @@ func (c *Client) FSRename(ctx context.Context, source, destination string) error
 // FSTruncate resizes a file on the Core.
 func (c *Client) FSTruncate(ctx context.Context, path string, size int64) error {
 	return c.fsPost(ctx, "/v1/fs/truncate", fsTruncateRequest{Path: path, Size: size})
+}
+
+// FSSetModTime stamps a file's mtime through the owner data plane.
+func (c *Client) FSSetModTime(ctx context.Context, path string, modTime time.Time) error {
+	return c.fsPost(ctx, "/v1/fs/setmodtime", fsSetModTimeRequest{Path: path, ModTime: modTime})
 }
 
 // FSWaitPath waits until the Core reports no pending work for path.

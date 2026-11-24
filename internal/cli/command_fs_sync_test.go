@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/syncer"
 )
@@ -310,6 +311,13 @@ func TestFsSyncVFSToVFS(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "src", "f.txt"), []byte("vfs-to-vfs"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Pin the source mtime to a distinct second: otherwise the destination
+	// upload time often lands in the same Unix second and hides the fact that
+	// the mtime was never propagated.
+	stamped := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(filepath.Join(remote, "src", "f.txt"), stamped, stamped); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(remote, "dst"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -342,6 +350,13 @@ func TestFsSyncVFSToVFSConverges(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "src", "f.txt"), []byte("vfs-to-vfs"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Pin the source mtime to a distinct second: otherwise the destination
+	// upload time often lands in the same Unix second and hides the fact that
+	// the mtime was never propagated.
+	stamped := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(filepath.Join(remote, "src", "f.txt"), stamped, stamped); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(remote, "dst"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -368,6 +383,12 @@ func TestFsSyncConvergesOnSecondRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(local, "new.txt"), []byte("converge"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pin the source mtime to a distinct second so convergence depends on the
+	// propagation, not on both writes sharing one Unix second.
+	stamped := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(filepath.Join(local, "new.txt"), stamped, stamped); err != nil {
 		t.Fatal(err)
 	}
 

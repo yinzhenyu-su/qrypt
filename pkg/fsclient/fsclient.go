@@ -176,6 +176,13 @@ func (f *FS) Flush(ctx context.Context, path string) error {
 	return f.client.FSFlush(mutationContext(ctx), path)
 }
 
+// SetModTime stamps a VFS file's mtime through the owner data plane. It makes
+// *FS satisfy vfs.ModTimeWriter so sync's convergence stamp works over the
+// client path too.
+func (f *FS) SetModTime(ctx context.Context, path string, modTime time.Time) error {
+	return mapFSError(f.client.FSSetModTime(mutationContext(ctx), path, modTime))
+}
+
 func (f *FS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 	entry, err := f.client.FSMkdir(mutationContext(ctx), path)
 	if err != nil {

@@ -22,6 +22,7 @@ type fsStub struct {
 	removedDir  bool
 	renamed     [2]string
 	invalidated []string
+	modTimes    [][2]string
 	mkdirCalls  int
 	idleTimeout time.Duration
 }
@@ -69,6 +70,11 @@ func (s *fsStub) Rename(ctx context.Context, source, destination string) error {
 	return nil
 }
 func (s *fsStub) Truncate(ctx context.Context, path string, size int64) error { return nil }
+
+func (s *fsStub) SetModTime(ctx context.Context, path string, modTime time.Time) error {
+	s.modTimes = append(s.modTimes, [2]string{path, modTime.UTC().Format(time.RFC3339Nano)})
+	return nil
+}
 func (s *fsStub) InvalidateList(ctx context.Context, path string) error {
 	s.invalidated = append(s.invalidated, path)
 	return nil
@@ -140,6 +146,26 @@ func TestFSHandlersStatListAndMutations(t *testing.T) {
 	server.handleFS(recorder, req)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"written": 5`) {
 		t.Fatalf("write status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestFSSetModTimeHandler(t *testing.T) {
+	stub := &fsStub{}
+	server := newFSTestServer(stub)
+
+	recorder := httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodPost, "/v1/fs/setmodtime", strings.NewReader(`{"path":"/local/f.txt","mod_time":"2026-11-24T10:00:00Z"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("setmodtime status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(stub.modTimes) != 1 || stub.modTimes[0] != [2]string{"/local/f.txt", "2026-11-24T10:00:00Z"} {
+		t.Fatalf("setmodtime calls = %v", stub.modTimes)
+	}
+
+	recorder = httptest.NewRecorder()
+	server.handleFS(recorder, httptest.NewRequest(http.MethodPost, "/v1/fs/setmodtime", strings.NewReader(`{"path":"/local/f.txt"}`)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("missing mod_time status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
