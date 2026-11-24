@@ -16,8 +16,10 @@
 
 未通过本组不引入任何生产依赖、不写生产接线、不进入 Slice 1；产出决策记录与证据表。
 
+范围注记（2026-11-24，维护者）：mobile（Android/iOS，任务 1.3 及 1.5 的 AAR 部分）暂缓；macOS 最低 runner 为 `macos-15`（arm64），darwin/amd64 按 Rosetta best-effort。Gate 0 按桌面范围（linux/amd64、windows/amd64、darwin/arm64）判定，恢复 mobile 时重开 1.3/1.5 的 AAR 证据。
+
 - [x] 1.1 在隔离验证项目中选择固定版本的无 CGO 存储引擎候选（优先纯 Go SQLite，必要时纯 Go KV），审查许可证、维护与传递依赖；以事务回滚、重开读取、WAL/FULL 或等价语义和双进程锁测试输出验证，不以包可编译代替运行证据。
-- [ ] 1.2 按当前 `.github/workflows/ci.yaml` 的 Linux、Windows nocgo、Darwin amd64/arm64 目标验证候选的构建与运行约束；保留命令、平台与结果，缺少对应运行环境时明确阻塞，不以跨编译冒充运行测试。
+- [x] 1.2 按当前 `.github/workflows/ci.yaml` 的 Linux、Windows nocgo、Darwin amd64/arm64 目标验证候选的构建与运行约束；保留命令、平台与结果，缺少对应运行环境时明确阻塞，不以跨编译冒充运行测试。证据：`evidence/gate0-storage-spike.md` 1.2 节 + CI run 45312526536。
 - [ ] 1.3 使用 `scripts/dev/build-android-aar.sh` 的 Android API 21/全 ABI 路径和 macOS iOS gomobile 绑定验证候选，至少在可用设备/模拟器运行账本事务及重启 smoke；记录执行环境与结果，任一必需目标未验证则不解除门槛。注意 gomobile 默认启用 cgo；非 arm64 Android/iOS 在 `CGO_ENABLED=0` 下的失败对空程序同样成立，不能据此判定引擎不可用。
 - [ ] 1.4 门槛通过后才固定生产依赖，在开发者存储说明中记录版本、平台结果、文件系统/同步限制及体积变化；验证现有无 CGO 构建仍成功且 `go mod tidy` 稳定。无合格候选时暂停并更新设计，不实现第二后端。
 - [ ] 1.5 以基准/小样本测量打开、提交 p50/p99、Flush 端到端 p99 与全 ABI AAR 体积增量，给出明确预算数字，供 Slice 2 与最终验收比较；不以功能正确替代性能证据。

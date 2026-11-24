@@ -1,45 +1,47 @@
 # Gate 0 存储引擎 Spike 证据（候选：modernc.org/sqlite v1.61.0）
 
-日期：2026-11-23。Spike 位于仓库外隔离模块（本文件只记录结果），未向生产 `go.mod` 增加依赖。
-环境：macOS 26 / Apple M1 Pro / Go 1.27.4 / CGO_ENABLED=0；Linux 运行证据用 OrbStack 的 `golang:1.27` 容器（linux/amd64 与 linux/arm64 各一次）。
+日期：2026-11-23 首轮本机验证；2026-11-24 CI 平台矩阵验证。
+Spike 源码：[`scripts/dev/storage-spike`](../../../../scripts/dev/storage-spike/README.md)（独立 Go module，主模块不依赖该引擎）；CI：[`storage-spike.yaml`](../../../../.github/workflows/storage-spike.yaml)（`workflow_dispatch`，run [45312526536](https://github.com/yinzhenyu-su/qrypt/actions/runs/45312526536)）。
+环境：Go 1.27.4、`CGO_ENABLED=0`。
 
-## 1.1 候选与事务/锁证据（Linux + Darwin arm64 运行）
+## 1.1 候选与语义证据
 
 - 候选：`modernc.org/sqlite v1.61.0`（纯 Go，无 CGO；直接依赖含 `modernc.org/libc v1.79.0`、`golang.org/x/sys v0.49.0` 等）。
-- 许可证：`modernc.org/*` 为 BSD-3-Clause；`golang.org/x/*` BSD-3-Clause；`github.com/google/uuid`、`remyoudompheng/bigfft` BSD-3-Clause；`ncruces/go-strftime`、`mattn/go-isatty` MIT；`hashicorp/golang-lru/v2` MPL-2.0（文件级 copyleft，需在 1.4 记录）。
-- 事务与语义测试（`journal_mode=WAL`、`synchronous=FULL`、`foreign_keys=1`）：
+- 许可证：`modernc.org/*`、`golang.org/x/*`、`github.com/google/uuid`、`remyoudompheng/bigfft` 为 BSD-3-Clause；`ncruces/go-strftime`、`mattn/go-isatty` 为 MIT；`hashicorp/golang-lru/v2` 为 MPL-2.0（文件级 copyleft，需在 1.4 记录）。
+- 测试语义（`journal_mode=WAL`、`synchronous=FULL`、`foreign_keys=1`）：
   - 事务回滚不留下行；提交后关闭并重开可读到已提交行。
   - `PRAGMA journal_mode` = `wal`，`PRAGMA synchronous` = `2`（FULL）。
-  - `Commit()` 返回后立即 SIGKILL 子进程，父进程重开仍读到该行（WAL+FULL 的持久性契约成立）。
-  - 双进程互斥：进程 A 持有写事务时，进程 B `BEGIN IMMEDIATE` 被阻塞（busy_timeout 后返回错误），不会并发写入。
-- 运行结果：darwin/arm64（原生）、linux/amd64、linux/arm64 全部 PASS。
+  - `Commit()` 返回后进程被强杀（unix `SIGKILL`，Windows `TerminateProcess`），父进程重开仍读到该行。
+  - 双进程互斥：进程 A 持有写事务时，进程 B `BEGIN IMMEDIATE` 被阻塞（busy_timeout 后返回错误）。
 
-## 1.2 构建目标（跨编译证据，不代表运行）
+## 1.2 平台运行矩阵（CI）
 
-`CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/smoke` 均成功：
+全部任务通过；体积为最小程序（打开账本 + 一次读写）`-trimpath -ldflags='-s -w'` 的二进制大小。
 
-| 目标 | 二进制大小 |
-| --- | --- |
-| darwin/arm64 | 6.3 MiB |
-| darwin/amd64 | 6.4 MiB |
-| linux/amd64 | 6.4 MiB |
-| linux/arm64 | 6.3 MiB |
-| windows/amd64 | 6.2 MiB |
+| 平台 | Runner | 运行结果 | 二进制大小 |
+| --- | --- | --- | --- |
+| linux/amd64 | `ubuntu-latest` | 事务/持久性/双进程锁 PASS | 6,729,888 B（6.42 MiB） |
+| windows/amd64 | `windows-latest` | 同上，崩溃点用 `TerminateProcess` PASS | 6,500,352 B（6.20 MiB） |
+| darwin/arm64 | `macos-15`（arm64） | 同上 PASS | 6,569,314 B（6.27 MiB） |
+| darwin/amd64 | `macos-15` + Rosetta 2 | Rosetta 安装成功，amd64 测试二进制与体积程序在 Rosetta 下 PASS | 交叉构建约 6.4 MiB（best effort） |
 
-以上为最小程序（打开账本 + 一次读写）的体积，非完整 qrypt 二进制；全 ABI AAR 增量未测。
+## 1.3 范围决策（维护者 2026-11-24）
 
-## 1.5 初步性能（darwin/arm64，WAL+FULL，300 次迭代）
+- macOS runner 最低为 `macos-15`（arm64）；darwin/amd64 按 best-effort：CI 先安装 Rosetta 2 运行一次 amd64 测试，失败时降级为 build-only 并记录原因，不阻塞 Gate 0。
+- mobile（Android API 21 全 ABI AAR、iOS gomobile 绑定）由维护者决定暂缓；任务 1.3 保持未完成，Gate 0 结论按桌面范围给出。恢复 mobile 时补 AAR 体积/性能与真机 smoke，并重新评估 AAR 增量。
+- 因此本文件不宣称 1.3 完成，也不覆盖 AAR 体积增量。
 
-| 指标 | 结果 |
-| --- | --- |
-| 单事务 INSERT+Commit | ~90.7 µs/op |
-| 关闭后重开 + 查询 | ~438 µs/op |
+## 1.4 性能与体积初步数据
 
-## 环境阻塞（Gate 0 未通过的原因）
+- darwin/arm64 本机（WAL+FULL，300 次迭代）：单事务 INSERT+Commit 约 90.7 µs/op；关闭后重开 + 查询约 438 µs/op。
+- 上述为引擎层小样本，不是端到端 Flush 预算；Flush p99 与 AAR 增量随 1.5/mobile 后续补充。
 
-- Windows 运行：无 Windows 主机/Windows 容器运行时，仅有交叉编译证据；按任务要求不能用跨编译冒充运行测试 → 阻塞。
-- darwin/amd64 运行：本机未安装 Rosetta 2，无法运行 x86_64 二进制 → 阻塞（构建通过）。
-- Android（1.3）：本机有 Android SDK（platforms/build-tools/emulator/system-images android-33）与 NDK 27.2.12479018，但未安装 `gomobile`、未创建 AVD，因此 API 21 全 ABI 绑定与设备/模拟器账本事务 smoke 未执行 → 阻塞。
-- iOS（1.3）：有 Xcode 命令行工具（xcrun 72），但未安装 `gomobile`、没有可用的绑定与模拟器 smoke 工程 → 阻塞。
+## 1.5 尚未关闭的 Gate 0 项
 
-结论：候选在已覆盖的 Linux/Darwin arm64 运行目标上满足事务、持久性、互斥与体积初步预期；但 Gate 0 的必需平台目标（Windows 运行、darwin/amd64 运行、Android API 21 全 ABI、iOS gomobile）未验证，门槛保持关闭，不固定生产依赖、不进入 Slice 1，P0 0.3–0.5 继续等待。
+- 1.4 固定生产依赖：需要 `pkg/vfs/localstate` 首次引入 import 后随 `go mod tidy` 固定（未使用的依赖会被 tidy 移除），留到 Slice 1。
+- 1.5 性能预算：打开/提交 p50/p99 与 Flush 端到端 p99、AAR 体积增量仍未给出；AAR 部分随 mobile 暂缓。
+- 1.6 启动能力探测：WAL/FULL 与双进程锁行为已验证，但生产启动探测（WAL/mmap/共享内存能力、失败时拒绝可写打开、持锁进程终止后可重取）待 Slice 1 实现。
+
+## 结论
+
+候选在桌面发布矩阵（linux/amd64、windows/amd64、darwin/arm64，darwin/amd64 经 Rosetta）上满足事务、提交后强杀持久性、双进程互斥与体积初步预期，Gate 0 按桌面范围条件通过；mobile 相关证据（1.3、1.5 的 AAR 部分）明确记为 deferred，恢复 mobile 前不宣称 Gate 0 完整关闭。
