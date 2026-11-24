@@ -20,5 +20,10 @@ platform matrix: Linux amd64, Windows amd64, macOS arm64, plus a best-effort
 darwin/amd64 run under Rosetta when the runner has it installed. Android and
 iOS are deferred by the maintainer and not covered here.
 
+The tests also cover the Gate 0 durability prerequisites: an exclusive OS owner
+lock (`flock` / `LockFileEx`) whose lock is released when the holder is killed,
+and a startup capability probe that refuses a writable open when WAL or
+`synchronous=FULL` cannot be established instead of silently degrading.
+
 Results and the accepted platform scope are recorded in
 [`gate0-storage-spike.md`](../../../openspec/changes/make-vfs-mutations-recoverable/evidence/gate0-storage-spike.md).
