@@ -1,0 +1,103 @@
+name: Storage Spike
+
+# Gate 0 evidence for the embedded state engine of the
+# make-vfs-mutations-recoverable change. This workflow only validates the
+# throwaway module under scripts/dev/storage-spike; it never builds the main
+# module and does not introduce a production dependency.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    name: Spike (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    defaults:
+      run:
+        shell: bash
+        working-directory: scripts/dev/storage-spike
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: scripts/dev/storage-spike/go.mod
+          cache: true
+          cache-dependency-path: scripts/dev/storage-spike/go.sum
+
+      - name: Transaction, durability, and lock tests
+        run: go test -count=1 -v ./...
+
+      - name: Binary size
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/spike-size" ./cmd/spike-size
+          size=$(wc -c < "$RUNNER_TEMP/spike-size")
+          echo "spike-size (${{ runner.os }}/$(go env GOARCH)): ${size} bytes"
+          echo "spike-size ${{ runner.os }}/$(go env GOARCH): ${size} bytes" >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    name: Spike (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: scripts/dev/storage-spike
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: scripts/dev/storage-spike/go.mod
+          cache: true
+          cache-dependency-path: scripts/dev/storage-spike/go.sum
+
+      - name: Transaction, durability, and lock tests
+        run: go test -count=1 -v ./...
+
+      - name: Binary size
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/spike-size.exe" ./cmd/spike-size
+          size=$(wc -c < "$RUNNER_TEMP/spike-size.exe")
+          echo "spike-size (windows/amd64): ${size} bytes"
+          echo "spike-size windows/amd64: ${size} bytes" >> "$GITHUB_STEP_SUMMARY"
+
+  darwin-amd64:
+    name: Spike (darwin/amd64, best effort)
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: scripts/dev/storage-spike
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: scripts/dev/storage-spike/go.mod
+          cache: true
+          cache-dependency-path: scripts/dev/storage-spike/go.sum
+
+      - name: Install Rosetta (best effort)
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Run amd64 binary under Rosetta
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "Rosetta unavailable; darwin/amd64 runtime evidence stays build-only." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$RUNNER_TEMP/spike-amd64.test" .
+          arch -x86_64 "$RUNNER_TEMP/spike-amd64.test" -test.count=1 -test.v
+          GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/spike-size-amd64" ./cmd/spike-size
+          ( cd "$RUNNER_TEMP" && arch -x86_64 ./spike-size-amd64 )
+          size=$(wc -c < "$RUNNER_TEMP/spike-size-amd64")
+          echo "spike-size darwin/amd64: ${size} bytes" >> "$GITHUB_STEP_SUMMARY"
