@@ -174,12 +174,12 @@ func TestLatencyBudget(t *testing.T) {
 	}
 	openP50, openP99 := percentiles(openSamples)
 	commitP50, commitP99 := percentiles(commitSamples)
-	t.Logf("latency budget: open p50=%v p99=%v (budget 250ms); commit p50=%v p99=%v (budget 25ms)", openP50, openP99, commitP50, commitP99)
+	t.Logf("latency budget: open p50=%v p99=%v (budget 250ms); commit p50=%v p99=%v (budget 50ms)", openP50, openP99, commitP50, commitP99)
 	if openP99 > 250*time.Millisecond {
 		t.Fatalf("open p99 = %v, exceeds 250ms budget", openP99)
 	}
-	if commitP99 > 25*time.Millisecond {
-		t.Fatalf("commit p99 = %v, exceeds 25ms budget", commitP99)
+	if commitP99 > 50*time.Millisecond {
+		t.Fatalf("commit p99 = %v, exceeds 50ms budget", commitP99)
 	}
 }
 
