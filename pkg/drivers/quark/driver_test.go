@@ -2219,7 +2219,15 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	// test-fatal call from that goroutine fails the whole test (observed on GH
 	// runners).
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.ReadAll(r.Body)
+		// A real OSS only acknowledges a part after reading every byte. The
+		// server must not answer 200+ETag for an aborted body: net/http can
+		// surface that response as a successful Do while a cancel is racing
+		// the body write, which would make uploadPart return a nil error.
+		body, err := io.ReadAll(r.Body)
+		if err != nil || len(body) != 64*1024 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Etag", "etag-1")
 		w.WriteHeader(http.StatusOK)
 	}))

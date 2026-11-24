@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,16 +37,19 @@ func TestWaitLocalFileStableWaitsAfterChange(t *testing.T) {
 	if err := os.WriteFile(localPath, []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The quiet window must comfortably outlast the writer goroutine's
-	// scheduling delay: on loaded CI runners the 8ms sleep can stretch well
-	// past a 20ms window, and the waiter would legitimately report the
-	// pre-change snapshot as stable.
-	opts := LocalFileStabilityOptions{QuietMS: 250, PollMS: 2}
+	// Change the file from the waiter's own poll: a sleep-based writer can be
+	// starved past the quiet window on loaded CI runners, which makes the
+	// waiter legitimately report the pre-change snapshot as stable.
+	var once sync.Once
+	opts := LocalFileStabilityOptions{QuietMS: 20, PollMS: 2}
+	opts.pollHook = func() {
+		once.Do(func() {
+			if err := os.WriteFile(localPath, []byte("changed"), 0o644); err != nil {
+				t.Errorf("rewrite changing file: %v", err)
+			}
+		})
+	}
 	c := &Core{}
-	go func() {
-		time.Sleep(8 * time.Millisecond)
-		_ = os.WriteFile(localPath, []byte("changed"), 0o644)
-	}()
 
 	start := time.Now()
 	got, err := c.WaitLocalFileStable(context.Background(), localPath, opts)

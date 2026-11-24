@@ -34,6 +34,10 @@ type Options struct {
 	Quiet time.Duration
 	// Poll is the interval between observations while waiting.
 	Poll time.Duration
+	// PollHook observes the waiter after each poll. Tests use it to change
+	// the file at a deterministic point instead of racing a sleep; production
+	// callers leave it nil.
+	PollHook func()
 }
 
 // Snapshot is one observed state of a local file.
@@ -94,6 +98,9 @@ func Wait(ctx context.Context, path string, opts Options) (Snapshot, error) {
 			next, err := stat(path, opts)
 			if err != nil {
 				return snapshot, err
+			}
+			if opts.PollHook != nil {
+				opts.PollHook()
 			}
 			if next.Size == snapshot.Size && next.ModTime.Equal(snapshot.ModTime) {
 				snapshot = next

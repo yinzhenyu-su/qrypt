@@ -14,6 +14,9 @@ import (
 type LocalFileStabilityOptions struct {
 	QuietMS int `json:"quiet_ms,omitempty"`
 	PollMS  int `json:"poll_ms,omitempty"`
+	// pollHook lets package tests change the file from the waiter's own poll
+	// instead of racing a sleep; it is nil for callers.
+	pollHook func()
 }
 
 // LocalFileStability is the observed state of a local file once it has been
@@ -43,6 +46,7 @@ func (c *Core) WaitLocalFileStable(ctx context.Context, localPath string, opts L
 	if err != nil {
 		return LocalFileStability{}, err
 	}
+	svcOpts.PollHook = opts.pollHook
 	snapshot, err := localfile.Wait(ctx, localPath, svcOpts)
 	if err != nil {
 		return toLocalFileStability(snapshot), err

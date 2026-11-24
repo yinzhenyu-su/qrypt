@@ -390,15 +390,32 @@ func TestRenameDurableAcrossReplay(t *testing.T) {
 // just be race-free.
 func TestConcurrentSaveRemoveMatchesReplay(t *testing.T) {
 	store := newPendingStoreFixture(t)
+	// Replay keeps only dirty records whose staging file still exists, so the
+	// fixture must save real staged content instead of a LocalPath-less record
+	// (which replay would prune and live state would keep, making the counts
+	// differ for reasons unrelated to the race under test).
+	localPath := filepath.Join(store.StagingDir(), "same.staging")
+	localContent := []byte("x")
+	if err := os.WriteFile(localPath, localContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 50; i++ {
-			_ = store.SaveUploadExact(PendingUpload{
-				Path: "/same.txt", FID: "fid-x", Name: "same.txt", Size: 1, UpdatedAt: 1234567890,
-			})
+			if err := os.WriteFile(localPath, localContent, 0o644); err != nil {
+				t.Errorf("write staging file: %v", err)
+				return
+			}
+			if err := store.SaveUploadExact(PendingUpload{
+				Path: "/same.txt", FID: "fid-x", Name: "same.txt", LocalPath: localPath,
+				Size: int64(len(localContent)), UpdatedAt: 1234567890,
+			}); err != nil {
+				t.Errorf("save upload exact: %v", err)
+				return
+			}
 		}
 		close(done)
 	}()
@@ -410,10 +427,21 @@ func TestConcurrentSaveRemoveMatchesReplay(t *testing.T) {
 				return
 			default:
 			}
-			_ = store.RemoveUpload("/same.txt")
+			if err := store.RemoveUpload("/same.txt"); err != nil {
+				t.Errorf("remove upload: %v", err)
+				return
+			}
 		}
 	}()
 	wg.Wait()
+	// A remove may have won the last race and deleted the staging file after
+	// the final save; restore it so replay evaluates the same record set the
+	// live store holds rather than pruning a legitimately missing file.
+	if pending, ok := store.UploadByPath("/same.txt"); ok && pending.LocalPath != "" {
+		if err := os.WriteFile(pending.LocalPath, localContent, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	reopened, err := NewPendingStore(store.dir)
 	if err != nil {
 		t.Fatal(err)
