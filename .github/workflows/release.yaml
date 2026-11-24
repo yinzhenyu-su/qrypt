@@ -261,7 +261,7 @@ jobs:
           # 构建 tag 的源码,保证二进制内嵌版本号正确
           ref: ${{ needs.verify.outputs.version }}
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: matrix.kind == 'windows-go'
         with:
           # go.mod is the single source of truth for the pinned toolchain.
@@ -339,7 +339,7 @@ jobs:
         with:
           ref: ${{ needs.verify.outputs.version }}
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           # go.mod is the single source of truth for the pinned toolchain.
           go-version-file: go.mod
