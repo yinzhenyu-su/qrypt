@@ -95,12 +95,16 @@ func Wait(ctx context.Context, path string, opts Options) (Snapshot, error) {
 		case <-ctx.Done():
 			return snapshot, ctx.Err()
 		case <-ticker.C:
+			// Run the test hook before the poll: a loaded runner can delay
+			// the first tick past the quiet window, and observing the file
+			// after the hook would then compare the pre-change snapshot with
+			// a pre-change stat and return it as stable.
+			if opts.PollHook != nil {
+				opts.PollHook()
+			}
 			next, err := stat(path, opts)
 			if err != nil {
 				return snapshot, err
-			}
-			if opts.PollHook != nil {
-				opts.PollHook()
 			}
 			if next.Size == snapshot.Size && next.ModTime.Equal(snapshot.ModTime) {
 				snapshot = next
